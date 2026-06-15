@@ -34,7 +34,7 @@ def _resolve_version() -> str:
     try:
         return _pkg_version("cli-anything-alexa")
     except PackageNotFoundError:
-        return "0.1.0+unknown"
+        return "0.2.0+unknown"
 
 
 __version__ = _resolve_version()
@@ -96,6 +96,29 @@ def _login(ctx):
         )
     except session_core.AlexaSessionError as exc:
         _abort(str(exc))
+    except Exception as exc:  # noqa: BLE001 - never leak a raw traceback
+        _abort(
+            f"could not establish an Alexa session ({type(exc).__name__}: {exc}). "
+            "Run `cli-anything-alexa auth login` to (re)authenticate."
+        )
+
+
+def _run(ctx, coro):
+    """Run a live-call coroutine, turning network/API errors into a friendly
+    abort instead of a raw traceback. ``ValueError`` (caller-facing messages
+    raised by the core modules) is surfaced verbatim."""
+    try:
+        return session_core.run_async(coro)
+    except session_core.AlexaSessionError as exc:
+        _abort(str(exc))
+    except ValueError as exc:
+        _abort(str(exc))
+    except Exception as exc:  # noqa: BLE001 - friendly, never a traceback
+        _abort(
+            f"the Alexa request failed ({type(exc).__name__}: {exc}). "
+            "If this persists, re-authenticate with `auth login` — the saved "
+            "session may have expired."
+        )
 
 
 # ──────────────────────────────────────────────────────── root
@@ -180,38 +203,112 @@ def auth_import_pickle(ctx, pickle_path, email):
 
 
 @auth.command("login")
-@click.option("--email", default=None)
+@click.option("--email", default=None, help="Amazon account email (prompted if omitted)")
+@click.option("--url", "region", default=None,
+              help="Account region host, e.g. amazon.co.uk / amazon.com / amazon.de")
 @click.option("--password", default=None,
-              help="Account password (prompted if omitted)")
+              help="Password — switches to the SCRIPTED (headless/CI) login")
+@click.option("--otp-secret", default=None,
+              help="Base32 TOTP secret for the scripted login's 2FA (headless)")
+@click.option("--host", default=None,
+              help=f"Proxy bind host (default {session_core.DEFAULT_PROXY_HOST}; "
+                   "use 0.0.0.0 to log in from another machine)")
+@click.option("--port", type=int, default=None,
+              help=f"Proxy port (default {session_core.DEFAULT_PROXY_PORT})")
+@click.option("--timeout", type=float, default=600.0,
+              help="Seconds to wait for the browser login (proxy flow)")
 @click.pass_context
-def auth_login(ctx, email, password):
-    """Fresh email/password/OTP login, persisting the cookie locally.
+def auth_login(ctx, email, region, password, otp_secret, host, port, timeout):
+    """Log in to Amazon. Guided browser-proxy login by default (recommended).
 
-    Importing HA's existing cookie via `import-pickle` is more reliable
-    (Amazon often gates fresh logins with a captcha); use that when you can.
+    \b
+    The default flow needs NO Home Assistant and handles captcha / 2FA
+    natively because you complete Amazon's own login pages in a browser:
+      1. it starts a tiny local web proxy and prints a URL,
+      2. you open that URL and log in to Amazon as normal,
+      3. on success the session cookie is saved locally — done.
+
+    For headless / CI, pass --password (and --otp-secret for 2FA) to use the
+    scripted login instead. Existing HA users can also `auth import-pickle`.
     """
     em = email or ctx.obj.get("email")
+    as_json = ctx.obj.get("as_json")
     if not em:
-        em = click.prompt("Amazon email")
-    if not password:
-        password = click.prompt("Password", hide_input=True)
+        if as_json:
+            _abort("--email is required with --json")
+        em = click.prompt("Amazon account email")
 
-    def otp_cb():
-        return click.prompt("OTP / 2FA code")
+    region = region or ctx.obj.get("url") or "amazon.co.uk"
+    if not as_json and region == "amazon.co.uk" and not (ctx.obj.get("url")):
+        region = click.prompt("Account region host", default="amazon.co.uk")
+
+    def _persist():
+        cfg = dict(ctx.obj)
+        cfg["email"] = em
+        cfg["url"] = region
+        project.save_config(cfg, ctx.obj.get("config_path"))
+
+    # ── Scripted (headless/CI) login: only when a password is supplied ──
+    if password is not None:
+        def otp_cb():
+            return click.prompt("OTP / 2FA code")
+
+        try:
+            _run(ctx, 
+                session_core.fresh_login(
+                    em, password, url=region,
+                    otp_secret=otp_secret or "",
+                    otp_callback=None if otp_secret else otp_cb,
+                )
+            )
+        except session_core.AlexaSessionError as exc:
+            _abort(str(exc))
+        _persist()
+        emit(ctx, {"logged_in": True, "email": em, "method": "scripted"})
+        return
+
+    # ── Guided proxy browser login (default, recommended) ──
+    pport = port if port is not None else session_core.DEFAULT_PROXY_PORT
+    phost = host if host is not None else session_core.DEFAULT_PROXY_HOST
+
+    def on_url(access_url):
+        if as_json:
+            return
+        click.echo("")
+        click.echo("Browser login — three steps:")
+        click.echo(f"  1. Open this URL in a browser:  {access_url}")
+        click.echo("  2. Sign in to Amazon as you normally would (captcha / 2FA")
+        click.echo("     are handled by Amazon's own pages).")
+        click.echo('  3. When it says you can close the window, you are done.')
+        if phost == "0.0.0.0":
+            click.echo("")
+            click.echo(f"  (bound to 0.0.0.0 — from another machine open "
+                       f"http://<this-host>:{pport} )")
+        click.echo("")
+        click.echo("Waiting for login to complete... (Ctrl-C to cancel)")
 
     try:
         login = session_core.run_async(
-            session_core.fresh_login(
-                em, password, url=ctx.obj.get("url", "amazon.co.uk"),
-                otp_callback=otp_cb,
+            session_core.proxy_login(
+                em, url=region, host=phost, port=pport,
+                timeout=timeout, on_url=on_url,
             )
         )
+    except KeyboardInterrupt:
+        _abort("login cancelled.")
     except session_core.AlexaSessionError as exc:
         _abort(str(exc))
-    cfg = dict(ctx.obj)
-    cfg["email"] = em
-    project.save_config(cfg, ctx.obj.get("config_path"))
-    emit(ctx, {"logged_in": True, "email": em})
+    except OSError as exc:
+        _abort(
+            f"could not start the login proxy on {phost}:{pport} ({exc}). "
+            "Try a different --port, or --host 0.0.0.0 for a remote box."
+        )
+    _persist()
+    if as_json:
+        emit(ctx, {"logged_in": True, "email": em, "method": "proxy"})
+    else:
+        click.echo(f"Logged in as {em} ({region}). You're all set — try "
+                   "`cli-anything-alexa devices list`.")
 
 
 @auth.command("status")
@@ -240,7 +337,7 @@ def devices():
 def devices_list(ctx, ha_only):
     """List every smart-home appliance Alexa knows about."""
     login = _login(ctx)
-    rows = session_core.run_async(devices_core.list_appliances(login))
+    rows = _run(ctx, devices_core.list_appliances(login))
     if ha_only:
         rows = [r for r in rows if r.get("ha_sourced")]
     emit(ctx, rows)
@@ -263,7 +360,7 @@ def devices_prune(ctx, whitelist_file, dry_run, yes):
     """
     login = _login(ctx)
     whitelist = appliances_pure.load_whitelist(Path(whitelist_file).read_text())
-    raw = session_core.run_async(devices_core.fetch_appliances(login))
+    raw = _run(ctx, devices_core.fetch_appliances(login))
     plan = appliances_pure.plan_prune(raw, whitelist)
 
     execute = (not dry_run) and yes
@@ -287,7 +384,7 @@ def devices_prune(ctx, whitelist_file, dry_run, yes):
 
     results = []
     for row in plan["delete"]:
-        res = session_core.run_async(
+        res = _run(ctx, 
             devices_core.delete_appliance(login, row["applianceId"])
         )
         results.append(res)
@@ -310,7 +407,7 @@ def devices_delete(ctx, appliance_ids, yes):
         })
         return
     results = [
-        session_core.run_async(devices_core.delete_appliance(login, aid))
+        _run(ctx, devices_core.delete_appliance(login, aid))
         for aid in appliance_ids
     ]
     emit(ctx, results)
@@ -328,7 +425,7 @@ def echos():
 def echos_list(ctx):
     """List the Echo speakers on the account."""
     login = _login(ctx)
-    raw = session_core.run_async(devices_meta_core.fetch_devices(login))
+    raw = _run(ctx, devices_meta_core.fetch_devices(login))
     emit(ctx, devices_meta_core.device_rows(raw))
 
 
@@ -343,7 +440,7 @@ def _resolve_group_members(ctx, login, entities, endpoints):
     """Resolve --entity + --endpoint to endpoint ids; abort on any unresolved."""
     ent_map = {}
     if entities:
-        ent_map = session_core.run_async(groups_core.fetch_endpoint_map(login))
+        ent_map = _run(ctx, groups_core.fetch_endpoint_map(login))
     member_ids, unresolved = groups_core.resolve_members(
         list(entities), list(endpoints), ent_map
     )
@@ -359,7 +456,7 @@ def _resolve_group_members(ctx, login, entities, endpoints):
 
 def _find_group_or_abort(ctx, login, name_or_id):
     """Fetch groups and resolve a name/id to a raw group record, or abort."""
-    raw = session_core.run_async(groups_core.fetch_groups(login))
+    raw = _run(ctx, groups_core.fetch_groups(login))
     g = groups_core.find_group(raw, name_or_id)
     if not g:
         _abort(f"no group matching {name_or_id!r}")
@@ -371,7 +468,7 @@ def _find_group_or_abort(ctx, login, name_or_id):
 def groups_list(ctx):
     """List Alexa smart-home device-groups (name, id, member count/names)."""
     login = _login(ctx)
-    emit(ctx, session_core.run_async(groups_core.list_groups(login)))
+    emit(ctx, _run(ctx, groups_core.list_groups(login)))
 
 
 @groups.command("create")
@@ -392,7 +489,7 @@ def groups_create(ctx, name, entities, endpoints, yes):
                    "memberDeviceIds": member_ids,
                    "hint": "re-run with --yes to execute"})
         return
-    emit(ctx, session_core.run_async(
+    emit(ctx, _run(ctx, 
         groups_core.create_group(login, name, member_ids)))
 
 
@@ -407,7 +504,7 @@ def _groups_member_update(ctx, group, entities, endpoints, operation, yes):
                    "operation": operation, "memberDeviceIds": member_ids,
                    "hint": "re-run with --yes to execute"})
         return
-    emit(ctx, session_core.run_async(
+    emit(ctx, _run(ctx, 
         groups_core.update_group(login, gid, member_ids, operation)))
 
 
@@ -463,7 +560,7 @@ def groups_delete(ctx, group, yes):
                    "deviceGroupId": gid,
                    "hint": "re-run with --yes to execute"})
         return
-    emit(ctx, session_core.run_async(groups_core.delete_group(login, gid)))
+    emit(ctx, _run(ctx, groups_core.delete_group(login, gid)))
 
 
 # ──────────────────────────────────────────────────────── routines
@@ -477,7 +574,7 @@ def routines():
 @click.pass_context
 def routines_list(ctx):
     login = _login(ctx)
-    emit(ctx, session_core.run_async(routines_core.list_routines(login)))
+    emit(ctx, _run(ctx, routines_core.list_routines(login)))
 
 
 @routines.command("run")
@@ -493,7 +590,7 @@ def routines_run(ctx, name_or_id, yes):
                    "hint": "re-run with --yes to execute"})
         return
     try:
-        emit(ctx, session_core.run_async(routines_core.run_routine(login, name_or_id)))
+        emit(ctx, _run(ctx, routines_core.run_routine(login, name_or_id)))
     except ValueError as exc:
         _abort(str(exc))
 
@@ -509,7 +606,7 @@ def notifications():
 @click.pass_context
 def notifications_list(ctx):
     login = _login(ctx)
-    emit(ctx, session_core.run_async(notifications_core.list_notifications(login)))
+    emit(ctx, _run(ctx, notifications_core.list_notifications(login)))
 
 
 @notifications.command("add-reminder")
@@ -524,7 +621,7 @@ def notifications_list(ctx):
 def notifications_add_reminder(ctx, label, device, in_seconds, at_epoch_ms, yes):
     """Create a reminder on a device."""
     login = _login(ctx)
-    raw = session_core.run_async(devices_meta_core.fetch_devices(login))
+    raw = _run(ctx, devices_meta_core.fetch_devices(login))
     d = devices_meta_core.find_device(raw, device)
     if not d:
         _abort(f"no device matching {device!r}")
@@ -536,7 +633,7 @@ def notifications_add_reminder(ctx, label, device, in_seconds, at_epoch_ms, yes)
         emit(ctx, {"dry_run": True, "payload": payload,
                    "hint": "re-run with --yes to execute"})
         return
-    emit(ctx, session_core.run_async(
+    emit(ctx, _run(ctx, 
         notifications_core.create_notification(login, payload)))
 
 
@@ -550,7 +647,7 @@ def notifications_add_reminder(ctx, label, device, in_seconds, at_epoch_ms, yes)
 def notifications_add_alarm(ctx, device, in_seconds, at_epoch_ms, label, yes):
     """Create an alarm on a device."""
     login = _login(ctx)
-    raw = session_core.run_async(devices_meta_core.fetch_devices(login))
+    raw = _run(ctx, devices_meta_core.fetch_devices(login))
     d = devices_meta_core.find_device(raw, device)
     if not d:
         _abort(f"no device matching {device!r}")
@@ -562,7 +659,7 @@ def notifications_add_alarm(ctx, device, in_seconds, at_epoch_ms, label, yes):
         emit(ctx, {"dry_run": True, "payload": payload,
                    "hint": "re-run with --yes to execute"})
         return
-    emit(ctx, session_core.run_async(
+    emit(ctx, _run(ctx, 
         notifications_core.create_notification(login, payload)))
 
 
@@ -576,7 +673,7 @@ def notifications_add_alarm(ctx, device, in_seconds, at_epoch_ms, label, yes):
 def notifications_add_timer(ctx, device, duration_seconds, label, yes):
     """Create a timer on a device."""
     login = _login(ctx)
-    raw = session_core.run_async(devices_meta_core.fetch_devices(login))
+    raw = _run(ctx, devices_meta_core.fetch_devices(login))
     d = devices_meta_core.find_device(raw, device)
     if not d:
         _abort(f"no device matching {device!r}")
@@ -587,7 +684,7 @@ def notifications_add_timer(ctx, device, duration_seconds, label, yes):
         emit(ctx, {"dry_run": True, "payload": payload,
                    "hint": "re-run with --yes to execute"})
         return
-    emit(ctx, session_core.run_async(
+    emit(ctx, _run(ctx, 
         notifications_core.create_notification(login, payload)))
 
 
@@ -602,7 +699,7 @@ def notifications_delete(ctx, notification_id, yes):
         emit(ctx, {"dry_run": True, "would_delete": notification_id,
                    "hint": "re-run with --yes to execute"})
         return
-    emit(ctx, session_core.run_async(
+    emit(ctx, _run(ctx, 
         notifications_core.delete_notification(login, notification_id)))
 
 
@@ -623,7 +720,7 @@ def announce_cmd(ctx, text, device, yes):
                    "hint": "re-run with --yes to execute"})
         return
     try:
-        emit(ctx, session_core.run_async(control_core.announce(login, text, device)))
+        emit(ctx, _run(ctx, control_core.announce(login, text, device)))
     except ValueError as exc:
         _abort(str(exc))
 
@@ -641,7 +738,7 @@ def dnd_cmd(ctx, device, state, yes):
                    "hint": "re-run with --yes to execute"})
         return
     try:
-        emit(ctx, session_core.run_async(
+        emit(ctx, _run(ctx, 
             control_core.set_dnd(login, device, state == "on")))
     except ValueError as exc:
         _abort(str(exc))

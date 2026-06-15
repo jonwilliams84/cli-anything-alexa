@@ -13,8 +13,11 @@ orphans), **groups**, **routines**, **alarms/timers/reminders**, plus
 > **Unofficial API caveat.** Amazon publishes no official Alexa device-management
 > API. This drives the private web endpoints the app uses. They can change or
 > break without notice, and aggressive use may trip Amazon's bot defences.
-> Auth reuses an existing cookie session (no credentials stored beyond the
-> cookie pickle). Mutating commands are dry-run-by-default and require `--yes`.
+> No credentials are stored — only a local session cookie. Mutating commands
+> are dry-run-by-default and require `--yes`.
+
+It pairs naturally with `cli-anything-homeassistant` if you expose HA entities
+to Alexa.
 
 ## Install
 
@@ -22,20 +25,51 @@ orphans), **groups**, **routines**, **alarms/timers/reminders**, plus
 pip install -e .            # exposes the `cli-anything-alexa` console script
 ```
 
-Requires Python **3.10+** for the CLI itself. **Live calls additionally need
-Python 3.14+** at runtime: the saved cookie pickle carries the `partitioned`
-cookie attribute that only `http.cookies.Morsel` on Python 3.14+ understands
-(older Pythons raise `KeyError: 'partitioned'` when `alexapy` reads the
-cookie). The Home Assistant container ships a compatible Python — running
-there, or under a 3.14 venv, is the supported path.
+Requires **Python 3.10+**. A fresh login (proxy or scripted) saves the cookie
+on *your* Python and reads it back on the same Python, so 3.10+ is enough.
+Python **3.14** is needed **only** to `import-pickle` a cookie written on
+Python 3.14 (e.g. Home Assistant's): that cookie's `partitioned` attribute is
+unpicklable on older interpreters (`CookieError: Invalid attribute
+'partitioned'`). It never affects a login you performed yourself.
 
 ## Auth
 
-There are two ways to get an authenticated session. Both avoid per-call MFA.
+### 1. Guided browser login — `auth login` (recommended, no HA)
 
-### (a) Reuse Home Assistant's cookie (recommended)
+The default flow needs no Home Assistant and handles captcha / 2FA natively
+because you complete Amazon's own login pages in a browser. A tiny local web
+proxy (alexapy's `AlexaProxy`, the same mechanism HA's `alexa_media` config
+flow uses) captures the session and saves the cookie.
 
-If you already run the `alexa_media_player` HA integration, import its cookie:
+```bash
+cli-anything-alexa auth login
+# prompts for email + region, prints a local URL to open in a browser,
+# then waits for you to finish signing in to Amazon.
+```
+
+- Open the printed URL in a browser **on the same machine** (the proxy binds
+  `127.0.0.1` by default). On a headless box, SSH-tunnel the port
+  (`ssh -L 3001:127.0.0.1:3001 host`) or pass `--host 0.0.0.0` and open
+  `http://<host>:3001` from your laptop.
+- Flags: `--email`, `--url <region>`, `--host`, `--port` (default `3001`),
+  `--timeout`.
+
+### 2. Scripted login (headless / CI) — `auth login --password ...`
+
+```bash
+cli-anything-alexa auth login --email you@example.com --password 'secret'
+# fully non-interactive (TOTP base32 for 2FA):
+cli-anything-alexa auth login --email you@example.com \
+  --password 'secret' --otp-secret 'JBSWY3DPEHPK3PXP'
+```
+
+Passing `--password` selects the scripted path. Amazon often captcha-blocks it;
+when it does, the command points you back at the proxy flow.
+
+### 3. Reuse Home Assistant's cookie — `auth import-pickle` (convenience)
+
+If you already run the HA `alexa_media` integration, reuse its cookie instead of
+logging in again:
 
 ```bash
 cli-anything-alexa --email you@example.com config save
@@ -44,22 +78,13 @@ cli-anything-alexa auth import-pickle \
 cli-anything-alexa auth status            # -> {"email": ..., "logged_in": true}
 ```
 
-`import-pickle` copies the pickle into `~/.config/cli-anything-alexa/` under
-the `alexa_media.<email>.pickle` name `alexapy` expects, then validates it.
-
-### (b) Fresh login
-
-```bash
-cli-anything-alexa auth login --email you@example.com
-# prompts for password, then OTP/2FA if required
-```
-
-Amazon often gates fresh logins behind a captcha — importing HA's cookie is the
-reliable route when available.
+`import-pickle` copies the pickle into `~/.config/cli-anything-alexa/` under the
+`alexa_media.<email>.pickle` name `alexapy` expects, then validates it. (See the
+[Install](#install) note about Python 3.14 if HA's pickle won't load.)
 
 The account **region** matters: a `amazon.co.uk` account uses base
 `https://alexa.amazon.co.uk`. Set it with `--url amazon.co.uk` (the default) or
-`--url amazon.com`, and persist via `config save`.
+`--url amazon.com`, and persist via `auth login` / `config save`.
 
 ## Commands
 
@@ -67,8 +92,8 @@ Every command supports a global `--json` flag for machine-readable output.
 
 | Command | Description |
 | --- | --- |
+| `auth login` | **Guided browser login** (default). `--password`/`--otp-secret` for scripted/CI. |
 | `auth import-pickle <path>` | Import an existing alexapy cookie (e.g. HA's) into the local config dir |
-| `auth login` | Fresh email/password/OTP login, persisting the cookie |
 | `auth status` | Validate the saved cookie (`test_loggedin`) |
 | `config show` / `config save` | Show / persist the connection profile (email + region) |
 | `devices list [--ha-only]` | List smart-home appliances (each HA appliance shows its mapped entity id) |

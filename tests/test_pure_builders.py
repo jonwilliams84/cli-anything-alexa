@@ -232,3 +232,22 @@ def test_import_pickle_missing_raises(tmp_path):
     with pytest.raises(session.AlexaSessionError):
         session.import_pickle(tmp_path / "nope.pickle", "a@b.com",
                               config_dir=tmp_path / "cfg")
+
+
+def test_proxy_access_url_loopback():
+    assert session.proxy_access_url("127.0.0.1", 3001) == "http://127.0.0.1:3001"
+    assert session.proxy_access_url("127.0.0.1", session.DEFAULT_PROXY_PORT) == \
+        f"http://127.0.0.1:{session.DEFAULT_PROXY_PORT}"
+
+
+def test_proxy_access_url_wildcard_shows_loopback():
+    # 0.0.0.0 binds all interfaces but isn't itself browsable — surface the
+    # clickable loopback in the printed URL.
+    assert session.proxy_access_url("0.0.0.0", 8080) == "http://127.0.0.1:8080"
+    assert session.proxy_access_url("", 8080) == "http://127.0.0.1:8080"
+
+
+def test_proxy_access_url_explicit_host_kept():
+    assert session.proxy_access_url("192.168.1.5", 3001) == "http://192.168.1.5:3001"
+    # port coerced to int
+    assert session.proxy_access_url("10.0.0.2", "5000") == "http://10.0.0.2:5000"

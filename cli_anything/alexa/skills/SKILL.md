@@ -1,6 +1,6 @@
 ---
 name: cli-anything-alexa
-description: Manage Amazon Alexa from the shell — smart-home appliances (list/prune/delete), groups, routines, alarms/timers/reminders, announce, and do-not-disturb — over the unofficial Alexa web API via alexapy. Reuses an existing cookie session (e.g. Home Assistant's alexa_media pickle) so there's no per-call MFA. Use when an agent needs to inspect or tidy what Alexa knows without the app.
+description: Manage Amazon Alexa from the shell — smart-home appliances (list/prune/delete), groups, routines, alarms/timers/reminders, announce, and do-not-disturb — over the unofficial Alexa web API via alexapy. Logs in via a browser-proxy flow (no Home Assistant needed; captcha/2FA handled by Amazon's own pages) and caches a local cookie so there's no per-call MFA. Use when an agent needs to inspect or tidy what Alexa knows without the app.
 ---
 
 # cli-anything-alexa
@@ -10,15 +10,20 @@ Every command takes `--json`.
 
 ## Setup / auth
 - Region matters: `--url amazon.co.uk` (default) or `amazon.com`.
-- Reuse Home Assistant's cookie (no MFA):
+- **Browser-proxy login (primary, no HA):**
   ```
-  cli-anything-alexa --email you@x.com config save
-  cli-anything-alexa auth import-pickle /config/.storage/alexa_media.you@x.com.pickle --email you@x.com
-  cli-anything-alexa auth status        # logged_in: true
+  cli-anything-alexa auth login        # prints a local URL; open it, sign in to Amazon
+  cli-anything-alexa auth status       # logged_in: true
   ```
-- Or `auth login --email you@x.com` (password + OTP; captcha-prone).
-- **Live calls need Python 3.14+** (cookie `partitioned` attr `KeyError`s on ≤3.13).
-  The Home Assistant container's Python works.
+  Captcha/2FA are handled on Amazon's own pages. From a headless box, add
+  `--host 0.0.0.0` (or SSH-tunnel the port, default 3001).
+- **Headless/CI:** `auth login --email you@x.com --password ... [--otp-secret <base32 TOTP>]`
+  (scripted; Amazon may captcha-block — fall back to the proxy flow).
+- **Reuse HA's cookie (convenience):**
+  `auth import-pickle /config/.storage/alexa_media.you@x.com.pickle --email you@x.com`.
+- **Python 3.10+** is enough for a fresh login. **3.14 is needed only to
+  `import-pickle` a 3.14-written pickle** (HA's): the cookie `partitioned` attr
+  is unpicklable on ≤3.13. A login you perform yourself is unaffected.
 
 ## Commands
 - `devices list [--ha-only]` — appliances; HA-sourced rows show `entity_id`.
