@@ -136,17 +136,20 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `auth import-pickle <path>` | Import an existing alexapy cookie (e.g. HA's) into the local config dir |
 | `auth status` | Validate the saved cookie (`test_loggedin`) |
 | `config show` / `config save` | Show / persist the connection profile (email + region) |
-| `devices list [--ha-only]` | List smart-home appliances (each HA appliance shows its mapped entity id) |
+| `devices list [--ha-only \| --native-only] [--manufacturer <substr>]` | List smart-home devices with manufacturer + native-vs-HA `source` marker (each HA device shows its mapped entity id) |
 | `devices prune --whitelist <file>` | Delete HA-sourced appliances whose entity isn't whitelisted (dry-run default; `--no-dry-run --yes` to execute) |
-| `devices delete <applianceId...>` | Delete appliances by id (`--yes` to execute) |
+| `devices delete [<applianceId...>] [--entity <ha.id>] [--name "<display>"]` | Delete appliances by id, HA entity, or Alexa display name (`--yes` to execute) |
+| `devices rename <target> <new-name>` | Rename a device — target = applianceId / endpoint id / display name (`--yes` to execute) |
+| `devices duplicates` | Detect devices exposed twice (native + HA twin, or any shared display name) |
+| `discover` | Trigger Alexa smart-home device discovery (`--yes` to execute) |
 | `echos list` | List the physical Echo devices on the account |
 | `groups list` | List Alexa smart-home device-groups (rooms): name, id, member count/names |
 | `groups create <name> [--entity ... \| --endpoint ...]` | Create a device-group with the given members (`--yes` to execute) |
-| `groups add <group> [--entity ... \| --endpoint ...]` | Add members to a group by name/id (`--yes`) |
-| `groups remove <group> [--entity ... \| --endpoint ...]` | Remove members from a group by name/id (`--yes`) |
-| `groups set <group> [--entity ... \| --endpoint ...]` | Replace a group's entire member set (`--yes`) |
+| `groups add <group> [--entity ... \| --endpoint ... \| --device ...]` | Add members to a group by name/id (`--yes`) |
+| `groups remove <group> [--entity ... \| --endpoint ... \| --device ...]` | Remove members from a group by name/id (`--yes`) |
+| `groups set <group> [--entity ... \| --endpoint ... \| --device ...]` | Replace a group's entire member set (`--yes`) |
 | `groups delete <group>` | Delete a device-group by name/id (`--yes` to execute) |
-| `routines list` | List Alexa routines (behaviors) |
+| `routines list` | List Alexa routines (behaviors) with trigger utterance + action-target summary |
 | `routines run <name\|id>` | Trigger a routine via `behaviors/preview` (`--yes` to execute) |
 | `notifications list` | List alarms / timers / reminders |
 | `notifications add-reminder <label> --device ... [--in N \| --at MS]` | Create a reminder (`--yes` to execute) |
@@ -177,16 +180,19 @@ Hue/Wemo/Tuya appliances are never touched.
 `groups` manages Alexa **device-groups** (the "rooms" / groups you see in the
 app) over the modern **GraphQL** API at `/nexus/v1/graphql` (the legacy
 `/api/phoenix/group` REST endpoint is dead — it hard-401s). Members are
-addressed either by Alexa endpoint id (`amzn1.alexa.endpoint.*`) or, more
-conveniently, by Home Assistant `--entity` id, which is resolved to its
-endpoint via the `endpoints` query (the same `..._<domain>#<object_id>` tail
-parse used for appliances).
+addressed by Alexa endpoint id (`amzn1.alexa.endpoint.*`), by Home Assistant
+`--entity` id (resolved to its endpoint via the `endpoints` query — the same
+`..._<domain>#<object_id>` tail parse used for appliances), or by Alexa display
+name with `--device`. **`--device` is how you target native / non-HA devices**
+(e.g. Tasmota-Wemo plugs) that have no HA entity — it resolves a device by its
+normalized display name; an ambiguous name aborts and lists the matches.
 
 ```bash
 cli-anything-alexa groups list
 cli-anything-alexa groups create "Den" --entity light.den_lamp --entity media_player.den_tv   # preview
 cli-anything-alexa groups create "Den" --entity light.den_lamp --yes                           # execute
-cli-anything-alexa groups add "Den" --entity switch.den_fan --yes      # ADD delta
+cli-anything-alexa groups add "Den" --entity switch.den_fan --yes      # ADD delta (HA entity)
+cli-anything-alexa groups add "Den" --device "Lounge Plug" --yes      # ADD a native (non-HA) device by name
 cli-anything-alexa groups remove "Den" --entity light.den_lamp --yes   # REMOVE delta
 cli-anything-alexa groups set "Den" --entity light.den_lamp --yes      # REPLACE whole member set
 cli-anything-alexa groups delete "Den" --yes
@@ -202,6 +208,46 @@ insensitive). Two API gotchas are handled internally and worth knowing:
 - **`create` must not send `associatedUnitIds`** — doing so triggers
   `BAD_REQUEST`. Alexa auto-associates the unit from the member devices, so
   create takes `friendlyName` + `memberDeviceIds` only.
+
+### Renaming, duplicates & discovery
+
+```bash
+cli-anything-alexa devices rename "Lounge Twigs" "Lounge Lights"        # preview
+cli-anything-alexa devices rename light.kitchen_big "Kitchen Spots" --yes
+cli-anything-alexa devices duplicates                                  # find double-exposed devices
+cli-anything-alexa devices delete --name "Old Plug" --yes             # or --entity / positional applianceId
+cli-anything-alexa discover --yes                                      # trigger a device-discovery sweep
+```
+
+- **`devices rename <target> <new-name>`** renames via the GraphQL
+  `setEndpointFriendlyName` mutation. `<target>` resolves in precedence order:
+  exact applianceId → exact endpoint id → exact display name → normalized
+  (case/space/punctuation-insensitive) display name. **If the target matches
+  more than one device** (a native appliance and its Home Assistant twin can
+  share a name) the command **aborts and lists the matches** so you disambiguate
+  by applianceId or endpoint id.
+- **`devices duplicates`** lists every display name exposed by more than one
+  endpoint, flagging the classic *native + HA twin* (the same physical device
+  surfaced both natively and via the HA bridge). It only reports — you decide
+  which copy to drop, then `devices delete` it.
+- **`devices delete`** still takes positional applianceId(s), and now also
+  `--entity <ha.id>` and `--name "<display>"`, which resolve to the applianceId
+  via the endpoints query (same ambiguity-abort rule as rename).
+- **`discover`** triggers a smart-home discovery sweep
+  (`POST /api/phoenix/discovery`).
+
+### Routines
+
+`routines list` surfaces each routine's trigger utterance and a best-effort
+**action-target** summary (action-node type / operations / SmartHome target id),
+parsed from `/api/behaviors/v2/automations`.
+
+> **Editing an existing routine is Alexa-app-only.** Amazon hard-refuses every
+> API write path for `ROUTINE`-type automations: `updateAutomation` returns
+> *"not supported for automation type: ROUTINE"*, `batchUpdateAutomations`
+> requires an opaque scripted-source blob the read API never returns, and a REST
+> `PUT` 404s. So this CLI can **list** and **trigger** routines, but not edit
+> them — make routine edits in the Alexa app.
 
 ## Whitelist file format
 

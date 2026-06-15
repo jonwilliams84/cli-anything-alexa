@@ -85,3 +85,24 @@ async def delete_appliance(login, appliance_id: str) -> dict[str, Any]:
             "deleted": ok,
             "body": body[:200] if body else "",
         }
+
+
+async def trigger_discovery(login) -> dict[str, Any]:
+    """Trigger Alexa smart-home device discovery.
+
+    Not GraphQL — a raw ``POST /api/phoenix/discovery`` on the web host with the
+    csrf header. Returns ``200 {}`` on success. Adds the required `csrf` header.
+    """
+    url = f"{base_url(login.url)}/api/phoenix/discovery"
+    headers = csrf_header(login)
+    if not headers:
+        raise AlexaSessionError(
+            "no csrf cookie on the session — cannot perform a mutating call"
+        )
+    async with login.session.post(url, headers=headers) as resp:
+        body = await resp.text()
+        return {
+            "discovery": "triggered" if resp.status == 200 else "failed",
+            "status": resp.status,
+            "body": body[:200] if body else "",
+        }

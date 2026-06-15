@@ -20,6 +20,7 @@ from cli_anything.alexa.core import project
 from cli_anything.alexa.core import appliances as appliances_pure
 from cli_anything.alexa.core import devices as devices_core
 from cli_anything.alexa.core import devices_meta as devices_meta_core
+from cli_anything.alexa.core import endpoints as endpoints_core
 from cli_anything.alexa.core import notifications as notifications_core
 from cli_anything.alexa.core import routines as routines_core
 from cli_anything.alexa.core import control as control_core
@@ -328,19 +329,110 @@ def auth_status(ctx):
 
 @cli.group()
 def devices():
-    """Smart-home appliances — list / prune orphans / delete."""
+    """Smart-home appliances — list / prune / delete / rename / duplicates."""
+
+
+def _resolve_one_or_abort(ctx, records, matches, what):
+    """Return the single matched record, or abort.
+
+    0 matches -> "no device matching"; >1 -> ambiguity abort listing the
+    candidates so the user can disambiguate (a native + HA twin can share a
+    name). ``records`` is unused but kept for signature symmetry.
+    """
+    if not matches:
+        _abort(f"no device matching {what!r}")
+    if len(matches) > 1:
+        cands = endpoints_core.ambiguous_matches(matches)
+        if ctx.obj.get("as_json"):
+            click.echo(json.dumps(
+                {"error": "ambiguous", "target": what, "matches": cands},
+                indent=2, default=str, sort_keys=True), err=True)
+        else:
+            click.echo(f"error: {what!r} matches {len(matches)} devices — "
+                       "disambiguate by applianceId or endpoint id:", err=True)
+            click.echo(render_table(cands), err=True)
+        sys.exit(1)
+    return matches[0]
 
 
 @devices.command("list")
 @click.option("--ha-only", is_flag=True, help="Only Home-Assistant-sourced appliances")
+@click.option("--native-only", is_flag=True, help="Only native (non-HA) appliances")
+@click.option("--manufacturer", default=None,
+              help="Filter by manufacturer (case-insensitive substring)")
 @click.pass_context
-def devices_list(ctx, ha_only):
-    """List every smart-home appliance Alexa knows about."""
+def devices_list(ctx, ha_only, native_only, manufacturer):
+    """List every smart-home device Alexa knows about.
+
+    Shows the manufacturer and a native-vs-HA ``source`` marker. ``enabled`` is
+    the endpoint's enablement state (a true online/reachability column is not
+    exposed cleanly by the API, so it is omitted). Filter with --ha-only /
+    --native-only / --manufacturer.
+    """
+    if ha_only and native_only:
+        _abort("--ha-only and --native-only are mutually exclusive")
     login = _login(ctx)
-    rows = _run(ctx, devices_core.list_appliances(login))
+    records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
     if ha_only:
-        rows = [r for r in rows if r.get("ha_sourced")]
+        records = [r for r in records if r.get("ha_sourced")]
+    rows = endpoints_core.device_rows(
+        records, native_only=native_only, manufacturer=manufacturer
+    )
     emit(ctx, rows)
+
+
+@devices.command("rename")
+@click.argument("target")
+@click.argument("new_name")
+@click.option("--yes", is_flag=True, default=False,
+              help="Required to actually rename (guards live mutation)")
+@click.pass_context
+def devices_rename(ctx, target, new_name, yes):
+    """Rename a device. TARGET resolves by applianceId, endpoint id, or name.
+
+    Resolution precedence: exact applianceId -> exact endpoint id -> exact
+    display name -> normalized/case-insensitive display name. If TARGET matches
+    more than one device (a native + HA twin can share a name) the command
+    aborts and lists the matches so you can disambiguate. Dry-run unless --yes.
+    """
+    login = _login(ctx)
+    records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
+    matches = endpoints_core.resolve_target(records, target)
+    rec = _resolve_one_or_abort(ctx, records, matches, target)
+    eid = rec.get("endpointId")
+    if not eid:
+        _abort(f"resolved device for {target!r} has no endpoint id (cannot rename)")
+    if not yes:
+        emit(ctx, {"dry_run": True, "would_rename": rec.get("name"),
+                   "to": new_name, "endpointId": eid,
+                   "applianceId": rec.get("applianceId"),
+                   "hint": "re-run with --yes to execute"})
+        return
+    emit(ctx, _run(ctx, endpoints_core.rename_endpoint(login, eid, new_name)))
+
+
+@devices.command("duplicates")
+@click.pass_context
+def devices_duplicates(ctx):
+    """Detect devices exposed twice (native + HA twin, or any shared name).
+
+    Lists each display name shared by more than one endpoint, flagging the
+    classic native+HA twin. Nothing is deleted — it's for a human to decide
+    which copy to drop (then `devices delete`).
+    """
+    login = _login(ctx)
+    records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
+    dups = endpoints_core.find_duplicates(records)
+    if ctx.obj.get("as_json"):
+        emit(ctx, dups)
+        return
+    if not dups:
+        click.echo("no duplicate device names found")
+        return
+    for d in dups:
+        tag = " [native+HA twin]" if d.get("native_plus_ha") else ""
+        click.echo(f"\n{d['name']}  (x{d['count']}){tag}")
+        click.echo(render_table(d["endpoints"]))
 
 
 @devices.command("prune")
@@ -392,25 +484,62 @@ def devices_prune(ctx, whitelist_file, dry_run, yes):
 
 
 @devices.command("delete")
-@click.argument("appliance_ids", nargs=-1, required=True)
+@click.argument("appliance_ids", nargs=-1)
+@click.option("--entity", "entity", default=None,
+              help="Resolve the appliance to delete by HA entity id (ha.entity_id)")
+@click.option("--name", "name", default=None,
+              help="Resolve the appliance to delete by Alexa display name")
 @click.option("--yes", is_flag=True, default=False,
               help="Required to actually delete (guards live mutation)")
 @click.pass_context
-def devices_delete(ctx, appliance_ids, yes):
-    """Delete one or more appliances by applianceId."""
+def devices_delete(ctx, appliance_ids, entity, name, yes):
+    """Delete appliances by applianceId, --entity <ha.id>, or --name "<display>".
+
+    Positional applianceId(s) still work. --entity / --name resolve via the
+    endpoints query to the applianceId; if a name matches more than one device
+    (native + HA twin) the command aborts and lists the matches.
+    """
     login = _login(ctx)
+    targets = list(appliance_ids)
+    if entity or name:
+        records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
+        if entity:
+            matches = endpoints_core.resolve_by_entity(records, entity)
+            rec = _resolve_one_or_abort(ctx, records, matches, entity)
+            targets.append(rec.get("applianceId"))
+        if name:
+            matches = endpoints_core.resolve_by_name(records, name)
+            rec = _resolve_one_or_abort(ctx, records, matches, name)
+            targets.append(rec.get("applianceId"))
+    targets = [t for t in targets if t]
+    if not targets:
+        _abort("nothing to delete — pass an applianceId, --entity, or --name")
     if not yes:
         emit(ctx, {
             "dry_run": True,
-            "would_delete": list(appliance_ids),
+            "would_delete": targets,
             "hint": "re-run with --yes to execute",
         })
         return
     results = [
         _run(ctx, devices_core.delete_appliance(login, aid))
-        for aid in appliance_ids
+        for aid in targets
     ]
     emit(ctx, results)
+
+
+@cli.command("discover")
+@click.option("--yes", is_flag=True, default=False,
+              help="Required to actually trigger discovery (guards live mutation)")
+@click.pass_context
+def discover_cmd(ctx, yes):
+    """Trigger Alexa smart-home device discovery (POST /api/phoenix/discovery)."""
+    login = _login(ctx)
+    if not yes:
+        emit(ctx, {"dry_run": True, "would_trigger": "discovery",
+                   "hint": "re-run with --yes to execute"})
+        return
+    emit(ctx, _run(ctx, devices_core.trigger_discovery(login)))
 
 
 # ──────────────────────────────────────────────────────── echo devices
@@ -436,8 +565,14 @@ def groups():
     """Smart-home device-groups / rooms — list / create / add / remove / set / delete."""
 
 
-def _resolve_group_members(ctx, login, entities, endpoints):
-    """Resolve --entity + --endpoint to endpoint ids; abort on any unresolved."""
+def _resolve_group_members(ctx, login, entities, endpoints, devices=()):
+    """Resolve --entity + --endpoint + --device to endpoint ids; abort on errors.
+
+    --device resolves a device by Alexa **display name** (normalized) to its
+    endpoint id — this is how native / non-HA devices (e.g. Tasmota-Wemo plugs)
+    that have no HA entity are targeted. A name matching more than one device
+    aborts and lists the matches.
+    """
     ent_map = {}
     if entities:
         ent_map = _run(ctx, groups_core.fetch_endpoint_map(login))
@@ -449,8 +584,16 @@ def _resolve_group_members(ctx, login, entities, endpoints):
             "could not resolve these entities to Alexa endpoints "
             f"(not exposed to Alexa?): {', '.join(unresolved)}"
         )
+    if devices:
+        records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
+        for name in devices:
+            matches = endpoints_core.resolve_by_name(records, name)
+            rec = _resolve_one_or_abort(ctx, records, matches, name)
+            eid = rec.get("endpointId")
+            if eid and eid not in member_ids:
+                member_ids.append(eid)
     if not member_ids:
-        _abort("no members given — pass at least one --entity or --endpoint")
+        _abort("no members given — pass at least one --entity / --endpoint / --device")
     return member_ids
 
 
@@ -493,12 +636,12 @@ def groups_create(ctx, name, entities, endpoints, yes):
         groups_core.create_group(login, name, member_ids)))
 
 
-def _groups_member_update(ctx, group, entities, endpoints, operation, yes):
+def _groups_member_update(ctx, group, entities, endpoints, operation, yes, devices=()):
     """Shared add/remove/set body: resolve members + updateDeviceGroup."""
     login = _login(ctx)
     g = _find_group_or_abort(ctx, login, group)
     gid = g.get("id")
-    member_ids = _resolve_group_members(ctx, login, entities, endpoints)
+    member_ids = _resolve_group_members(ctx, login, entities, endpoints, devices)
     if not yes:
         emit(ctx, {"dry_run": True, "group": group, "deviceGroupId": gid,
                    "operation": operation, "memberDeviceIds": member_ids,
@@ -513,11 +656,13 @@ def _groups_member_update(ctx, group, entities, endpoints, operation, yes):
 @click.option("--entity", "entities", multiple=True, help="HA entity id (repeatable)")
 @click.option("--endpoint", "endpoints", multiple=True,
               help="Alexa endpoint id (repeatable)")
+@click.option("--device", "devices_", multiple=True,
+              help="Alexa display name — targets native/non-HA devices (repeatable)")
 @click.option("--yes", is_flag=True, default=False, help="Required to execute")
 @click.pass_context
-def groups_add(ctx, group, entities, endpoints, yes):
+def groups_add(ctx, group, entities, endpoints, devices_, yes):
     """Add members to a group (by name or id)."""
-    _groups_member_update(ctx, group, entities, endpoints, "ADD", yes)
+    _groups_member_update(ctx, group, entities, endpoints, "ADD", yes, devices_)
 
 
 @groups.command("remove")
@@ -525,11 +670,13 @@ def groups_add(ctx, group, entities, endpoints, yes):
 @click.option("--entity", "entities", multiple=True, help="HA entity id (repeatable)")
 @click.option("--endpoint", "endpoints", multiple=True,
               help="Alexa endpoint id (repeatable)")
+@click.option("--device", "devices_", multiple=True,
+              help="Alexa display name — targets native/non-HA devices (repeatable)")
 @click.option("--yes", is_flag=True, default=False, help="Required to execute")
 @click.pass_context
-def groups_remove(ctx, group, entities, endpoints, yes):
+def groups_remove(ctx, group, entities, endpoints, devices_, yes):
     """Remove members from a group (by name or id)."""
-    _groups_member_update(ctx, group, entities, endpoints, "REMOVE", yes)
+    _groups_member_update(ctx, group, entities, endpoints, "REMOVE", yes, devices_)
 
 
 @groups.command("set")
@@ -537,11 +684,13 @@ def groups_remove(ctx, group, entities, endpoints, yes):
 @click.option("--entity", "entities", multiple=True, help="HA entity id (repeatable)")
 @click.option("--endpoint", "endpoints", multiple=True,
               help="Alexa endpoint id (repeatable)")
+@click.option("--device", "devices_", multiple=True,
+              help="Alexa display name — targets native/non-HA devices (repeatable)")
 @click.option("--yes", is_flag=True, default=False, help="Required to execute")
 @click.pass_context
-def groups_set(ctx, group, entities, endpoints, yes):
+def groups_set(ctx, group, entities, endpoints, devices_, yes):
     """Replace a group's entire member set (by name or id)."""
-    _groups_member_update(ctx, group, entities, endpoints, "REPLACE", yes)
+    _groups_member_update(ctx, group, entities, endpoints, "REPLACE", yes, devices_)
 
 
 @groups.command("delete")

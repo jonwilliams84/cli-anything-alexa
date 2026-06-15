@@ -15,10 +15,11 @@ is a **browser-proxy login** that needs no Home Assistant.
   - `appliances.py` — **pure** logic: applianceId→entity parsing, whitelist load, prune planning. No deps. Unit-tested.
   - `formatting.py` — **pure** table/cell rendering. Unit-tested.
   - `session.py` — `alexapy.AlexaLogin` wrapper: **proxy browser login** (`proxy_login`, the primary `auth login` path — starts `AlexaProxy`, prints the access URL, polls `test_loggedin`, `finalize_login` → cookie + chmod 0600, always `stop_proxy`), scripted login (`fresh_login`, headless/CI fallback, TOTP via `set_totp`), cookie import, load/validate, csrf header, `proxy_access_url` (pure). `alexapy` imported lazily so the CLI loads without it.
-  - `devices.py` — appliance list + raw `DELETE /api/phoenix/appliance/<id>`.
+  - `devices.py` — appliance list + raw `DELETE /api/phoenix/appliance/<id>` + raw `POST /api/phoenix/discovery` (discover).
+  - `endpoints.py` — **canonical `endpoints` GraphQL query** (id + applianceId + manufacturer + display name + enablement) and all the pure resolution it powers: target resolution (applianceId→endpoint-id→exact-name→normalized-name, ambiguity-aware), entity/name resolvers, duplicate detection, `device_rows` filtering, and `setEndpointFriendlyName` (rename) variables builder. Network via `_static_request`; pure logic unit-tested.
   - `devices_meta.py` — physical Echo devices (announce/dnd/routine targets).
   - `notifications.py` — alarms/timers/reminders: list + pure payload builders + POST/PUT/DELETE.
-  - `routines.py` — behaviors list + trigger (device-bound `run_routine`).
+  - `routines.py` — behaviors list (with trigger utterance + best-effort `action_targets` summary) + trigger (device-bound `run_routine`). **Routine EDITS are not API-supported — Alexa-app-only** (see note below).
   - `control.py` — announce + dnd.
   - `groups.py` — device-groups (rooms) over **GraphQL** `/nexus/v1/graphql`: list/create/add/remove/set/delete. Pure variables-builders + name-normalize/lookup + entity→endpoint resolution are unit-tested; network goes via `AlexaAPI._static_request`.
   - `project.py` — local profile (`~/.config/cli-anything-alexa/config.json`).
@@ -74,8 +75,39 @@ cli-anything-alexa devices list --json
   list and the server **silently no-ops**. (2) Never send `associatedUnitIds` on
   **create** (BAD_REQUEST) — Alexa auto-associates the unit; create = friendlyName +
   memberDeviceIds only. Update uses `memberDeviceIdsUpdateOperation` ADD/REMOVE/REPLACE.
+- **Canonical `endpoints` query = one source of truth** (in `endpoints.py`). It
+  ties a device's three ids together: GraphQL **endpoint id** (`amzn1.alexa.endpoint.*`,
+  used by groups + rename), **applianceId** (`legacyAppliance.applianceId`, used by
+  phoenix DELETE; HA tail `_<domain>#<object_id>` decodes via `parse_entity_id`),
+  and **display name** (`friendlyNameObject.value.text`). `manufacturerName=="Home
+  Assistant"` ⇒ HA-sourced; anything else (Belkin/Tuya/…) is native (no HA entity →
+  target it by display name).
+- **Target resolution + ambiguity (rename / delete / groups --device).**
+  `resolve_target` precedence: exact applianceId → exact endpoint id → exact
+  display name → normalized display name. **A native + HA twin can share a name →
+  >1 match → ABORT and list candidates** so the user disambiguates by id. The CLI
+  helper `_resolve_one_or_abort` enforces this everywhere a name can resolve.
+- **Rename = GraphQL `setEndpointFriendlyName`** (`input:{endpointId, friendlyName}`),
+  by endpoint id (NOT applianceId). **Discover = raw `POST /api/phoenix/discovery`**
+  (not GraphQL) on the web host with the csrf header → `200 {}`. Both dry-run+`--yes`.
+- **Reachability column SKIPPED (deliberate).** The `Endpoint` GraphQL type has
+  `connections` / `endpointReports` / `enablement`. Only `enablement` introspected
+  as a clean, consistently-present scalar enum (ENABLED/…), so `devices list`
+  surfaces it as `enabled`; `connections`/`endpointReports` nested shapes were NOT
+  consistently available on the live account, so a true online/reachability column
+  was omitted rather than ship a flaky one.
+- **Routine EDITS are not API-supported — Alexa-app-only.** Amazon hard-refuses:
+  `updateAutomation` → "not supported for automation type: ROUTINE";
+  `batchUpdateAutomations` needs an opaque scripted-source blob the read API won't
+  return; REST `PUT` 404s. `routines list`/`run` work (list now includes a
+  best-effort action-target summary); there is intentionally NO edit mutation.
 
 ## Verified
 Live read-only validation (2026-06-15, amazon.co.uk account, HA cookie reused):
-`auth status` → logged_in=true; `devices list` → 178 appliances / 108 HA-sourced,
-entity mapping correct. No mutations were executed — they are built but user-gated.
+`auth status` → logged_in=true; the canonical `endpoints` query → 161 endpoints /
+91 HA-sourced / 70 native. Resolvers proven against real data: `resolve_by_entity`
+(`light.kitchen_big`→endpoint), `resolve_target` by endpoint id + applianceId,
+`resolve_by_name` of a **native** plug (`JNG-PLUG-1`), `find_duplicates` → 9 clusters
+incl. native+HA twins (`Patio Light 1/5`), `device_rows` filters (70 native-only,
+13 Tuya), `enablement` consistently ENABLED. **No mutations executed** —
+rename/delete/discover/group-writes are built but user-gated (`--yes`).

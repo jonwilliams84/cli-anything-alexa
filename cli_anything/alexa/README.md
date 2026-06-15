@@ -96,17 +96,20 @@ Every command supports a global `--json` flag for machine-readable output.
 | `auth import-pickle <path>` | Import an existing alexapy cookie (e.g. HA's) into the local config dir |
 | `auth status` | Validate the saved cookie (`test_loggedin`) |
 | `config show` / `config save` | Show / persist the connection profile (email + region) |
-| `devices list [--ha-only]` | List smart-home appliances (each HA appliance shows its mapped entity id) |
+| `devices list [--ha-only \| --native-only] [--manufacturer <substr>]` | List smart-home devices with manufacturer + native-vs-HA `source` marker (each HA device shows its mapped entity id) |
 | `devices prune --whitelist <file>` | Delete HA-sourced appliances whose entity isn't whitelisted (dry-run default; `--no-dry-run --yes` to execute) |
-| `devices delete <applianceId...>` | Delete appliances by id (`--yes` to execute) |
+| `devices delete [<applianceId...>] [--entity <ha.id>] [--name "<display>"]` | Delete appliances by id, HA entity, or display name (`--yes` to execute) |
+| `devices rename <target> <new-name>` | Rename a device — target = applianceId / endpoint id / display name (`--yes` to execute) |
+| `devices duplicates` | Detect devices exposed twice (native + HA twin, or any shared display name) |
+| `discover` | Trigger Alexa smart-home device discovery (`--yes` to execute) |
 | `echos list` | List the physical Echo devices on the account |
 | `groups list` | List Alexa smart-home device-groups (rooms): name, id, member count/names |
 | `groups create <name> [--entity ... \| --endpoint ...]` | Create a device-group with the given members (`--yes` to execute) |
-| `groups add <group> [--entity ... \| --endpoint ...]` | Add members to a group by name/id (`--yes`) |
-| `groups remove <group> [--entity ... \| --endpoint ...]` | Remove members from a group by name/id (`--yes`) |
-| `groups set <group> [--entity ... \| --endpoint ...]` | Replace a group's entire member set (`--yes`) |
+| `groups add <group> [--entity ... \| --endpoint ... \| --device ...]` | Add members to a group by name/id (`--yes`) |
+| `groups remove <group> [--entity ... \| --endpoint ... \| --device ...]` | Remove members from a group by name/id (`--yes`) |
+| `groups set <group> [--entity ... \| --endpoint ... \| --device ...]` | Replace a group's entire member set (`--yes`) |
 | `groups delete <group>` | Delete a device-group by name/id (`--yes` to execute) |
-| `routines list` | List Alexa routines (behaviors) |
+| `routines list` | List Alexa routines (behaviors) with trigger utterance + action-target summary (editing a routine is Alexa-app-only) |
 | `routines run <name\|id>` | Trigger a routine via `behaviors/preview` (`--yes` to execute) |
 | `notifications list` | List alarms / timers / reminders |
 | `notifications add-reminder <label> --device ... [--in N \| --at MS]` | Create a reminder (`--yes` to execute) |
@@ -137,16 +140,19 @@ Hue/Wemo/Tuya appliances are never touched.
 `groups` manages Alexa **device-groups** (the "rooms" / groups you see in the
 app) over the modern **GraphQL** API at `/nexus/v1/graphql` (the legacy
 `/api/phoenix/group` REST endpoint is dead — it hard-401s). Members are
-addressed either by Alexa endpoint id (`amzn1.alexa.endpoint.*`) or, more
-conveniently, by Home Assistant `--entity` id, which is resolved to its
-endpoint via the `endpoints` query (the same `..._<domain>#<object_id>` tail
-parse used for appliances).
+addressed by Alexa endpoint id (`amzn1.alexa.endpoint.*`), by Home Assistant
+`--entity` id (resolved via the `endpoints` query — the same
+`..._<domain>#<object_id>` tail parse used for appliances), or by Alexa display
+name with `--device`. **`--device` targets native / non-HA devices** (e.g.
+Tasmota-Wemo plugs) that have no HA entity; an ambiguous name aborts + lists
+matches.
 
 ```bash
 cli-anything-alexa groups list
 cli-anything-alexa groups create "Den" --entity light.den_lamp --entity media_player.den_tv   # preview
 cli-anything-alexa groups create "Den" --entity light.den_lamp --yes                           # execute
-cli-anything-alexa groups add "Den" --entity switch.den_fan --yes      # ADD delta
+cli-anything-alexa groups add "Den" --entity switch.den_fan --yes      # ADD delta (HA entity)
+cli-anything-alexa groups add "Den" --device "Lounge Plug" --yes      # ADD a native device by name
 cli-anything-alexa groups remove "Den" --entity light.den_lamp --yes   # REMOVE delta
 cli-anything-alexa groups set "Den" --entity light.den_lamp --yes      # REPLACE whole member set
 cli-anything-alexa groups delete "Den" --yes

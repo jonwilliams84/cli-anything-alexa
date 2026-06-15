@@ -26,23 +26,40 @@ Every command takes `--json`.
   is unpicklable on ≤3.13. A login you perform yourself is unaffected.
 
 ## Commands
-- `devices list [--ha-only]` — appliances; HA-sourced rows show `entity_id`.
+- `devices list [--ha-only | --native-only] [--manufacturer <substr>]` — devices
+  with `manufacturer` + native-vs-HA `source` + `enabled`; HA rows show `entity_id`.
+  (No reachability/online column — not exposed cleanly by the API; only the
+  `enablement` enum is, surfaced as `enabled`.)
 - `devices prune --whitelist <file>` — delete HA appliances whose entity isn't
   whitelisted. **Dry-run by default**; add `--no-dry-run --yes` to execute.
   Whitelist = one entity id per line, `#` comments allowed. Native (Hue/Wemo)
   appliances are never touched.
-- `devices delete <applianceId...>` — delete by id (`--yes`).
+- `devices delete [<applianceId...>] [--entity ha.x] [--name "<display>"]` —
+  delete by id, HA entity, or display name (`--yes`). Name resolving to >1 device
+  (native+HA twin) aborts and lists matches.
+- `devices rename <target> <new-name>` (`--yes`) — `setEndpointFriendlyName`.
+  target = applianceId / endpoint id / display name (exact → normalized);
+  ambiguous name aborts + lists candidates.
+- `devices duplicates` — pairs/clusters where a display name is exposed twice
+  (flags native+HA twins). Reports only; you choose which to `devices delete`.
+- `discover` (`--yes`) — trigger a smart-home discovery sweep
+  (`POST /api/phoenix/discovery`).
 - `echos list` — physical Echo devices.
 - `groups list` — smart-home device-groups (rooms): name, id, member count/names.
 - `groups create <name> [--entity ha.x ...] [--endpoint amzn1... ...]` (`--yes`).
-- `groups add|remove|set <group(name|id)> [--entity ...] [--endpoint ...]` (`--yes`) —
-  ADD/REMOVE delta, `set` REPLACEs the whole member set.
+- `groups add|remove|set <group(name|id)> [--entity ...] [--endpoint ...] [--device "<name>"]` (`--yes`) —
+  ADD/REMOVE delta, `set` REPLACEs the whole member set. **`--device` targets
+  native/non-HA devices by display name** (e.g. Tasmota-Wemo plugs with no HA entity).
 - `groups delete <group(name|id)>` (`--yes`).
   Groups use the modern GraphQL `/nexus/v1/graphql` API (the legacy phoenix
   group REST is dead). **Gotchas:** member id lists must be real JSON arrays
   (a lone string silently no-ops); never send `associatedUnitIds` on create
   (BAD_REQUEST — Alexa auto-associates the unit). Both handled internally.
-- `routines list` / `routines run <name|id>` (`--yes`) — trigger via behaviors/preview.
+- `routines list` — routines with trigger utterance + best-effort action-target
+  summary. `routines run <name|id>` (`--yes`) — trigger via behaviors/preview.
+  **Editing an existing routine is NOT API-supported** (Amazon refuses
+  `updateAutomation`/`batchUpdateAutomations`/REST PUT for `ROUTINE` type) —
+  routine edits are **Alexa-app-only**.
 - `notifications list` / `add-reminder` / `add-alarm` / `add-timer` / `delete` (`--yes`).
 - `announce <text> [--device ...]` (`--yes`) — TTS on all/one Echo.
 - `dnd <device> on|off` (`--yes`).

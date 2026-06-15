@@ -72,6 +72,52 @@ def test_find_routine_by_id_name_utterance():
     assert routines.find_routine(autos, "nope") is None
 
 
+def _automation_with_action(target, op="turnOn", node_type="Alexa.SmartHome.Batch"):
+    """A routine whose sequence runs one SmartHome action node (live shape)."""
+    return {
+        "automationId": "a1", "name": "Let there be light", "status": "ENABLED",
+        "triggers": [{"payload": {"utterance": "let there be light"}}],
+        "sequence": {
+            "@type": "com.amazon.alexa.behaviors.model.Sequence",
+            "startNode": {
+                "@type": "com.amazon.alexa.behaviors.model.SerialNode",
+                "nodesToExecute": [
+                    {
+                        "@type": "com.amazon.alexa.behaviors.model.OpaquePayloadOperationNode",
+                        "type": node_type,
+                        "operationPayload": {
+                            "target": target,
+                            "operations": [{"type": op}],
+                        },
+                    }
+                ],
+            },
+        },
+    }
+
+
+def test_action_targets_extracts_type_op_and_target():
+    a = _automation_with_action("2d9100cb-e3b4-4f51-b70e-c1d94a2a59cd")
+    acts = routines.action_targets(a)
+    assert len(acts) == 1
+    assert "Alexa.SmartHome.Batch" in acts[0]
+    assert "turnOn" in acts[0]
+    assert "2d9100cb-e3b4-4f51-b70e-c1d94a2a59cd" in acts[0]
+
+
+def test_action_targets_empty_when_no_sequence():
+    assert routines.action_targets({"name": "x"}) == []
+    assert routines.action_targets({}) == []
+
+
+def test_routine_rows_includes_actions_summary():
+    a = _automation_with_action("tgt-123", op="turnOff")
+    row = routines.routine_rows([a])[0]
+    assert row["utterance"] == "let there be light"
+    assert isinstance(row["actions"], list)
+    assert row["actions"] and "turnOff" in row["actions"][0]
+
+
 # ── devices_meta ───────────────────────────────────────────────────────
 
 def test_device_rows_and_find():
