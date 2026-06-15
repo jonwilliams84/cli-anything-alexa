@@ -242,12 +242,15 @@ cli-anything-alexa discover --yes                                      # trigger
 **action-target** summary (action-node type / operations / SmartHome target id),
 parsed from `/api/behaviors/v2/automations`.
 
-> **Editing an existing routine is Alexa-app-only.** Amazon hard-refuses every
-> API write path for `ROUTINE`-type automations: `updateAutomation` returns
-> *"not supported for automation type: ROUTINE"*, `batchUpdateAutomations`
-> requires an opaque scripted-source blob the read API never returns, and a REST
-> `PUT` 404s. So this CLI can **list** and **trigger** routines, but not edit
-> them — make routine edits in the Alexa app.
+> **Editing an existing routine is brittle and destructive — do it in the Alexa
+> app.** It is not cleanly impossible: `updateAutomation` is rejected (*"not
+> supported for automation type: ROUTINE"*) and a REST `PUT` 404s, but
+> `batchUpdateAutomations` *does* mutate a `ROUTINE` — it needs an opaque
+> scripted-source blob the read API won't return, so a malformed attempt
+> **partially applies** (it can strip the routine's action and leave it
+> action-less), and the `/api/behaviors/v2/automations` read goes **stale** so
+> you can't even trust it to verify. This CLI therefore **list**s and
+> **trigger**s routines but does not edit them.
 
 ## Whitelist file format
 

@@ -109,7 +109,7 @@ Every command supports a global `--json` flag for machine-readable output.
 | `groups remove <group> [--entity ... \| --endpoint ... \| --device ...]` | Remove members from a group by name/id (`--yes`) |
 | `groups set <group> [--entity ... \| --endpoint ... \| --device ...]` | Replace a group's entire member set (`--yes`) |
 | `groups delete <group>` | Delete a device-group by name/id (`--yes` to execute) |
-| `routines list` | List Alexa routines (behaviors) with trigger utterance + action-target summary (editing a routine is Alexa-app-only) |
+| `routines list` | List Alexa routines (behaviors) with trigger utterance + action-target summary (editing a routine is brittle/destructive via API — do it in the app) |
 | `routines run <name\|id>` | Trigger a routine via `behaviors/preview` (`--yes` to execute) |
 | `notifications list` | List alarms / timers / reminders |
 | `notifications add-reminder <label> --device ... [--in N \| --at MS]` | Create a reminder (`--yes` to execute) |

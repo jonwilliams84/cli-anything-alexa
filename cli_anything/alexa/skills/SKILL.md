@@ -57,9 +57,11 @@ Every command takes `--json`.
   (BAD_REQUEST — Alexa auto-associates the unit). Both handled internally.
 - `routines list` — routines with trigger utterance + best-effort action-target
   summary. `routines run <name|id>` (`--yes`) — trigger via behaviors/preview.
-  **Editing an existing routine is NOT API-supported** (Amazon refuses
-  `updateAutomation`/`batchUpdateAutomations`/REST PUT for `ROUTINE` type) —
-  routine edits are **Alexa-app-only**.
+  **Do NOT script edits to an existing routine — brittle + destructive.**
+  `updateAutomation` is refused and REST PUT 404s, but `batchUpdateAutomations`
+  *does* mutate a `ROUTINE` and a malformed attempt partially applies (can strip
+  its action), while the v2 read goes stale (can't verify). Edit routines in the
+  Alexa app.
 - `notifications list` / `add-reminder` / `add-alarm` / `add-timer` / `delete` (`--yes`).
 - `announce <text> [--device ...]` (`--yes`) — TTS on all/one Echo.
 - `dnd <device> on|off` (`--yes`).

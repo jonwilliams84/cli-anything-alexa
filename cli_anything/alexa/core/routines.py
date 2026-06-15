@@ -5,14 +5,18 @@ List via `AlexaAPI.get_automations`; trigger via the device-bound
 `/api/behaviors/preview`). Matching name->routine + trigger/action parsing is
 pure logic.
 
-**Editing an existing ROUTINE is not supported via the API.** Amazon hard-
-refuses every write path: ``updateAutomation`` returns *"not supported for
-automation type: ROUTINE"*; ``batchUpdateAutomations`` requires an opaque
-scripted-source blob that the read API (``/api/behaviors/v2/automations``)
-never returns; and a REST ``PUT`` to the automation 404s. So routine edits are
-**Alexa-app-only**. This module lists routines (with their trigger utterance and
-a best-effort action-target summary) and can *trigger* one — it does not mutate
-them.
+**Editing an existing ROUTINE via the API is brittle and DESTRUCTIVE — this
+CLI deliberately does not offer it.** It is NOT cleanly impossible, but every
+viable path is unsafe: ``updateAutomation`` is rejected (*"not supported for
+automation type: ROUTINE"*) and a REST ``PUT`` 404s, BUT
+``batchUpdateAutomations(ScriptedAutomationInput)`` *does* mutate a ROUTINE —
+it just needs the opaque scripted-source ``settings`` blob that the read API
+won't hand back, so a malformed attempt **partially applies** (observed: it
+stripped a routine's action node and errored on the add, leaving it
+action-less). Worse, the legacy ``/api/behaviors/v2/automations`` read returns
+**stale** state afterwards, so it cannot be trusted to verify the result.
+Net: do routine edits in the Alexa app. This module only *lists* routines
+(trigger utterance + best-effort action summary) and can *trigger* one.
 """
 
 from __future__ import annotations
