@@ -13,7 +13,21 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-CONFIG_DIR = Path.home() / ".config" / "cli-anything-alexa"
+def _config_dir() -> Path:
+    """Profile dir, robust to an unset/"/" ``$HOME`` (containers).
+
+    ``Path.home()`` is unreliable when ``$HOME`` is unset or ``/`` — writes and
+    reads can then disagree. Resolve deterministically: real ``$HOME`` →
+    ``$HOME/.config/cli-anything-alexa``, else a stable ``/tmp`` fallback (the
+    same rule ``session.resolve_config_dir`` uses for the cookie).
+    """
+    home = os.environ.get("HOME")
+    if home and home != "/" and Path(home).is_dir():
+        return Path(home) / ".config" / "cli-anything-alexa"
+    return Path("/tmp/cli-anything-alexa")
+
+
+CONFIG_DIR = _config_dir()
 DEFAULT_CONFIG_PATH = CONFIG_DIR / "config.json"
 
 DEFAULTS: dict[str, Any] = {

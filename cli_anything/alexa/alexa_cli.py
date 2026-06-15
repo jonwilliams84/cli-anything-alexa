@@ -92,7 +92,8 @@ def _login(ctx):
         return session_core.run_async(
             session_core.load_session(
                 email, url=ctx.obj.get("url", "amazon.co.uk"),
-                config_dir=session_core.DEFAULT_CONFIG_DIR,
+                config_dir=ctx.obj.get("cookie_dir", session_core.DEFAULT_CONFIG_DIR),
+                create_dir=not ctx.obj.get("read_in_place", False),
             )
         )
     except session_core.AlexaSessionError as exc:
@@ -129,11 +130,16 @@ def _run(ctx, coro):
 @click.option("--url", default=None, help="Account region host (default amazon.co.uk)")
 @click.option("--config", "config_path", default=None, type=click.Path(),
               help="Profile path (default ~/.config/cli-anything-alexa/config.json)")
+@click.option("--cookie-dir", "cookie_dir", default=None, envvar="CLI_ALEXA_COOKIE_DIR",
+              help="Read/write the cookie at this dir IN PLACE (HA layout: "
+                   "<dir>/.storage/alexa_media.<email>.pickle). Point it at HA's "
+                   "config base (e.g. /config) to reuse HA's LIVE rotating "
+                   "cookie. Env: CLI_ALEXA_COOKIE_DIR.")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit machine-readable JSON output")
 @click.version_option(version=__version__, prog_name="cli-anything-alexa")
 @click.pass_context
-def cli(ctx, email, url, config_path, as_json):
+def cli(ctx, email, url, config_path, cookie_dir, as_json):
     """cli-anything-alexa — Amazon Alexa management over the unofficial web API."""
     ctx.ensure_object(dict)
     cfg_path_obj = Path(config_path).expanduser() if config_path else None
@@ -142,6 +148,12 @@ def cli(ctx, email, url, config_path, as_json):
     ctx.obj.update(cfg)
     ctx.obj["as_json"] = as_json
     ctx.obj["config_path"] = cfg_path_obj
+    # Resolve the cookie/config dir ONCE (flag > env > $HOME > /tmp fallback)
+    # so write (import-pickle) and read (status / live calls) always agree.
+    # read_in_place: when --cookie-dir / env is set we read HA's live cookie at
+    # that location and never create/copy into it.
+    ctx.obj["read_in_place"] = bool(cookie_dir)
+    ctx.obj["cookie_dir"] = session_core.resolve_config_dir(cookie_dir)
     if ctx.invoked_subcommand is None:
         ctx.invoke(repl)
 
@@ -183,14 +195,31 @@ def auth():
 def auth_import_pickle(ctx, pickle_path, email):
     """Import an existing alexapy cookie (e.g. HA's alexa_media.<email>.pickle).
 
-    Copies it into ~/.config/cli-anything-alexa/ under the name alexapy
-    expects, so every later command reuses the session with no MFA.
+    Copies the cookie into the resolved config dir (``--cookie-dir`` > env >
+    $HOME/.config/cli-anything-alexa > /tmp fallback) under the name alexapy
+    expects, so later commands reuse the session with no MFA.
+
+    \b
+    HEADS-UP: this is a one-time SNAPSHOT. If Home Assistant is actively using
+    the same account it rotates the cookie constantly, so the copy goes stale
+    within seconds (auth flips logged_in true->false mid-session). For HA reuse
+    prefer reading HA's LIVE cookie in place:
+      cli-anything-alexa --cookie-dir /config auth status
+    Use import-pickle for a standalone copy you keep fresh via `auth login`.
     """
     em = email or ctx.obj.get("email")
     if not em:
         _abort("need --email or a configured email to name the cookie")
+    if ctx.obj.get("read_in_place"):
+        _abort(
+            "--cookie-dir reads the cookie IN PLACE — copying with "
+            "import-pickle would be pointless (and goes stale). Just run "
+            f"`--cookie-dir {ctx.obj.get('cookie_dir')} auth status` to use "
+            "the live cookie there directly."
+        )
+    config_dir = ctx.obj.get("cookie_dir", session_core.DEFAULT_CONFIG_DIR)
     try:
-        dest = session_core.import_pickle(pickle_path, em)
+        dest = session_core.import_pickle(pickle_path, em, config_dir=config_dir)
     except session_core.AlexaSessionError as exc:
         _abort(str(exc))
     # persist the email into the profile for convenience
@@ -198,7 +227,9 @@ def auth_import_pickle(ctx, pickle_path, email):
     cfg["email"] = em
     project.save_config(cfg, ctx.obj.get("config_path"))
     ok = session_core.run_async(
-        session_core.test_loggedin(em, url=ctx.obj.get("url", "amazon.co.uk"))
+        session_core.test_loggedin(
+            em, url=ctx.obj.get("url", "amazon.co.uk"), config_dir=config_dir
+        )
     )
     emit(ctx, {"imported": str(dest), "email": em, "logged_in": ok})
 
@@ -255,9 +286,11 @@ def auth_login(ctx, email, region, password, otp_secret, host, port, timeout):
             return click.prompt("OTP / 2FA code")
 
         try:
-            _run(ctx, 
+            _run(ctx,
                 session_core.fresh_login(
                     em, password, url=region,
+                    config_dir=ctx.obj.get(
+                        "cookie_dir", session_core.DEFAULT_CONFIG_DIR),
                     otp_secret=otp_secret or "",
                     otp_callback=None if otp_secret else otp_cb,
                 )
@@ -291,7 +324,10 @@ def auth_login(ctx, email, region, password, otp_secret, host, port, timeout):
     try:
         login = session_core.run_async(
             session_core.proxy_login(
-                em, url=region, host=phost, port=pport,
+                em, url=region,
+                config_dir=ctx.obj.get(
+                    "cookie_dir", session_core.DEFAULT_CONFIG_DIR),
+                host=phost, port=pport,
                 timeout=timeout, on_url=on_url,
             )
         )
@@ -318,7 +354,11 @@ def auth_status(ctx):
     """Validate the saved cookie (test_loggedin)."""
     email = _require_email(ctx)
     ok = session_core.run_async(
-        session_core.test_loggedin(email, url=ctx.obj.get("url", "amazon.co.uk"))
+        session_core.test_loggedin(
+            email, url=ctx.obj.get("url", "amazon.co.uk"),
+            config_dir=ctx.obj.get("cookie_dir", session_core.DEFAULT_CONFIG_DIR),
+            create_dir=not ctx.obj.get("read_in_place", False),
+        )
     )
     emit(ctx, {"email": email, "logged_in": ok})
     if not ok:

@@ -87,10 +87,33 @@ cli-anything-alexa auth login --email you@example.com \
 Passing `--password` switches to the scripted path. If Amazon returns a
 captcha, the command tells you to use the proxy flow instead.
 
-### 3. Import an existing Home Assistant cookie — `auth import-pickle`
+### 3. Reuse an existing Home Assistant cookie
 
-A convenience if you already run the HA `alexa_media` integration — reuse its
-cookie instead of logging in again:
+If you already run the HA `alexa_media` integration you can reuse its cookie
+instead of logging in again. **There are two ways, and which you pick matters
+when HA is actively using the same account:**
+
+#### 3a. Read HA's live cookie in place — `--cookie-dir` (recommended for HA reuse)
+
+HA's `alexa_media` integration **rotates the cookie constantly**. So point the
+CLI at HA's config base and it reads the cookie **in place** — always the
+current, just-rotated copy:
+
+```bash
+cli-anything-alexa --email you@example.com --cookie-dir /config auth status
+cli-anything-alexa --email you@example.com --cookie-dir /config devices list
+```
+
+`--cookie-dir <dir>` reads/writes the cookie at `<dir>/.storage/alexa_media.<email>.pickle`
+(HA's own layout), so `--cookie-dir /config` resolves straight to HA's live
+pickle. Nothing is copied, so it never goes stale. Env equivalent:
+`CLI_ALEXA_COOKIE_DIR=/config`. The CLI also auto-recovers the rotation race
+(if the cookie is rewritten between read and use it re-reads and retries, a
+couple of times, without hammering Amazon's login).
+
+#### 3b. Copy a snapshot — `auth import-pickle`
+
+Copies HA's cookie into the CLI's own config dir once:
 
 ```bash
 cli-anything-alexa auth import-pickle \
@@ -98,9 +121,15 @@ cli-anything-alexa auth import-pickle \
 cli-anything-alexa auth status            # -> {"email": ..., "logged_in": true}
 ```
 
-> **Heads-up:** a pickle written by a *newer* Python can't be read by an older
-> one — see [Python version](#python-version). If HA runs Python 3.14, import
-> it on Python 3.14 (or just use the proxy login instead).
+> **Heads-up:** this is a one-time *snapshot*. If HA is actively using the same
+> account, the copy goes **stale within seconds** as HA rotates the cookie, and
+> `auth status` can flip `logged_in: true → false` mid-session. For active HA
+> reuse use `--cookie-dir` (3a); use `import-pickle` only for a standalone copy
+> you then keep fresh with your own `auth login`.
+
+> **Python heads-up:** a pickle written by a *newer* Python can't be read by an
+> older one — see [Python version](#python-version). If HA runs Python 3.14,
+> run the CLI on Python 3.14 (or just use the proxy login instead).
 
 ### Checking / re-authenticating
 
@@ -133,7 +162,7 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | Command | Description |
 | --- | --- |
 | `auth login` | **Guided browser login** (default). `--password`/`--otp-secret` for scripted/CI. |
-| `auth import-pickle <path>` | Import an existing alexapy cookie (e.g. HA's) into the local config dir |
+| `auth import-pickle <path>` | Copy an existing alexapy cookie (e.g. HA's) into the local config dir (snapshot — goes stale if HA keeps rotating it; prefer `--cookie-dir`) |
 | `auth status` | Validate the saved cookie (`test_loggedin`) |
 | `config show` / `config save` | Show / persist the connection profile (email + region) |
 | `devices list [--ha-only \| --native-only] [--manufacturer <substr>]` | List smart-home devices with manufacturer + native-vs-HA `source` marker (each HA device shows its mapped entity id) |
@@ -267,6 +296,15 @@ sensor.master_bedroom_sensor_temperature
 email and region. The cookie pickle sits alongside it as
 `alexa_media.<email>.pickle`. **Neither is ever committed.** Per-key env
 overrides: `CLI_ALEXA_EMAIL`, `CLI_ALEXA_URL`.
+
+**Where the cookie lives** is resolved once, deterministically, by this
+precedence: `--cookie-dir <path>` flag → `CLI_ALEXA_COOKIE_DIR` env →
+`$HOME/.config/cli-anything-alexa` (only when `$HOME` is a real directory) → a
+stable `/tmp/cli-anything-alexa` fallback. The fallback matters in containers
+where `$HOME` is unset or `/`: without it a write (`import-pickle`) and a later
+read (`auth status`) could disagree on the directory. With `--cookie-dir`/env
+set the CLI reads the cookie **in place** at `<dir>/.storage/alexa_media.<email>.pickle`
+(HA's layout) and never copies into it.
 
 ## Gotchas
 

@@ -19,8 +19,23 @@ Every command takes `--json`.
   `--host 0.0.0.0` (or SSH-tunnel the port, default 3001).
 - **Headless/CI:** `auth login --email you@x.com --password ... [--otp-secret <base32 TOTP>]`
   (scripted; Amazon may captcha-block — fall back to the proxy flow).
-- **Reuse HA's cookie (convenience):**
-  `auth import-pickle /config/.storage/alexa_media.you@x.com.pickle --email you@x.com`.
+- **Reuse HA's LIVE cookie (recommended for HA reuse):** HA's `alexa_media`
+  rotates the cookie constantly, so read it IN PLACE rather than copying a
+  snapshot that goes stale within seconds:
+  ```
+  cli-anything-alexa --email you@x.com --cookie-dir /config auth status
+  cli-anything-alexa --email you@x.com --cookie-dir /config devices list --json
+  ```
+  `--cookie-dir <dir>` (env `CLI_ALEXA_COOKIE_DIR`) reads/writes
+  `<dir>/.storage/alexa_media.<email>.pickle` (HA's layout) — `/config` ⇒ HA's
+  live pickle. The CLI auto-recovers the rotation race (re-reads + retries a
+  couple of times, no login storm). Cookie-dir resolves: `--cookie-dir` > env >
+  valid `$HOME/.config/cli-anything-alexa` > `/tmp/cli-anything-alexa` fallback
+  (the fallback keeps write==read when `$HOME` is unset/`/` in containers).
+- **Reuse HA's cookie as a one-off snapshot:**
+  `auth import-pickle /config/.storage/alexa_media.you@x.com.pickle --email you@x.com`
+  — copies once; **goes stale** if HA keeps rotating the cookie. Prefer
+  `--cookie-dir` for active HA reuse.
 - **Python 3.10+** is enough for a fresh login. **3.14 is needed only to
   `import-pickle` a 3.14-written pickle** (HA's): the cookie `partitioned` attr
   is unpicklable on ≤3.13. A login you perform yourself is unaffected.

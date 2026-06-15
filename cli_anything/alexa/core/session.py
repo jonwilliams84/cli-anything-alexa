@@ -42,7 +42,56 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-DEFAULT_CONFIG_DIR = Path.home() / ".config" / "cli-anything-alexa"
+def _default_config_dir() -> Path:
+    """The home-based config dir, computed without trusting ``Path.home()``.
+
+    In containers ``$HOME`` is often unset or ``/`` and ``Path.home()`` then
+    resolves to an unreliable / unwritable location, so a write and a later
+    read can disagree on where the cookie lives (the in-pod ``import-pickle``
+    bug). ``resolve_config_dir`` is the real entry point; this is only the
+    "valid ``$HOME``" branch and the historical default constant.
+    """
+    home = os.environ.get("HOME")
+    if home and home != "/" and Path(home).is_dir():
+        return Path(home) / ".config" / "cli-anything-alexa"
+    # No usable HOME — fall back deterministically (matches resolve_config_dir).
+    return Path("/tmp/cli-anything-alexa")
+
+
+# Stable fallback when $HOME is unset/"/" (containers): a deterministic dir
+# both the writer and reader agree on, so import-pickle + later reads match.
+FALLBACK_CONFIG_DIR = Path("/tmp/cli-anything-alexa")
+
+# Historical name kept for back-compat; resolved once at import using the same
+# rules as ``resolve_config_dir`` (flag/env are layered on per-call below).
+DEFAULT_CONFIG_DIR = _default_config_dir()
+
+
+def resolve_config_dir(cookie_dir: Optional[str | os.PathLike] = None) -> Path:
+    """Resolve the cookie/config dir ONCE, deterministically.
+
+    Precedence (first that yields a value wins):
+
+      1. ``cookie_dir`` argument (the ``--cookie-dir`` flag),
+      2. ``CLI_ALEXA_COOKIE_DIR`` env var,
+      3. ``$HOME/.config/cli-anything-alexa`` — only if ``$HOME`` is a real
+         directory (not unset, not ``"/"``),
+      4. a stable fallback ``/tmp/cli-anything-alexa``.
+
+    Steps 3–4 make write/read agree even when ``$HOME`` is unreliable
+    (containers), so ``import-pickle`` and a later ``auth status`` use the
+    SAME directory. Returns an *expanded* ``Path`` (never created here —
+    callers create the dir they actually write to).
+    """
+    if cookie_dir:
+        return Path(cookie_dir).expanduser()
+    env = os.environ.get("CLI_ALEXA_COOKIE_DIR")
+    if env:
+        return Path(env).expanduser()
+    home = os.environ.get("HOME")
+    if home and home != "/" and Path(home).is_dir():
+        return Path(home) / ".config" / "cli-anything-alexa"
+    return FALLBACK_CONFIG_DIR
 
 # Default loopback host + a known port for the login proxy. 127.0.0.1 keeps
 # the proxy private to the local machine; pass host="0.0.0.0" to reach it
@@ -56,12 +105,23 @@ class AlexaSessionError(RuntimeError):
     """Raised for any auth/session failure."""
 
 
-def run_async(coro):
-    """Run a coroutine to completion, returning its result.
+_LOOP: Optional[asyncio.AbstractEventLoop] = None
 
-    A fresh event loop per invocation keeps the stateless CLI simple.
+
+def run_async(coro):
+    """Run a coroutine to completion on a single persistent event loop.
+
+    The CLI runs several coroutines per command (e.g. ``load_session`` then a
+    live fetch), and the ``AlexaLogin``'s aiohttp session/connector is bound to
+    the loop it was created on. ``asyncio.run`` CLOSES its loop on return, so a
+    second ``asyncio.run`` sharing the same ``login`` raised
+    ``RuntimeError: Event loop is closed``. We instead keep ONE loop alive for
+    the process lifetime so the authed session stays usable across calls.
     """
-    return asyncio.run(coro)
+    global _LOOP
+    if _LOOP is None or _LOOP.is_closed():
+        _LOOP = asyncio.new_event_loop()
+    return _LOOP.run_until_complete(coro)
 
 
 def cookie_filename(email: str) -> str:
@@ -69,21 +129,43 @@ def cookie_filename(email: str) -> str:
     return f"alexa_media.{email}.pickle"
 
 
-def make_outputpath(config_dir: Path):
+def make_outputpath(config_dir: Path, create: bool = True):
     """Return an `outputpath(*p)` callable mimicking `hass.config.path`.
 
-    `alexapy` joins paths onto this; the cookie pickle lands at
-    ``<config_dir>/<cookie_filename>``. We deliberately do NOT add a
-    `.storage` segment (HA does) — our cookie sits directly in the
-    config dir, and `import-pickle` copies HA's file to match.
+    `alexapy` calls this with a single (possibly ``/``-joined) string and
+    builds its cookie search list off it:
+
+      0. ``<config_dir>/.storage/alexa_media.<email>.pickle``  (write target)
+      1. ``<config_dir>/alexa_media.<email>.pickle``
+      2. ``<config_dir>/.storage/alexa_media.<email>.txt``
+
+    So pointing ``config_dir`` at HA's config base (e.g. ``/config``) makes
+    index 0 resolve to HA's LIVE pickle — that's what ``--cookie-dir`` uses to
+    read the cookie IN PLACE (always the just-rotated copy) instead of copying
+    a snapshot that goes stale. Our own ``import-pickle`` copies HA's file to
+    index 1 (the config-dir root) instead, which is also searched.
+
+    ``create=False`` is used for read-in-place ``--cookie-dir`` so we never
+    create or write into a directory we don't own (e.g. HA's ``/config``).
     """
     config_dir = Path(config_dir)
-    config_dir.mkdir(parents=True, exist_ok=True)
+    if create:
+        config_dir.mkdir(parents=True, exist_ok=True)
 
     def outputpath(*parts: str) -> str:
         return str(config_dir.joinpath(*parts))
 
     return outputpath
+
+
+def cookie_path_in_dir(config_dir: Path, email: str) -> Path:
+    """The HA-layout pickle path alexapy reads/writes FIRST under ``config_dir``.
+
+    Mirrors alexapy's ``_cookiefile[0]``:
+    ``<config_dir>/.storage/alexa_media.<email>.pickle``. Pure path math —
+    used by ``--cookie-dir`` (so ``/config`` → HA's live pickle) and tests.
+    """
+    return Path(config_dir) / ".storage" / cookie_filename(email)
 
 
 def import_pickle(src: str | os.PathLike, email: str,
@@ -92,6 +174,13 @@ def import_pickle(src: str | os.PathLike, email: str,
 
     Renames to the ``alexa_media.<email>.pickle`` form `alexapy` expects.
     Returns the destination path. Pure filesystem — no network.
+
+    NOTE: this is a one-time *snapshot*. If Home Assistant is actively using
+    the same account its ``alexa_media`` integration rotates the cookie
+    constantly, so a copied snapshot goes stale within seconds. For HA reuse
+    prefer ``--cookie-dir <ha-config>`` (reads HA's live cookie in place); use
+    ``import-pickle`` only for a standalone copy you then keep fresh via
+    ``auth login``.
     """
     import shutil
 
@@ -124,39 +213,79 @@ def _import_alexapy():
 
 def build_login(email: str, url: str = "amazon.co.uk",
                 config_dir: Path = DEFAULT_CONFIG_DIR,
-                otp_secret: str = ""):
-    """Construct an `AlexaLogin` pointed at our config dir."""
+                otp_secret: str = "",
+                create_dir: bool = True):
+    """Construct an `AlexaLogin` pointed at our config dir.
+
+    ``create_dir=False`` (read-in-place ``--cookie-dir``) avoids creating or
+    writing into a directory we don't own — e.g. HA's ``/config``.
+    """
     AlexaLogin, _ = _import_alexapy()
     return AlexaLogin(
         url,
         email,
         "",  # password supplied later / not needed for cookie reuse
-        make_outputpath(config_dir),
+        make_outputpath(config_dir, create=create_dir),
         otp_secret=otp_secret,
     )
 
 
+# How many times to re-load the cookie from disk + re-test before giving up.
+# HA's alexa_media integration ROTATES the shared pickle constantly, so the
+# copy we just read can be one revision stale by the time we test it. We
+# re-LOAD the file (cheap, no auth) and re-test — we do NOT re-`login()` in a
+# tight loop, because repeated logins throttle Amazon's auth.
+STALE_RELOAD_ATTEMPTS = 3
+STALE_RELOAD_SLEEP = 1.0
+
+
 async def load_session(email: str, url: str = "amazon.co.uk",
-                       config_dir: Path = DEFAULT_CONFIG_DIR):
+                       config_dir: Path = DEFAULT_CONFIG_DIR,
+                       create_dir: bool = True,
+                       reload_attempts: int = STALE_RELOAD_ATTEMPTS,
+                       reload_sleep: float = STALE_RELOAD_SLEEP):
     """Load + validate a saved cookie. Returns a logged-in `AlexaLogin`.
 
-    Raises ``AlexaSessionError`` if no cookie is present or it's stale.
+    Auto-recovers the HA-rotation race: if the first ``test_loggedin`` is
+    False, re-``load_cookie()`` from disk and retry (HA may have rewritten the
+    file between our read and use), bounded to ``reload_attempts`` tries with a
+    short sleep. Bounded on purpose — we re-load the cookie, we do NOT re-login
+    repeatedly (Amazon throttles auth).
+
+    Raises ``AlexaSessionError`` if no cookie is present or it stays stale.
     """
-    login = build_login(email, url=url, config_dir=config_dir)
+    login = build_login(email, url=url, config_dir=config_dir,
+                        create_dir=create_dir)
     try:
         cookies = await login.load_cookie()
         if not cookies:
             raise AlexaSessionError(
                 f"no saved cookie for {email} in {config_dir}. Run "
-                "`cli-anything-alexa auth login` (browser login, no HA needed) "
-                "or `auth import-pickle` to reuse HA's cookie."
+                "`cli-anything-alexa auth login` (browser login, no HA needed), "
+                "`auth import-pickle` to reuse HA's cookie, or point "
+                "`--cookie-dir <ha-config>` at HA's live cookie."
             )
+        # One login() to establish the session, then re-load + re-test on the
+        # rotation race (no second login()).
         await login.login(cookies=cookies)
-        if not await login.test_loggedin(cookies=cookies):
-            raise AlexaSessionError(
-                "saved cookie is no longer valid (logged out / expired). "
-                "Re-authenticate with `cli-anything-alexa auth login`."
-            )
+        attempt = 0
+        while True:
+            if await login.test_loggedin(cookies=cookies):
+                break
+            attempt += 1
+            if attempt >= max(1, reload_attempts):
+                raise AlexaSessionError(
+                    "saved cookie is no longer valid (logged out / expired). "
+                    "If you reuse Home Assistant's cookie, prefer "
+                    "`--cookie-dir <ha-config>` (reads HA's LIVE, just-rotated "
+                    "cookie in place) over a copied `import-pickle` snapshot, "
+                    "or re-authenticate with `cli-anything-alexa auth login`."
+                )
+            if reload_sleep:
+                await asyncio.sleep(float(reload_sleep))
+            reloaded = await login.load_cookie()
+            if reloaded:
+                cookies = reloaded
     except AlexaSessionError:
         # Close the half-open aiohttp session before bubbling up so the CLI
         # doesn't emit an "Unclosed client session" warning on a clean abort.
@@ -169,16 +298,35 @@ async def load_session(email: str, url: str = "amazon.co.uk",
 
 
 async def test_loggedin(email: str, url: str = "amazon.co.uk",
-                        config_dir: Path = DEFAULT_CONFIG_DIR) -> bool:
-    """Return True iff the saved cookie authenticates. Never raises."""
+                        config_dir: Path = DEFAULT_CONFIG_DIR,
+                        create_dir: bool = True,
+                        reload_attempts: int = STALE_RELOAD_ATTEMPTS,
+                        reload_sleep: float = STALE_RELOAD_SLEEP) -> bool:
+    """Return True iff the saved cookie authenticates. Never raises.
+
+    Same HA-rotation auto-recovery as ``load_session``: re-load the cookie
+    from disk and re-test (bounded), without re-logging-in repeatedly.
+    """
     login = None
     try:
-        login = build_login(email, url=url, config_dir=config_dir)
+        login = build_login(email, url=url, config_dir=config_dir,
+                            create_dir=create_dir)
         cookies = await login.load_cookie()
         if not cookies:
             return False
         await login.login(cookies=cookies)
-        return bool(await login.test_loggedin(cookies=cookies))
+        attempt = 0
+        while True:
+            if await login.test_loggedin(cookies=cookies):
+                return True
+            attempt += 1
+            if attempt >= max(1, reload_attempts):
+                return False
+            if reload_sleep:
+                await asyncio.sleep(float(reload_sleep))
+            reloaded = await login.load_cookie()
+            if reloaded:
+                cookies = reloaded
     except Exception:
         return False
     finally:

@@ -47,6 +47,26 @@ cli-anything-alexa devices list --json
   `--password [--otp-secret <base32>]` selects the scripted/headless fallback
   (`fresh_login`, TOTP via `login.set_totp`). `auth import-pickle` (reuse HA's
   `alexa_media` pickle) is a documented convenience, not the default.
+- **HA-cookie reuse: read IN PLACE, don't copy.** HA's `alexa_media` rotates
+  the cookie constantly, so an `import-pickle` *copy* goes stale within seconds
+  (`auth status` flips `logged_in` true→false mid-session). Global `--cookie-dir
+  <path>` (env `CLI_ALEXA_COOKIE_DIR`) points alexapy's `outputpath` at that dir
+  so it reads/writes the cookie **in place** at
+  `<dir>/.storage/alexa_media.<email>.pickle` — HA's exact layout (alexapy's
+  `_cookiefile[0]`). `--cookie-dir /config` ⇒ HA's live pickle. `make_outputpath`
+  takes `create=False` for read-in-place so we never mkdir/write a foreign dir;
+  `cookie_path_in_dir(dir, email)` is the pure path helper.
+- **Cookie/config-dir resolved ONCE** via `session.resolve_config_dir(cookie_dir)`:
+  `--cookie-dir` flag → `CLI_ALEXA_COOKIE_DIR` env → `$HOME/.config/...` (only if
+  `$HOME` is a real dir) → stable `/tmp/cli-anything-alexa` fallback. The
+  fallback fixes the in-container bug where an unset/`"/"` `$HOME` made
+  `Path.home()` write and read disagree. `import-pickle`, `auth status`, and
+  every live command use the SAME resolved dir.
+- **Stale-auth auto-recovery (bounded).** `load_session`/`test_loggedin`: one
+  `login()`, then if `test_loggedin` is False, **re-`load_cookie()` from disk and
+  re-test** up to `STALE_RELOAD_ATTEMPTS` (=3) with a short sleep — recovers the
+  HA rotation race. NEVER re-`login()` in a loop (repeated logins throttle
+  Amazon's auth — observed live).
 - **Python version, precisely:** a fresh proxy/scripted login pickles its
   cookie on the user's own Python and unpickles fine on that same Python — so
   **3.10+ is enough for normal use**. The `partitioned` Morsel attr (added to
