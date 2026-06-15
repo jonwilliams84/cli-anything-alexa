@@ -16,12 +16,12 @@ is a **browser-proxy login** that needs no Home Assistant.
   - `formatting.py` — **pure** table/cell rendering. Unit-tested.
   - `session.py` — `alexapy.AlexaLogin` wrapper: **proxy browser login** (`proxy_login`, the primary `auth login` path — starts `AlexaProxy`, prints the access URL, polls `test_loggedin`, `finalize_login` → cookie + chmod 0600, always `stop_proxy`), scripted login (`fresh_login`, headless/CI fallback, TOTP via `set_totp`), cookie import, load/validate, csrf header, `proxy_access_url` (pure). `alexapy` imported lazily so the CLI loads without it.
   - `devices.py` — appliance list + raw `DELETE /api/phoenix/appliance/<id>` + raw `POST /api/phoenix/discovery` (discover).
-  - `endpoints.py` — **canonical `endpoints` GraphQL query** (id + applianceId + manufacturer + display name + enablement) and all the pure resolution it powers: target resolution (applianceId→endpoint-id→exact-name→normalized-name, ambiguity-aware), entity/name resolvers, duplicate detection, `device_rows` filtering, and `setEndpointFriendlyName` (rename) variables builder. Network via `_static_request`; pure logic unit-tested.
+  - `endpoints.py` — **canonical `endpoints` GraphQL query** (id + applianceId + manufacturer + display name + enablement) and all the pure resolution it powers: target resolution (applianceId→endpoint-id→exact-name→normalized-name, ambiguity-aware), entity/name resolvers, duplicate detection, `device_rows` filtering, `setEndpointFriendlyName` (rename) variables builder, **bulk/pattern rename planning** (`parse_sed`/`apply_sed`/`plan_pattern_renames`, `parse_rename_map`/`plan_map_renames`, `apply_renames`), **DACS speakable-name validation** (`speakable_name`/`is_speakable`/`speakable_warning`/`is_dacs_error`), and the **native-delete warning + re-sync verify** predicates (`native_delete_warning`, `reappeared_after_delete`). Network via `_static_request`; pure logic unit-tested.
   - `devices_meta.py` — physical Echo devices (announce/dnd/routine targets).
   - `notifications.py` — alarms/timers/reminders: list + pure payload builders + POST/PUT/DELETE.
   - `routines.py` — behaviors list (with trigger utterance + best-effort `action_targets` summary) + trigger (device-bound `run_routine`). **Routine EDITS are not API-supported — Alexa-app-only** (see note below).
   - `control.py` — announce + dnd.
-  - `groups.py` — device-groups (rooms) over **GraphQL** `/nexus/v1/graphql`: list/create/add/remove/set/delete. Pure variables-builders + name-normalize/lookup + entity→endpoint resolution are unit-tested; network goes via `AlexaAPI._static_request`.
+  - `groups.py` — device-groups (rooms) over **GraphQL** `/nexus/v1/graphql`: list/create/add/remove/set/delete, **including nested child groups** (`--child-group`, the rollup pattern). Pure variables-builders (member + `childDeviceGroupIds`) + name-normalize/lookup + entity→endpoint + child-group name→id resolution are unit-tested; network goes via `AlexaAPI._static_request`.
   - `project.py` — local profile (`~/.config/cli-anything-alexa/config.json`).
 - `cli_anything/alexa/utils/repl_skin.py` — shared cli-anything REPL skin.
 - `cli_anything/alexa/skills/SKILL.md` — packaged agent skill manifest.
@@ -110,6 +110,42 @@ cli-anything-alexa devices list --json
 - **Rename = GraphQL `setEndpointFriendlyName`** (`input:{endpointId, friendlyName}`),
   by endpoint id (NOT applianceId). **Discover = raw `POST /api/phoenix/discovery`**
   (not GraphQL) on the web host with the csrf header → `200 {}`. Both dry-run+`--yes`.
+- **Bulk rename = `--pattern 's/REGEX/REPL/[ig]'` or `--map <file>`.** `--pattern`
+  applies a sed-style Python-`re` substitution (capture groups `\1`, flags `i`/`g`)
+  to EVERY device's current name; the changed ones are the rename set. `--map` reads
+  `current name => new name` (or `endpointId => new name`) lines (`#` comments).
+  Both dry-run-by-default with a full `old -> new` preview table (the safety review
+  for ~50 renames); no-ops (new==old) skipped; `--yes` executes (`apply_renames`
+  captures per-entry errors so one bad name doesn't abort the batch). Single
+  `devices rename <target> <new>` still works.
+- **DACS rejects non-speakable rename names.** `setEndpointFriendlyName` validates
+  through DACS and refuses hyphens / control chars → `"Invalid input. Invalid input
+  from DACS"` (`errorCode BAD_REQUEST`). Proven: `"elt-k8s-1 Temperature"` refused,
+  `"elt k8s 1 Temperature"` accepted. `speakable_name()` fixes it (hyphens→spaces,
+  strip control chars e.g. a stray `\x05`, collapse whitespace); `--speakable`
+  auto-applies it to all rename modes. Without `--speakable` the CLI pre-warns
+  (`speakable_warning`) and `rename_endpoint` catches an actual DACS `BAD_REQUEST`
+  (`is_dacs_error`) and re-raises a friendly `ValueError` suggestion, never the raw
+  GraphQL blob.
+- **Nested / child groups.** A group can contain other groups (the rollup pattern,
+  e.g. "Downstairs" of room groups). `CreateDeviceGroupInput.childDeviceGroupIds:
+  [String!]` and `UpdateDeviceGroupInput.childDeviceGroupIds: [String!]` +
+  `childDeviceGroupIdsUpdateOperation: CollectionOperationOptions` (ADD/REMOVE/
+  REPLACE) mirror the member fields. **SAME array gotcha — `childDeviceGroupIds`
+  is a real `[String!]`; pass a Python list, never a `json.dumps`'d string (a lone
+  string silently no-ops).** `--child-group "<name|id>"` on `groups create`/`add`/
+  `remove`/`set` resolves by normalized group name → group id (`resolve_child_groups`,
+  reusing `find_group`); the child-group field/op are OMITTED unless child ids are
+  given, so member-only paths are unchanged. `groups list` shows each group's child
+  groups (`childDeviceGroups{ id friendlyName{value{text}} }`).
+- **Native devices re-sync — Alexa-only deletes don't stick.** A non-HA device
+  (`manufacturerName != "Home Assistant"`) re-syncs from its cloud skill/bridge
+  after deletion (proven: Tuya re-synced from Smart Life, Philips Hue from the
+  bridge). `devices delete` **warns** (`native_delete_warning`) when a target is
+  native, telling the user to remove it at source. `--verify` triggers a discovery,
+  waits ~12s, re-queries `endpoints`, and reports which just-deleted devices
+  **re-appeared** (`reappeared_after_delete`, by applianceId or normalized name) so
+  the user knows which need source-side removal.
 - **Reachability column SKIPPED (deliberate).** The `Endpoint` GraphQL type has
   `connections` / `endpointReports` / `enablement`. Only `enablement` introspected
   as a clean, consistently-present scalar enum (ENABLED/…), so `devices list`

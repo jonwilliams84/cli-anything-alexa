@@ -167,16 +167,19 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `config show` / `config save` | Show / persist the connection profile (email + region) |
 | `devices list [--ha-only \| --native-only] [--manufacturer <substr>]` | List smart-home devices with manufacturer + native-vs-HA `source` marker (each HA device shows its mapped entity id) |
 | `devices prune --whitelist <file>` | Delete HA-sourced appliances whose entity isn't whitelisted (dry-run default; `--no-dry-run --yes` to execute) |
-| `devices delete [<applianceId...>] [--entity <ha.id>] [--name "<display>"]` | Delete appliances by id, HA entity, or Alexa display name (`--yes` to execute) |
+| `devices delete [<applianceId...>] [--entity <ha.id>] [--name "<display>"] [--verify]` | Delete appliances by id, HA entity, or Alexa display name (`--yes`). Warns on native devices; `--verify` re-discovers and reports which re-synced |
 | `devices rename <target> <new-name>` | Rename a device — target = applianceId / endpoint id / display name (`--yes` to execute) |
+| `devices rename --pattern 's/RE/REPL/[ig]'` | **Bulk** rename: sed-style regex over every device name (capture groups `\1`); dry-run preview, `--yes` to execute |
+| `devices rename --map <file>` | **Bulk** rename from `current name => new name` (or `endpointId => new name`) lines (`#` comments) |
+| `devices rename ... --speakable` | Auto-fix new names DACS would reject (hyphens→spaces, strip control chars) |
 | `devices duplicates` | Detect devices exposed twice (native + HA twin, or any shared display name) |
 | `discover` | Trigger Alexa smart-home device discovery (`--yes` to execute) |
 | `echos list` | List the physical Echo devices on the account |
-| `groups list` | List Alexa smart-home device-groups (rooms): name, id, member count/names |
-| `groups create <name> [--entity ... \| --endpoint ...]` | Create a device-group with the given members (`--yes` to execute) |
-| `groups add <group> [--entity ... \| --endpoint ... \| --device ...]` | Add members to a group by name/id (`--yes`) |
-| `groups remove <group> [--entity ... \| --endpoint ... \| --device ...]` | Remove members from a group by name/id (`--yes`) |
-| `groups set <group> [--entity ... \| --endpoint ... \| --device ...]` | Replace a group's entire member set (`--yes`) |
+| `groups list` | List device-groups (rooms): name, id, member count/names, child-group count/names |
+| `groups create <name> [--entity ... \| --endpoint ... \| --child-group ...]` | Create a device-group with members and/or nested child groups (`--yes`) |
+| `groups add <group> [--entity ... \| --endpoint ... \| --device ... \| --child-group ...]` | Add members / child groups to a group by name/id (`--yes`) |
+| `groups remove <group> [--entity ... \| --endpoint ... \| --device ... \| --child-group ...]` | Remove members / child groups from a group by name/id (`--yes`) |
+| `groups set <group> [--entity ... \| --endpoint ... \| --device ... \| --child-group ...]` | Replace a group's entire member + child-group set (`--yes`) |
 | `groups delete <group>` | Delete a device-group by name/id (`--yes` to execute) |
 | `routines list` | List Alexa routines (behaviors) with trigger utterance + action-target summary |
 | `routines run <name\|id>` | Trigger a routine via `behaviors/preview` (`--yes` to execute) |
@@ -227,24 +230,44 @@ cli-anything-alexa groups set "Den" --entity light.den_lamp --yes      # REPLACE
 cli-anything-alexa groups delete "Den" --yes
 ```
 
-Groups are looked up by id or by friendly name (case/space/punctuation
-insensitive). Two API gotchas are handled internally and worth knowing:
+**Nested / child groups (the rollup pattern).** A group can contain *other
+groups* — e.g. a "Downstairs" group made of your per-room groups. Use
+`--child-group "<name|id>"` (repeatable, resolved by normalized group name → id)
+on `create` / `add` / `remove` / `set`. `groups list` shows each group's child
+groups alongside its devices.
 
-- **Member id lists are GraphQL `[String!]` arrays.** They must serialize as
-  real JSON arrays. Passing a single `json.dumps`'d string makes GraphQL coerce
-  it into a 1-element list and the server **silently no-ops** (no error, nothing
-  changes). The variables builders pass real Python lists.
+```bash
+cli-anything-alexa groups create "Downstairs" --child-group "Living Room" --child-group "Kitchen" --yes
+cli-anything-alexa groups add "Downstairs" --child-group "Hallway" --yes     # ADD a child group
+cli-anything-alexa groups remove "Downstairs" --child-group "Kitchen" --yes  # REMOVE a child group
+```
+
+Groups are looked up by id or by friendly name (case/space/punctuation
+insensitive). Three API gotchas are handled internally and worth knowing:
+
+- **Member / child-group id lists are GraphQL `[String!]` arrays.** They must
+  serialize as real JSON arrays. Passing a single `json.dumps`'d string makes
+  GraphQL coerce it into a 1-element list and the server **silently no-ops** (no
+  error, nothing changes). The variables builders pass real Python lists.
+- **Child groups use `childDeviceGroupIds` + `childDeviceGroupIdsUpdateOperation`**
+  (ADD/REMOVE/REPLACE), exactly mirroring the member fields; the child field/op
+  are omitted entirely on a member-only call.
 - **`create` must not send `associatedUnitIds`** — doing so triggers
   `BAD_REQUEST`. Alexa auto-associates the unit from the member devices, so
-  create takes `friendlyName` + `memberDeviceIds` only.
+  create takes `friendlyName` + `memberDeviceIds` (+ optional
+  `childDeviceGroupIds`) only.
 
 ### Renaming, duplicates & discovery
 
 ```bash
 cli-anything-alexa devices rename "Lounge Twigs" "Lounge Lights"        # preview
 cli-anything-alexa devices rename light.kitchen_big "Kitchen Spots" --yes
+# bulk rename — sed-style regex over EVERY device name (dry-run preview first):
+cli-anything-alexa devices rename --pattern 's/^Spots - (.*)/\1 Spots/'
+cli-anything-alexa devices rename --pattern 's/^TH - //' --yes
+cli-anything-alexa devices rename --map renames.txt                      # 'old => new' lines
 cli-anything-alexa devices duplicates                                  # find double-exposed devices
-cli-anything-alexa devices delete --name "Old Plug" --yes             # or --entity / positional applianceId
+cli-anything-alexa devices delete --name "Old Plug" --verify --yes    # delete + re-check it didn't re-sync
 cli-anything-alexa discover --yes                                      # trigger a device-discovery sweep
 ```
 
@@ -255,13 +278,34 @@ cli-anything-alexa discover --yes                                      # trigger
   more than one device** (a native appliance and its Home Assistant twin can
   share a name) the command **aborts and lists the matches** so you disambiguate
   by applianceId or endpoint id.
+- **Bulk rename — `--pattern` / `--map`.** `--pattern 's/REGEX/REPL/[ig]'`
+  applies a sed-style Python-`re` substitution (capture groups `\1`, flags
+  `i` case-insensitive / `g` global) to **every** device's current name; the
+  ones that change form the rename set. `--map <file>` reads
+  `current name => new name` (or `endpointId => new name`) lines (`#` comments).
+  Both print a full `old -> new` **preview table** and are **dry-run by default**
+  — re-run with `--yes` to execute. No-op renames (new == old) are skipped.
+- **DACS rejects non-speakable names.** Amazon's rename API validates the new
+  name through DACS and **refuses hyphens / non-speakable strings**
+  (`"Invalid input. Invalid input from DACS"`, `BAD_REQUEST` — e.g.
+  `"elt-k8s-1 Temperature"` is refused while `"elt k8s 1 Temperature"` is
+  accepted). Pass `--speakable` to auto-transform new names (hyphens → spaces,
+  strip stray control chars, collapse whitespace). Without it, the CLI **pre-warns**
+  about non-speakable names and, on an actual DACS rejection, shows a friendly
+  suggestion instead of the raw GraphQL error.
 - **`devices duplicates`** lists every display name exposed by more than one
   endpoint, flagging the classic *native + HA twin* (the same physical device
   surfaced both natively and via the HA bridge). It only reports — you decide
   which copy to drop, then `devices delete` it.
 - **`devices delete`** still takes positional applianceId(s), and now also
   `--entity <ha.id>` and `--name "<display>"`, which resolve to the applianceId
-  via the endpoints query (same ambiguity-abort rule as rename).
+  via the endpoints query (same ambiguity-abort rule as rename). **Native
+  (non-HA) devices re-sync from their cloud skill/bridge** (e.g. Tuya re-syncs
+  from Smart Life, Philips Hue from the bridge), so deleting them in Alexa alone
+  often doesn't stick — the command **warns** when a target isn't
+  `manufacturerName=="Home Assistant"`, and **`--verify`** re-runs discovery,
+  waits ~12s, re-queries, and reports which just-deleted devices **re-appeared**
+  (those need removing at source).
 - **`discover`** triggers a smart-home discovery sweep
   (`POST /api/phoenix/discovery`).
 

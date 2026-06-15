@@ -8,6 +8,7 @@ that alexapy doesn't wrap. Pure parsing/whitelist logic lives in
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from urllib.parse import quote
 
@@ -106,3 +107,29 @@ async def trigger_discovery(login) -> dict[str, Any]:
             "status": resp.status,
             "body": body[:200] if body else "",
         }
+
+
+async def verify_deletes(
+    login, deleted: list[dict[str, Any]], wait_seconds: float = 12.0
+) -> dict[str, Any]:
+    """After deletes, re-discover + re-query endpoints to find re-synced devices.
+
+    Native devices re-sync from their cloud skill/bridge, so a delete may not
+    stick. This triggers a discovery, waits, re-queries the canonical
+    ``endpoints`` graph, and reports which just-deleted devices re-appeared (so
+    the user knows which need source-side removal). Pure diff logic lives in
+    ``endpoints.reappeared_after_delete``.
+    """
+    # imported here to avoid a module-load cycle (endpoints imports groups, etc.)
+    from cli_anything.alexa.core import endpoints as endpoints_core
+
+    disc = await trigger_discovery(login)
+    await asyncio.sleep(wait_seconds)
+    records_after = await endpoints_core.fetch_endpoint_records(login)
+    reappeared = endpoints_core.reappeared_after_delete(deleted, records_after)
+    return {
+        "discovery": disc.get("discovery"),
+        "waited_seconds": wait_seconds,
+        "checked": len(deleted or []),
+        "reappeared": reappeared,
+    }

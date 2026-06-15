@@ -26,6 +26,16 @@ GraphQL gotchas (reverse-engineered live; baked in below):
   * Do NOT send ``associatedUnitIds`` on create — it triggers
     ``BAD_REQUEST`` / non-201. Alexa auto-associates the unit from the member
     devices. Create takes ``friendlyName`` + ``memberDeviceIds`` only.
+
+Nested / child groups (a group that contains OTHER groups — the rollup pattern,
+e.g. a "Downstairs" group made of room groups):
+  * ``CreateDeviceGroupInput`` has ``childDeviceGroupIds: [String!]`` and
+    ``UpdateDeviceGroupInput`` has ``childDeviceGroupIds: [String!]`` +
+    ``childDeviceGroupIdsUpdateOperation: CollectionOperationOptions`` (ADD /
+    REMOVE / REPLACE) — exactly mirroring the member fields.
+  * SAME ARRAY GOTCHA: ``childDeviceGroupIds`` is a real ``[String!]`` — pass a
+    Python list, never a ``json.dumps``'d string (a lone string silently
+    no-ops). Child group ids are ``amzn1.alexa.endpointGroup.*``.
 """
 
 from __future__ import annotations
@@ -41,7 +51,8 @@ from cli_anything.alexa.core.appliances import parse_entity_id
 _LIST_GROUPS_QUERY = (
     "query{ listDeviceGroups(listDeviceGroupsInput:{}){ deviceGroups{ "
     "id friendlyName{ value{ text } } memberDevices{ items{ id "
-    "friendlyNameObject{ value{ text } } } } } } }"
+    "friendlyNameObject{ value{ text } } } } childDeviceGroups{ id "
+    "friendlyName{ value{ text } } } } } }"
 )
 
 _ENDPOINTS_QUERY = (
@@ -89,12 +100,19 @@ def group_rows(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
             (((m.get("friendlyNameObject") or {}).get("value") or {}).get("text"))
             for m in members
         ]
+        children = g.get("childDeviceGroups") or []
+        child_names = [
+            (((c.get("friendlyName") or {}).get("value") or {}).get("text"))
+            for c in children
+        ]
         out.append(
             {
                 "id": g.get("id"),
                 "name": name,
                 "members": len(members),
                 "memberNames": [n for n in member_names if n],
+                "childGroups": len(children),
+                "childGroupNames": [n for n in child_names if n],
             }
         )
     return out
@@ -116,6 +134,30 @@ def find_group(groups: list[dict[str, Any]], name_or_id: str) -> Optional[dict[s
         if normalize_name(name) == norm:
             return g
     return None
+
+
+def resolve_child_groups(
+    groups: list[dict[str, Any]],
+    names_or_ids: list[str],
+) -> tuple[list[str], list[str]]:
+    """Resolve ``--child-group`` names/ids to group ids (pure).
+
+    Reuses :func:`find_group` (exact id, then normalized friendly name) on each
+    value. Returns ``(child_group_ids, unresolved)``, de-duping ids while
+    preserving first-seen order. Child group ids are ``amzn1.alexa.endpointGroup.*``.
+    """
+    resolved: list[str] = []
+    unresolved: list[str] = []
+    for val in names_or_ids or []:
+        g = find_group(groups, val)
+        gid = g.get("id") if g else None
+        if gid:
+            resolved.append(gid)
+        else:
+            unresolved.append(val)
+    seen: set[str] = set()
+    deduped = [g for g in resolved if not (g in seen or seen.add(g))]
+    return deduped, unresolved
 
 
 def endpoint_map(endpoint_items: list[dict[str, Any]]) -> dict[str, str]:
@@ -165,37 +207,57 @@ def resolve_members(
 
 # ── GraphQL variables builders (pure; the gotchas live HERE) ───────────────
 
-def build_create_variables(name: str, member_ids: list[str]) -> dict[str, Any]:
+def build_create_variables(
+    name: str,
+    member_ids: list[str],
+    child_group_ids: Optional[list[str]] = None,
+) -> dict[str, Any]:
     """Variables for createDeviceGroup.
 
-    ``memberDeviceIds`` is a real Python list so it serializes to a JSON array
-    (see module docstring — a string silently no-ops). ``associatedUnitIds``
-    is deliberately OMITTED — sending it causes BAD_REQUEST; Alexa
-    auto-associates the unit from the members.
+    ``memberDeviceIds`` / ``childDeviceGroupIds`` are real Python lists so they
+    serialize to JSON arrays (see module docstring — a string silently no-ops).
+    ``childDeviceGroupIds`` builds a nested / rollup group (a group of groups)
+    and is OMITTED entirely unless child ids are given. ``associatedUnitIds`` is
+    deliberately OMITTED — sending it causes BAD_REQUEST; Alexa auto-associates
+    the unit from the members.
     """
-    return {"in": {"friendlyName": name, "memberDeviceIds": list(member_ids or [])}}
+    inp: dict[str, Any] = {
+        "friendlyName": name,
+        "memberDeviceIds": list(member_ids or []),
+    }
+    if child_group_ids:
+        inp["childDeviceGroupIds"] = list(child_group_ids)
+    return {"in": inp}
 
 
 def build_update_variables(
     group_id: str,
     member_ids: list[str],
     operation: str,
+    child_group_ids: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """Variables for updateDeviceGroup.
 
-    ``operation`` is ADD / REMOVE / REPLACE: REPLACE sets the full member set,
-    ADD/REMOVE apply deltas. ``memberDeviceIds`` is a real list (not a string).
+    ``operation`` is ADD / REMOVE / REPLACE: REPLACE sets the full set, ADD/REMOVE
+    apply deltas. It drives BOTH the member op and (when ``child_group_ids`` is
+    given) the child-group op via ``childDeviceGroupIdsUpdateOperation``.
+    ``memberDeviceIds`` / ``childDeviceGroupIds`` are real lists (NOT strings —
+    a lone string silently no-ops). The ``childDeviceGroupIds`` /
+    ``childDeviceGroupIdsUpdateOperation`` pair is omitted unless child ids are
+    given, so a member-only update is unchanged.
     """
     op = (operation or "").upper()
     if op not in ("ADD", "REMOVE", "REPLACE"):
         raise ValueError(f"operation must be ADD/REMOVE/REPLACE, got {operation!r}")
-    return {
-        "in": {
-            "deviceGroupId": group_id,
-            "memberDeviceIds": list(member_ids or []),
-            "memberDeviceIdsUpdateOperation": op,
-        }
+    inp: dict[str, Any] = {
+        "deviceGroupId": group_id,
+        "memberDeviceIds": list(member_ids or []),
+        "memberDeviceIdsUpdateOperation": op,
     }
+    if child_group_ids:
+        inp["childDeviceGroupIds"] = list(child_group_ids)
+        inp["childDeviceGroupIdsUpdateOperation"] = op
+    return {"in": inp}
 
 
 def build_delete_variables(group_id: str) -> dict[str, Any]:
@@ -247,29 +309,44 @@ async def fetch_endpoint_map(login) -> dict[str, str]:
     return endpoint_map(list(items))
 
 
-async def create_group(login, name: str, member_ids: list[str]) -> dict[str, Any]:
-    """createDeviceGroup with friendlyName + memberDeviceIds (no unit ids)."""
-    variables = build_create_variables(name, member_ids)
+async def create_group(
+    login,
+    name: str,
+    member_ids: list[str],
+    child_group_ids: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """createDeviceGroup with friendlyName + memberDeviceIds (+ childDeviceGroupIds)."""
+    variables = build_create_variables(name, member_ids, child_group_ids)
     body = await _graphql(login, _CREATE_MUTATION, variables)
-    return {
+    out = {
         "created": name,
         "memberDeviceIds": variables["in"]["memberDeviceIds"],
         "result": (body.get("data") or {}).get("createDeviceGroup"),
     }
+    if "childDeviceGroupIds" in variables["in"]:
+        out["childDeviceGroupIds"] = variables["in"]["childDeviceGroupIds"]
+    return out
 
 
 async def update_group(
-    login, group_id: str, member_ids: list[str], operation: str
+    login,
+    group_id: str,
+    member_ids: list[str],
+    operation: str,
+    child_group_ids: Optional[list[str]] = None,
 ) -> dict[str, Any]:
-    """updateDeviceGroup with an ADD/REMOVE/REPLACE member operation."""
-    variables = build_update_variables(group_id, member_ids, operation)
+    """updateDeviceGroup with an ADD/REMOVE/REPLACE member + child-group operation."""
+    variables = build_update_variables(group_id, member_ids, operation, child_group_ids)
     body = await _graphql(login, _UPDATE_MUTATION, variables)
-    return {
+    out = {
         "deviceGroupId": group_id,
         "operation": variables["in"]["memberDeviceIdsUpdateOperation"],
         "memberDeviceIds": variables["in"]["memberDeviceIds"],
         "result": (body.get("data") or {}).get("updateDeviceGroup"),
     }
+    if "childDeviceGroupIds" in variables["in"]:
+        out["childDeviceGroupIds"] = variables["in"]["childDeviceGroupIds"]
+    return out
 
 
 async def delete_group(login, group_id: str) -> dict[str, Any]:

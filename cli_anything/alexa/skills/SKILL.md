@@ -49,27 +49,51 @@ Every command takes `--json`.
   whitelisted. **Dry-run by default**; add `--no-dry-run --yes` to execute.
   Whitelist = one entity id per line, `#` comments allowed. Native (Hue/Wemo)
   appliances are never touched.
-- `devices delete [<applianceId...>] [--entity ha.x] [--name "<display>"]` —
+- `devices delete [<applianceId...>] [--entity ha.x] [--name "<display>"] [--verify]` —
   delete by id, HA entity, or display name (`--yes`). Name resolving to >1 device
-  (native+HA twin) aborts and lists matches.
+  (native+HA twin) aborts and lists matches. **Native (non-HA) devices re-sync
+  from their cloud skill/bridge** (proven: Tuya re-syncs from Smart Life, Philips
+  Hue from the bridge), so deleting in Alexa alone may not stick — you're
+  **warned** when a target isn't `manufacturerName=="Home Assistant"`, and
+  `--verify` re-runs discovery, waits ~12s, re-queries, and reports which
+  just-deleted devices **re-appeared** (remove those at source).
 - `devices rename <target> <new-name>` (`--yes`) — `setEndpointFriendlyName`.
   target = applianceId / endpoint id / display name (exact → normalized);
   ambiguous name aborts + lists candidates.
+  - **Bulk `--pattern 's/REGEX/REPL/[ig]'`** — apply a sed-style Python-`re`
+    substitution to **every** device's current name; the ones that change form
+    the rename set (capture groups `\1`, e.g. `'s/^Spots - (.*)/\1 Spots/'`,
+    `'s/^TH - //'`). Full `old -> new` preview table; **dry-run unless `--yes`**.
+  - **Bulk `--map <file>`** — lines of `current name => new name` (or
+    `endpointId => new name`); `#` comments allowed.
+  - **DACS validation (all rename modes):** Amazon's rename API validates via
+    DACS and **rejects hyphens / non-speakable names** (`"Invalid input. Invalid
+    input from DACS"` / `BAD_REQUEST`; proven: `"elt-k8s-1 Temperature"` refused,
+    `"elt k8s 1 Temperature"` accepted). `--speakable` auto-fixes (hyphens→spaces,
+    strip control chars, collapse whitespace); without it, non-speakable names
+    are pre-warned and an actual DACS rejection is caught and shown as a friendly
+    suggestion instead of the raw GraphQL error.
 - `devices duplicates` — pairs/clusters where a display name is exposed twice
   (flags native+HA twins). Reports only; you choose which to `devices delete`.
 - `discover` (`--yes`) — trigger a smart-home discovery sweep
   (`POST /api/phoenix/discovery`).
 - `echos list` — physical Echo devices.
-- `groups list` — smart-home device-groups (rooms): name, id, member count/names.
-- `groups create <name> [--entity ha.x ...] [--endpoint amzn1... ...]` (`--yes`).
-- `groups add|remove|set <group(name|id)> [--entity ...] [--endpoint ...] [--device "<name>"]` (`--yes`) —
-  ADD/REMOVE delta, `set` REPLACEs the whole member set. **`--device` targets
+- `groups list` — smart-home device-groups (rooms): name, id, member count/names,
+  plus child-group count/names (nested groups).
+- `groups create <name> [--entity ha.x ...] [--endpoint amzn1... ...] [--child-group "<name|id>" ...]` (`--yes`).
+- `groups add|remove|set <group(name|id)> [--entity ...] [--endpoint ...] [--device "<name>"] [--child-group "<name|id>"]` (`--yes`) —
+  ADD/REMOVE delta, `set` REPLACEs the whole set. **`--device` targets
   native/non-HA devices by display name** (e.g. Tasmota-Wemo plugs with no HA entity).
+  **`--child-group` nests another group as a child — the rollup pattern** (e.g. a
+  "Downstairs" group containing room groups). Resolved by normalized group name →
+  group id (`amzn1.alexa.endpointGroup.*`).
 - `groups delete <group(name|id)>` (`--yes`).
   Groups use the modern GraphQL `/nexus/v1/graphql` API (the legacy phoenix
-  group REST is dead). **Gotchas:** member id lists must be real JSON arrays
-  (a lone string silently no-ops); never send `associatedUnitIds` on create
-  (BAD_REQUEST — Alexa auto-associates the unit). Both handled internally.
+  group REST is dead). **Gotchas:** member/child id lists are GraphQL `[String!]`
+  and must be real JSON arrays (a lone string silently no-ops); never send
+  `associatedUnitIds` on create (BAD_REQUEST — Alexa auto-associates the unit).
+  Child groups use `childDeviceGroupIds` + `childDeviceGroupIdsUpdateOperation`
+  (ADD/REMOVE/REPLACE), mirroring the member fields. All handled internally.
 - `routines list` — routines with trigger utterance + best-effort action-target
   summary. `routines run <name|id>` (`--yes`) — trigger via behaviors/preview.
   **Do NOT script edits to an existing routine — brittle + destructive.**

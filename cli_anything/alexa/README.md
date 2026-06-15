@@ -98,16 +98,17 @@ Every command supports a global `--json` flag for machine-readable output.
 | `config show` / `config save` | Show / persist the connection profile (email + region) |
 | `devices list [--ha-only \| --native-only] [--manufacturer <substr>]` | List smart-home devices with manufacturer + native-vs-HA `source` marker (each HA device shows its mapped entity id) |
 | `devices prune --whitelist <file>` | Delete HA-sourced appliances whose entity isn't whitelisted (dry-run default; `--no-dry-run --yes` to execute) |
-| `devices delete [<applianceId...>] [--entity <ha.id>] [--name "<display>"]` | Delete appliances by id, HA entity, or display name (`--yes` to execute) |
+| `devices delete [<applianceId...>] [--entity <ha.id>] [--name "<display>"] [--verify]` | Delete appliances by id, HA entity, or display name (`--yes`). Warns on native devices; `--verify` re-discovers and reports which re-synced |
 | `devices rename <target> <new-name>` | Rename a device — target = applianceId / endpoint id / display name (`--yes` to execute) |
+| `devices rename --pattern 's/RE/REPL/[ig]' \| --map <file> [--speakable]` | **Bulk** rename via sed-style regex over every name, or a `current => new` file. Dry-run preview, `--yes` to execute; `--speakable` fixes DACS-rejected (hyphen) names |
 | `devices duplicates` | Detect devices exposed twice (native + HA twin, or any shared display name) |
 | `discover` | Trigger Alexa smart-home device discovery (`--yes` to execute) |
 | `echos list` | List the physical Echo devices on the account |
-| `groups list` | List Alexa smart-home device-groups (rooms): name, id, member count/names |
-| `groups create <name> [--entity ... \| --endpoint ...]` | Create a device-group with the given members (`--yes` to execute) |
-| `groups add <group> [--entity ... \| --endpoint ... \| --device ...]` | Add members to a group by name/id (`--yes`) |
-| `groups remove <group> [--entity ... \| --endpoint ... \| --device ...]` | Remove members from a group by name/id (`--yes`) |
-| `groups set <group> [--entity ... \| --endpoint ... \| --device ...]` | Replace a group's entire member set (`--yes`) |
+| `groups list` | List device-groups (rooms): name, id, member count/names, child-group count/names |
+| `groups create <name> [--entity ... \| --endpoint ... \| --child-group ...]` | Create a device-group with members and/or nested child groups (`--yes`) |
+| `groups add <group> [--entity ... \| --endpoint ... \| --device ... \| --child-group ...]` | Add members / child groups to a group by name/id (`--yes`) |
+| `groups remove <group> [--entity ... \| --endpoint ... \| --device ... \| --child-group ...]` | Remove members / child groups from a group by name/id (`--yes`) |
+| `groups set <group> [--entity ... \| --endpoint ... \| --device ... \| --child-group ...]` | Replace a group's entire member + child-group set (`--yes`) |
 | `groups delete <group>` | Delete a device-group by name/id (`--yes` to execute) |
 | `routines list` | List Alexa routines (behaviors) with trigger utterance + action-target summary (editing a routine is brittle/destructive via API — do it in the app) |
 | `routines run <name\|id>` | Trigger a routine via `behaviors/preview` (`--yes` to execute) |
@@ -156,18 +157,46 @@ cli-anything-alexa groups add "Den" --device "Lounge Plug" --yes      # ADD a na
 cli-anything-alexa groups remove "Den" --entity light.den_lamp --yes   # REMOVE delta
 cli-anything-alexa groups set "Den" --entity light.den_lamp --yes      # REPLACE whole member set
 cli-anything-alexa groups delete "Den" --yes
+# nested / child groups — the rollup pattern (a group of groups):
+cli-anything-alexa groups create "Downstairs" --child-group "Living Room" --child-group "Kitchen" --yes
+cli-anything-alexa groups add "Downstairs" --child-group "Hallway" --yes
 ```
 
 Groups are looked up by id or by friendly name (case/space/punctuation
-insensitive). Two API gotchas are handled internally and worth knowing:
+insensitive). Gotchas handled internally and worth knowing:
 
-- **Member id lists are GraphQL `[String!]` arrays.** They must serialize as
-  real JSON arrays. Passing a single `json.dumps`'d string makes GraphQL
-  coerce it into a 1-element list and the server **silently no-ops** (no error,
-  nothing changes). The variables builders pass real Python lists.
+- **Member / child-group id lists are GraphQL `[String!]` arrays.** They must
+  serialize as real JSON arrays. Passing a single `json.dumps`'d string makes
+  GraphQL coerce it into a 1-element list and the server **silently no-ops** (no
+  error, nothing changes). The variables builders pass real Python lists.
+- **Child groups** use `childDeviceGroupIds` + `childDeviceGroupIdsUpdateOperation`
+  (ADD/REMOVE/REPLACE), mirroring the member fields, resolved from a group name/id.
 - **`create` must not send `associatedUnitIds`** — doing so triggers
   `BAD_REQUEST`. Alexa auto-associates the unit from the member devices, so
-  create takes `friendlyName` + `memberDeviceIds` only.
+  create takes `friendlyName` + `memberDeviceIds` (+ optional `childDeviceGroupIds`).
+
+## Bulk rename, DACS names & native re-sync
+
+```bash
+# bulk rename — sed-style regex over EVERY device name (dry-run preview first):
+cli-anything-alexa devices rename --pattern 's/^Spots - (.*)/\1 Spots/'
+cli-anything-alexa devices rename --map renames.txt --yes      # 'old name => new name' lines
+```
+
+- **`--pattern 's/REGEX/REPL/[ig]'`** applies a Python-`re` substitution to every
+  device's current name (capture groups `\1`, flags `i`/`g`); changed names form
+  the rename set. **`--map <file>`** reads `current name => new name` (or
+  `endpointId => new name`) lines (`#` comments). Both dry-run by default with a
+  full `old -> new` table; `--yes` executes, no-ops skipped.
+- **DACS rejects non-speakable names.** `setEndpointFriendlyName` refuses hyphens /
+  control chars (`"Invalid input from DACS"`, `BAD_REQUEST`; `"elt-k8s-1 Temperature"`
+  refused, `"elt k8s 1 Temperature"` accepted). `--speakable` auto-fixes them;
+  otherwise the CLI pre-warns and translates a DACS rejection into a friendly
+  suggestion.
+- **Native devices re-sync.** `devices delete` warns when a target isn't
+  `manufacturerName=="Home Assistant"` (it re-syncs from its source bridge/skill —
+  Tuya from Smart Life, Hue from the bridge); `--verify` re-discovers and reports
+  which just-deleted devices re-appeared.
 
 ## Whitelist file format
 

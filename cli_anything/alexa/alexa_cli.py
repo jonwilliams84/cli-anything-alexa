@@ -421,34 +421,122 @@ def devices_list(ctx, ha_only, native_only, manufacturer):
     emit(ctx, rows)
 
 
+def _emit_bulk_rename_preview(ctx, planned, mode):
+    """Dry-run preview for a bulk rename plan (pattern or map)."""
+    if ctx.obj.get("as_json"):
+        emit(ctx, {"dry_run": True, "mode": mode, "count": len(planned),
+                   "renames": planned, "hint": "re-run with --yes to execute"})
+        return
+    if not planned:
+        click.echo(f"no devices matched {mode} — nothing to rename")
+        return
+    click.echo(f"Dry-run: {len(planned)} rename(s) planned ({mode}).")
+    click.echo(render_table([{"old": p["old"], "new": p["new"],
+                              "source": p["source"]} for p in planned]))
+    warned = [p for p in planned if p.get("warning")]
+    if warned:
+        click.echo("\nDACS warnings (Amazon may reject these non-speakable names; "
+                   "re-run with --speakable to auto-fix):")
+        for p in warned:
+            click.echo(f"  - {p['warning']}")
+    click.echo("\nRe-run with --yes to execute.")
+
+
 @devices.command("rename")
-@click.argument("target")
-@click.argument("new_name")
+@click.argument("target", required=False)
+@click.argument("new_name", required=False)
+@click.option("--pattern", "pattern", default=None,
+              help="Bulk rename via a sed-style s/REGEX/REPL/[ig] applied to "
+                   "EVERY device name (capture groups with \\1).")
+@click.option("--map", "map_file", default=None,
+              type=click.Path(exists=True, dir_okay=False),
+              help="Bulk rename from a file of 'current name => new name' "
+                   "(or 'endpointId => new name') lines; # comments allowed.")
+@click.option("--speakable", is_flag=True, default=False,
+              help="Auto-transform each new name into a DACS-speakable form "
+                   "(hyphens->spaces, strip control chars).")
 @click.option("--yes", is_flag=True, default=False,
               help="Required to actually rename (guards live mutation)")
 @click.pass_context
-def devices_rename(ctx, target, new_name, yes):
-    """Rename a device. TARGET resolves by applianceId, endpoint id, or name.
+def devices_rename(ctx, target, new_name, pattern, map_file, speakable, yes):
+    """Rename device(s). Single TARGET NEW_NAME, or bulk --pattern / --map.
 
-    Resolution precedence: exact applianceId -> exact endpoint id -> exact
-    display name -> normalized/case-insensitive display name. If TARGET matches
-    more than one device (a native + HA twin can share a name) the command
-    aborts and lists the matches so you can disambiguate. Dry-run unless --yes.
+    \b
+    Single: TARGET resolves by applianceId -> endpoint id -> exact name ->
+    normalized name (ambiguous match aborts and lists candidates).
+    Bulk --pattern 's/REGEX/REPL/': applies the sed substitution to every
+    device's current name; changed names form the rename set.
+    Bulk --map <file>: 'current name => new name' lines.
+
+    All modes are DRY-RUN by default (preview table); pass --yes to execute.
+    Amazon's rename API rejects non-speakable names (e.g. hyphens) via DACS —
+    --speakable auto-fixes them; otherwise non-speakable names are warned about.
     """
+    if sum(bool(x) for x in (pattern, map_file)) > 1:
+        _abort("--pattern and --map are mutually exclusive")
+    if (pattern or map_file) and (target or new_name):
+        _abort("bulk --pattern / --map take no TARGET / NEW_NAME arguments")
+
     login = _login(ctx)
     records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
+
+    # ── bulk: --pattern ──
+    if pattern:
+        try:
+            planned = endpoints_core.plan_pattern_renames(
+                records, pattern, speakable=speakable)
+        except endpoints_core.PatternError as exc:
+            _abort(str(exc))
+        if not yes:
+            _emit_bulk_rename_preview(ctx, planned, f"pattern {pattern!r}")
+            return
+        emit(ctx, _run(ctx, endpoints_core.apply_renames(login, planned)))
+        return
+
+    # ── bulk: --map ──
+    if map_file:
+        try:
+            pairs = endpoints_core.parse_rename_map(Path(map_file).read_text())
+        except ValueError as exc:
+            _abort(str(exc))
+        planned, problems = endpoints_core.plan_map_renames(
+            records, pairs, speakable=speakable)
+        if problems:
+            if ctx.obj.get("as_json"):
+                click.echo(json.dumps({"error": "unresolved map entries",
+                                       "problems": problems}, indent=2,
+                                      default=str, sort_keys=True), err=True)
+            else:
+                click.echo("error: these --map targets did not resolve to exactly "
+                           "one device:", err=True)
+                click.echo(render_table(problems), err=True)
+            sys.exit(1)
+        if not yes:
+            _emit_bulk_rename_preview(ctx, planned, "map")
+            return
+        emit(ctx, _run(ctx, endpoints_core.apply_renames(login, planned)))
+        return
+
+    # ── single ──
+    if not target or not new_name:
+        _abort("give TARGET NEW_NAME, or a bulk --pattern / --map")
+    final_name = endpoints_core.speakable_name(new_name) if speakable else new_name
     matches = endpoints_core.resolve_target(records, target)
     rec = _resolve_one_or_abort(ctx, records, matches, target)
     eid = rec.get("endpointId")
     if not eid:
         _abort(f"resolved device for {target!r} has no endpoint id (cannot rename)")
     if not yes:
-        emit(ctx, {"dry_run": True, "would_rename": rec.get("name"),
-                   "to": new_name, "endpointId": eid,
-                   "applianceId": rec.get("applianceId"),
-                   "hint": "re-run with --yes to execute"})
+        out = {"dry_run": True, "would_rename": rec.get("name"),
+               "to": final_name, "endpointId": eid,
+               "applianceId": rec.get("applianceId"),
+               "hint": "re-run with --yes to execute"}
+        warn = endpoints_core.speakable_warning(final_name)
+        if warn:
+            out["warning"] = warn
+        emit(ctx, out)
         return
-    emit(ctx, _run(ctx, endpoints_core.rename_endpoint(login, eid, new_name)))
+    emit(ctx, _run(ctx, endpoints_core.rename_endpoint(login, eid, final_name)))
 
 
 @devices.command("duplicates")
@@ -529,43 +617,79 @@ def devices_prune(ctx, whitelist_file, dry_run, yes):
               help="Resolve the appliance to delete by HA entity id (ha.entity_id)")
 @click.option("--name", "name", default=None,
               help="Resolve the appliance to delete by Alexa display name")
+@click.option("--verify", is_flag=True, default=False,
+              help="After deleting, re-discover + re-query and report which "
+                   "devices re-synced/re-appeared (native devices re-sync from "
+                   "their source bridge/skill).")
 @click.option("--yes", is_flag=True, default=False,
               help="Required to actually delete (guards live mutation)")
 @click.pass_context
-def devices_delete(ctx, appliance_ids, entity, name, yes):
+def devices_delete(ctx, appliance_ids, entity, name, verify, yes):
     """Delete appliances by applianceId, --entity <ha.id>, or --name "<display>".
 
     Positional applianceId(s) still work. --entity / --name resolve via the
     endpoints query to the applianceId; if a name matches more than one device
     (native + HA twin) the command aborts and lists the matches.
+
+    \b
+    Native (non-HA) devices re-sync from their cloud skill / bridge, so deleting
+    them in Alexa alone may not stick — you'll be warned, and --verify will
+    re-discover and report which re-appeared.
     """
     login = _login(ctx)
+    records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
+    # index records by applianceId so we can attach native-source warnings.
+    by_appliance = {r.get("applianceId"): r for r in records if r.get("applianceId")}
     targets = list(appliance_ids)
-    if entity or name:
-        records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
-        if entity:
-            matches = endpoints_core.resolve_by_entity(records, entity)
-            rec = _resolve_one_or_abort(ctx, records, matches, entity)
-            targets.append(rec.get("applianceId"))
-        if name:
-            matches = endpoints_core.resolve_by_name(records, name)
-            rec = _resolve_one_or_abort(ctx, records, matches, name)
-            targets.append(rec.get("applianceId"))
+    if entity:
+        matches = endpoints_core.resolve_by_entity(records, entity)
+        rec = _resolve_one_or_abort(ctx, records, matches, entity)
+        targets.append(rec.get("applianceId"))
+    if name:
+        matches = endpoints_core.resolve_by_name(records, name)
+        rec = _resolve_one_or_abort(ctx, records, matches, name)
+        targets.append(rec.get("applianceId"))
     targets = [t for t in targets if t]
     if not targets:
         _abort("nothing to delete — pass an applianceId, --entity, or --name")
+
+    # native-source warnings (deleting native devices may not stick)
+    warnings = []
+    for aid in targets:
+        rec = by_appliance.get(aid)
+        if rec is not None:
+            w = endpoints_core.native_delete_warning(rec)
+            if w:
+                warnings.append(w)
+    if warnings and not ctx.obj.get("as_json"):
+        for w in warnings:
+            click.echo(f"warning: {w}", err=True)
+
     if not yes:
         emit(ctx, {
             "dry_run": True,
             "would_delete": targets,
-            "hint": "re-run with --yes to execute",
+            "native_warnings": warnings,
+            "hint": "re-run with --yes to execute"
+                    + (" (--verify to re-check after)" if not verify else ""),
         })
         return
     results = [
         _run(ctx, devices_core.delete_appliance(login, aid))
         for aid in targets
     ]
-    emit(ctx, results)
+    if not verify:
+        emit(ctx, results)
+        return
+    # build the "deleted" rows (applianceId + name) for the reappear diff
+    deleted_rows = [
+        {"applianceId": aid,
+         "name": (by_appliance.get(aid) or {}).get("name")}
+        for aid in targets
+    ]
+    verification = _run(ctx, devices_core.verify_deletes(login, deleted_rows))
+    emit(ctx, {"results": results, "verify": verification,
+               "native_warnings": warnings})
 
 
 @cli.command("discover")
@@ -632,9 +756,19 @@ def _resolve_group_members(ctx, login, entities, endpoints, devices=()):
             eid = rec.get("endpointId")
             if eid and eid not in member_ids:
                 member_ids.append(eid)
-    if not member_ids:
-        _abort("no members given — pass at least one --entity / --endpoint / --device")
     return member_ids
+
+
+def _resolve_child_groups(ctx, login, child_groups):
+    """Resolve --child-group names/ids to group ids; abort on any unresolved."""
+    if not child_groups:
+        return []
+    raw = _run(ctx, groups_core.fetch_groups(login))
+    child_ids, unresolved = groups_core.resolve_child_groups(raw, list(child_groups))
+    if unresolved:
+        _abort("could not resolve these child groups (no such group?): "
+               + ", ".join(unresolved))
+    return child_ids
 
 
 def _find_group_or_abort(ctx, login, name_or_id):
@@ -660,35 +794,48 @@ def groups_list(ctx):
               help="HA entity id to add as a member (repeatable)")
 @click.option("--endpoint", "endpoints", multiple=True,
               help="Alexa endpoint id (amzn1.alexa.endpoint.*) to add (repeatable)")
+@click.option("--child-group", "child_groups", multiple=True,
+              help="Nest another group (by name or id) as a child — the rollup "
+                   "pattern, e.g. 'Downstairs' of room groups (repeatable)")
 @click.option("--yes", is_flag=True, default=False,
               help="Required to actually create (guards live mutation)")
 @click.pass_context
-def groups_create(ctx, name, entities, endpoints, yes):
-    """Create a device-group with the given members (dry-run unless --yes)."""
+def groups_create(ctx, name, entities, endpoints, child_groups, yes):
+    """Create a device-group with members and/or child groups (dry-run unless --yes)."""
     login = _login(ctx)
     member_ids = _resolve_group_members(ctx, login, entities, endpoints)
+    child_ids = _resolve_child_groups(ctx, login, child_groups)
+    if not member_ids and not child_ids:
+        _abort("no members given — pass at least one --entity / --endpoint / --child-group")
     if not yes:
         emit(ctx, {"dry_run": True, "would_create": name,
                    "memberDeviceIds": member_ids,
+                   "childDeviceGroupIds": child_ids,
                    "hint": "re-run with --yes to execute"})
         return
-    emit(ctx, _run(ctx, 
-        groups_core.create_group(login, name, member_ids)))
+    emit(ctx, _run(ctx,
+        groups_core.create_group(login, name, member_ids, child_ids)))
 
 
-def _groups_member_update(ctx, group, entities, endpoints, operation, yes, devices=()):
-    """Shared add/remove/set body: resolve members + updateDeviceGroup."""
+def _groups_member_update(ctx, group, entities, endpoints, operation, yes,
+                          devices=(), child_groups=()):
+    """Shared add/remove/set body: resolve members + child groups + updateDeviceGroup."""
     login = _login(ctx)
     g = _find_group_or_abort(ctx, login, group)
     gid = g.get("id")
     member_ids = _resolve_group_members(ctx, login, entities, endpoints, devices)
+    child_ids = _resolve_child_groups(ctx, login, child_groups)
+    if not member_ids and not child_ids:
+        _abort("nothing to change — pass at least one --entity / --endpoint / "
+               "--device / --child-group")
     if not yes:
         emit(ctx, {"dry_run": True, "group": group, "deviceGroupId": gid,
                    "operation": operation, "memberDeviceIds": member_ids,
+                   "childDeviceGroupIds": child_ids,
                    "hint": "re-run with --yes to execute"})
         return
-    emit(ctx, _run(ctx, 
-        groups_core.update_group(login, gid, member_ids, operation)))
+    emit(ctx, _run(ctx,
+        groups_core.update_group(login, gid, member_ids, operation, child_ids)))
 
 
 @groups.command("add")
@@ -698,11 +845,14 @@ def _groups_member_update(ctx, group, entities, endpoints, operation, yes, devic
               help="Alexa endpoint id (repeatable)")
 @click.option("--device", "devices_", multiple=True,
               help="Alexa display name — targets native/non-HA devices (repeatable)")
+@click.option("--child-group", "child_groups", multiple=True,
+              help="Nest another group (by name or id) as a child (repeatable)")
 @click.option("--yes", is_flag=True, default=False, help="Required to execute")
 @click.pass_context
-def groups_add(ctx, group, entities, endpoints, devices_, yes):
-    """Add members to a group (by name or id)."""
-    _groups_member_update(ctx, group, entities, endpoints, "ADD", yes, devices_)
+def groups_add(ctx, group, entities, endpoints, devices_, child_groups, yes):
+    """Add members and/or child groups to a group (by name or id)."""
+    _groups_member_update(ctx, group, entities, endpoints, "ADD", yes,
+                          devices_, child_groups)
 
 
 @groups.command("remove")
@@ -712,11 +862,14 @@ def groups_add(ctx, group, entities, endpoints, devices_, yes):
               help="Alexa endpoint id (repeatable)")
 @click.option("--device", "devices_", multiple=True,
               help="Alexa display name — targets native/non-HA devices (repeatable)")
+@click.option("--child-group", "child_groups", multiple=True,
+              help="Remove a nested child group (by name or id) (repeatable)")
 @click.option("--yes", is_flag=True, default=False, help="Required to execute")
 @click.pass_context
-def groups_remove(ctx, group, entities, endpoints, devices_, yes):
-    """Remove members from a group (by name or id)."""
-    _groups_member_update(ctx, group, entities, endpoints, "REMOVE", yes, devices_)
+def groups_remove(ctx, group, entities, endpoints, devices_, child_groups, yes):
+    """Remove members and/or child groups from a group (by name or id)."""
+    _groups_member_update(ctx, group, entities, endpoints, "REMOVE", yes,
+                          devices_, child_groups)
 
 
 @groups.command("set")
@@ -726,11 +879,14 @@ def groups_remove(ctx, group, entities, endpoints, devices_, yes):
               help="Alexa endpoint id (repeatable)")
 @click.option("--device", "devices_", multiple=True,
               help="Alexa display name — targets native/non-HA devices (repeatable)")
+@click.option("--child-group", "child_groups", multiple=True,
+              help="Replace the child-group set with these (by name or id) (repeatable)")
 @click.option("--yes", is_flag=True, default=False, help="Required to execute")
 @click.pass_context
-def groups_set(ctx, group, entities, endpoints, devices_, yes):
-    """Replace a group's entire member set (by name or id)."""
-    _groups_member_update(ctx, group, entities, endpoints, "REPLACE", yes, devices_)
+def groups_set(ctx, group, entities, endpoints, devices_, child_groups, yes):
+    """Replace a group's entire member (and child-group) set (by name or id)."""
+    _groups_member_update(ctx, group, entities, endpoints, "REPLACE", yes,
+                          devices_, child_groups)
 
 
 @groups.command("delete")
