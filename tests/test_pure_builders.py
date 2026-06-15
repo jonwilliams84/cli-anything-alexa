@@ -3,6 +3,7 @@ notification payload builders + row flatteners, routine/device matching,
 group rows, and session path/csrf helpers.
 """
 
+import json
 import time
 from pathlib import Path
 
@@ -86,13 +87,119 @@ def test_device_rows_and_find():
     assert devices_meta.find_device(devs, "missing") is None
 
 
-# ── groups ─────────────────────────────────────────────────────────────
+# ── groups (GraphQL device-groups) ─────────────────────────────────────
 
-def test_group_rows_counts_members():
-    raw = [{"groupId": "g1", "name": "Downstairs",
-            "applianceIds": ["x", "y", "z"], "groupType": "APPLIANCE"}]
+def _gql_group(gid, name, members):
+    """Build a listDeviceGroups-shaped raw group record."""
+    return {
+        "id": gid,
+        "friendlyName": {"value": {"text": name}},
+        "memberDevices": {
+            "items": [
+                {"id": mid, "friendlyNameObject": {"value": {"text": mname}}}
+                for mid, mname in members
+            ]
+        },
+    }
+
+
+def test_group_rows_counts_members_and_names():
+    raw = [_gql_group(
+        "amzn1.alexa.endpointGroup.g1", "Downstairs",
+        [("amzn1.alexa.endpoint.a", "Lamp"),
+         ("amzn1.alexa.endpoint.b", "TV"),
+         ("amzn1.alexa.endpoint.c", "Fan")],
+    )]
     rows = groups.group_rows(raw)
-    assert rows[0]["members"] == 3 and rows[0]["name"] == "Downstairs"
+    assert rows[0]["id"] == "amzn1.alexa.endpointGroup.g1"
+    assert rows[0]["name"] == "Downstairs"
+    assert rows[0]["members"] == 3
+    assert rows[0]["memberNames"] == ["Lamp", "TV", "Fan"]
+
+
+def test_normalize_name_is_case_space_punct_insensitive():
+    assert groups.normalize_name("Living Room") == "livingroom"
+    assert groups.normalize_name("living-room!") == "livingroom"
+    assert groups.normalize_name("  LIVING   ROOM  ") == "livingroom"
+    assert groups.normalize_name("") == ""
+
+
+def test_find_group_by_id_and_name():
+    autos = [
+        _gql_group("amzn1.alexa.endpointGroup.g1", "Living Room", []),
+        _gql_group("amzn1.alexa.endpointGroup.g2", "Kitchen", []),
+    ]
+    assert groups.find_group(autos, "amzn1.alexa.endpointGroup.g2")["friendlyName"]["value"]["text"] == "Kitchen"
+    # normalized name lookup (case/space insensitive)
+    assert groups.find_group(autos, "living room")["id"] == "amzn1.alexa.endpointGroup.g1"
+    assert groups.find_group(autos, "LivingRoom")["id"] == "amzn1.alexa.endpointGroup.g1"
+    assert groups.find_group(autos, "nope") is None
+    assert groups.find_group(autos, "") is None
+
+
+def test_endpoint_map_resolves_ha_entities():
+    items = [
+        {"id": "amzn1.alexa.endpoint.e1",
+         "legacyAppliance": {"applianceId": "AAA_light#kitchen_lamp"}},
+        {"id": "amzn1.alexa.endpoint.e2",
+         "legacyAppliance": {"applianceId": "BBB_switch#barista_machine_power"}},
+        # non-HA endpoint (no parseable tail) — skipped
+        {"id": "amzn1.alexa.endpoint.e3",
+         "legacyAppliance": {"applianceId": "hue-native-id"}},
+    ]
+    m = groups.endpoint_map(items)
+    assert m["light.kitchen_lamp"] == "amzn1.alexa.endpoint.e1"
+    assert m["switch.barista_machine_power"] == "amzn1.alexa.endpoint.e2"
+    assert "hue-native-id" not in m and len(m) == 2
+
+
+def test_resolve_members_maps_entities_passes_endpoints_dedupes():
+    ent_map = {"light.kitchen_lamp": "amzn1.alexa.endpoint.e1"}
+    resolved, unresolved = groups.resolve_members(
+        ["light.kitchen_lamp", "light.missing"],
+        ["amzn1.alexa.endpoint.e1", "amzn1.alexa.endpoint.x"],
+        ent_map,
+    )
+    # e1 came from the entity AND was passed as an endpoint -> de-duped
+    assert resolved == ["amzn1.alexa.endpoint.e1", "amzn1.alexa.endpoint.x"]
+    assert unresolved == ["light.missing"]
+
+
+# ── groups GraphQL variables builders (the gotchas) ────────────────────
+
+def test_create_variables_lists_are_real_arrays_no_unit_ids():
+    v = groups.build_create_variables("Den", ["amzn1.alexa.endpoint.a",
+                                              "amzn1.alexa.endpoint.b"])
+    inp = v["in"]
+    assert inp["friendlyName"] == "Den"
+    # CRITICAL: must be a real list, not a json.dumps'd string (silent no-op)
+    assert isinstance(inp["memberDeviceIds"], list)
+    assert inp["memberDeviceIds"] == ["amzn1.alexa.endpoint.a", "amzn1.alexa.endpoint.b"]
+    # CRITICAL: create must NOT carry associatedUnitIds (-> BAD_REQUEST)
+    assert "associatedUnitIds" not in inp
+    # and it survives JSON serialization as an array, not a string
+    assert isinstance(json.loads(json.dumps(v))["in"]["memberDeviceIds"], list)
+
+
+def test_update_variables_operation_and_real_list():
+    v = groups.build_update_variables(
+        "amzn1.alexa.endpointGroup.g1", ["amzn1.alexa.endpoint.a"], "add")
+    inp = v["in"]
+    assert inp["deviceGroupId"] == "amzn1.alexa.endpointGroup.g1"
+    assert inp["memberDeviceIdsUpdateOperation"] == "ADD"
+    assert isinstance(inp["memberDeviceIds"], list)
+    assert inp["memberDeviceIds"] == ["amzn1.alexa.endpoint.a"]
+
+
+def test_update_variables_rejects_bad_operation():
+    import pytest
+    with pytest.raises(ValueError):
+        groups.build_update_variables("g1", [], "FROB")
+
+
+def test_delete_variables():
+    v = groups.build_delete_variables("amzn1.alexa.endpointGroup.g1")
+    assert v == {"in": {"deviceGroupId": "amzn1.alexa.endpointGroup.g1"}}
 
 
 # ── session helpers ────────────────────────────────────────────────────

@@ -18,7 +18,7 @@ REPL pattern. Python 3.10+ for the CLI; live calls need Python 3.14+ at runtime
   - `notifications.py` — alarms/timers/reminders: list + pure payload builders + POST/PUT/DELETE.
   - `routines.py` — behaviors list + trigger (device-bound `run_routine`).
   - `control.py` — announce + dnd.
-  - `groups.py` — group list (raw phoenix); create/delete = TODO.
+  - `groups.py` — device-groups (rooms) over **GraphQL** `/nexus/v1/graphql`: list/create/add/remove/set/delete. Pure variables-builders + name-normalize/lookup + entity→endpoint resolution are unit-tested; network goes via `AlexaAPI._static_request`.
   - `project.py` — local profile (`~/.config/cli-anything-alexa/config.json`).
 - `cli_anything/alexa/utils/repl_skin.py` — shared cli-anything REPL skin.
 - `cli_anything/alexa/skills/SKILL.md` — packaged agent skill manifest.
@@ -50,7 +50,18 @@ cli-anything-alexa devices list --json
 - **csrf header** required on every mutating raw call — `session.csrf_header(login)`
   pulls the `csrf` cookie off the authed aiohttp jar.
 - **Never commit** the profile or cookie (gitignored — live Amazon session).
-- `groups create/delete` is intentionally a TODO (undocumented phoenix group payload).
+- **Device-groups = GraphQL**, not phoenix REST (`/api/phoenix/group` is dead — 401
+  `'at' and 'ubid' values required`). Go through `AlexaAPI._static_request("post",
+  login, "/nexus/v1/graphql", data={"query":..., "variables":...})` — it sets the
+  correct nexus host/auth; do NOT hand-roll the host (the web host 401s for groups).
+  Group id = `amzn1.alexa.endpointGroup.*`; member/endpoint id = `amzn1.alexa.endpoint.*`.
+  Map HA entity→endpoint via the `endpoints` query (reuses `parse_entity_id`).
+  **Two gotchas** (baked into `groups.py` + commented): (1) `memberDeviceIds` /
+  `associatedUnitIds` are GraphQL `[String!]` — pass real Python lists so they
+  serialize as JSON arrays; a lone `json.dumps`'d string is coerced to a 1-element
+  list and the server **silently no-ops**. (2) Never send `associatedUnitIds` on
+  **create** (BAD_REQUEST) — Alexa auto-associates the unit; create = friendlyName +
+  memberDeviceIds only. Update uses `memberDeviceIdsUpdateOperation` ADD/REMOVE/REPLACE.
 
 ## Verified
 Live read-only validation (2026-06-15, amazon.co.uk account, HA cookie reused):

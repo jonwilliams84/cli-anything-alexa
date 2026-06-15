@@ -75,7 +75,12 @@ Every command supports a global `--json` flag for machine-readable output.
 | `devices prune --whitelist <file>` | Delete HA-sourced appliances whose entity isn't whitelisted (dry-run default; `--no-dry-run --yes` to execute) |
 | `devices delete <applianceId...>` | Delete appliances by id (`--yes` to execute) |
 | `echos list` | List the physical Echo devices on the account |
-| `groups list` | List Alexa smart-home groups (create/delete = TODO) |
+| `groups list` | List Alexa smart-home device-groups (rooms): name, id, member count/names |
+| `groups create <name> [--entity ... \| --endpoint ...]` | Create a device-group with the given members (`--yes` to execute) |
+| `groups add <group> [--entity ... \| --endpoint ...]` | Add members to a group by name/id (`--yes`) |
+| `groups remove <group> [--entity ... \| --endpoint ...]` | Remove members from a group by name/id (`--yes`) |
+| `groups set <group> [--entity ... \| --endpoint ...]` | Replace a group's entire member set (`--yes`) |
+| `groups delete <group>` | Delete a device-group by name/id (`--yes` to execute) |
 | `routines list` | List Alexa routines (behaviors) |
 | `routines run <name\|id>` | Trigger a routine via `behaviors/preview` (`--yes` to execute) |
 | `notifications list` | List alarms / timers / reminders |
@@ -102,6 +107,37 @@ cli-anything-alexa devices prune --whitelist exposed-entities.txt --no-dry-run -
 Only `manufacturerName == "Home Assistant"` appliances are candidates; native
 Hue/Wemo/Tuya appliances are never touched.
 
+### Device-groups (rooms)
+
+`groups` manages Alexa **device-groups** (the "rooms" / groups you see in the
+app) over the modern **GraphQL** API at `/nexus/v1/graphql` (the legacy
+`/api/phoenix/group` REST endpoint is dead — it hard-401s). Members are
+addressed either by Alexa endpoint id (`amzn1.alexa.endpoint.*`) or, more
+conveniently, by Home Assistant `--entity` id, which is resolved to its
+endpoint via the `endpoints` query (the same `..._<domain>#<object_id>` tail
+parse used for appliances).
+
+```bash
+cli-anything-alexa groups list
+cli-anything-alexa groups create "Den" --entity light.den_lamp --entity media_player.den_tv   # preview
+cli-anything-alexa groups create "Den" --entity light.den_lamp --yes                           # execute
+cli-anything-alexa groups add "Den" --entity switch.den_fan --yes      # ADD delta
+cli-anything-alexa groups remove "Den" --entity light.den_lamp --yes   # REMOVE delta
+cli-anything-alexa groups set "Den" --entity light.den_lamp --yes      # REPLACE whole member set
+cli-anything-alexa groups delete "Den" --yes
+```
+
+Groups are looked up by id or by friendly name (case/space/punctuation
+insensitive). Two API gotchas are handled internally and worth knowing:
+
+- **Member id lists are GraphQL `[String!]` arrays.** They must serialize as
+  real JSON arrays. Passing a single `json.dumps`'d string makes GraphQL
+  coerce it into a 1-element list and the server **silently no-ops** (no error,
+  nothing changes). The variables builders pass real Python lists.
+- **`create` must not send `associatedUnitIds`** — doing so triggers
+  `BAD_REQUEST`. Alexa auto-associates the unit from the member devices, so
+  create takes `friendlyName` + `memberDeviceIds` only.
+
 ## Whitelist file format
 
 ```
@@ -126,5 +162,7 @@ python3 -m pytest tests/ -v
 ```
 
 The unit tests cover the **pure logic** — appliance-id → entity parsing,
-whitelist filtering / prune planning, table formatting, and the notification
-payload builders — with no `alexapy` dependency and no live account.
+whitelist filtering / prune planning, table formatting, the notification
+payload builders, and the device-group GraphQL variables builders /
+name-normalization / lookup / entity→endpoint resolution — with no `alexapy`
+dependency and no live account.

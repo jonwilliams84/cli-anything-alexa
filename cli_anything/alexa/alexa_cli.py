@@ -336,15 +336,134 @@ def echos_list(ctx):
 
 @cli.group()
 def groups():
-    """Smart-home groups (list-only; create/delete = TODO)."""
+    """Smart-home device-groups / rooms — list / create / add / remove / set / delete."""
+
+
+def _resolve_group_members(ctx, login, entities, endpoints):
+    """Resolve --entity + --endpoint to endpoint ids; abort on any unresolved."""
+    ent_map = {}
+    if entities:
+        ent_map = session_core.run_async(groups_core.fetch_endpoint_map(login))
+    member_ids, unresolved = groups_core.resolve_members(
+        list(entities), list(endpoints), ent_map
+    )
+    if unresolved:
+        _abort(
+            "could not resolve these entities to Alexa endpoints "
+            f"(not exposed to Alexa?): {', '.join(unresolved)}"
+        )
+    if not member_ids:
+        _abort("no members given — pass at least one --entity or --endpoint")
+    return member_ids
+
+
+def _find_group_or_abort(ctx, login, name_or_id):
+    """Fetch groups and resolve a name/id to a raw group record, or abort."""
+    raw = session_core.run_async(groups_core.fetch_groups(login))
+    g = groups_core.find_group(raw, name_or_id)
+    if not g:
+        _abort(f"no group matching {name_or_id!r}")
+    return g
 
 
 @groups.command("list")
 @click.pass_context
 def groups_list(ctx):
-    """List Alexa smart-home groups."""
+    """List Alexa smart-home device-groups (name, id, member count/names)."""
     login = _login(ctx)
     emit(ctx, session_core.run_async(groups_core.list_groups(login)))
+
+
+@groups.command("create")
+@click.argument("name")
+@click.option("--entity", "entities", multiple=True,
+              help="HA entity id to add as a member (repeatable)")
+@click.option("--endpoint", "endpoints", multiple=True,
+              help="Alexa endpoint id (amzn1.alexa.endpoint.*) to add (repeatable)")
+@click.option("--yes", is_flag=True, default=False,
+              help="Required to actually create (guards live mutation)")
+@click.pass_context
+def groups_create(ctx, name, entities, endpoints, yes):
+    """Create a device-group with the given members (dry-run unless --yes)."""
+    login = _login(ctx)
+    member_ids = _resolve_group_members(ctx, login, entities, endpoints)
+    if not yes:
+        emit(ctx, {"dry_run": True, "would_create": name,
+                   "memberDeviceIds": member_ids,
+                   "hint": "re-run with --yes to execute"})
+        return
+    emit(ctx, session_core.run_async(
+        groups_core.create_group(login, name, member_ids)))
+
+
+def _groups_member_update(ctx, group, entities, endpoints, operation, yes):
+    """Shared add/remove/set body: resolve members + updateDeviceGroup."""
+    login = _login(ctx)
+    g = _find_group_or_abort(ctx, login, group)
+    gid = g.get("id")
+    member_ids = _resolve_group_members(ctx, login, entities, endpoints)
+    if not yes:
+        emit(ctx, {"dry_run": True, "group": group, "deviceGroupId": gid,
+                   "operation": operation, "memberDeviceIds": member_ids,
+                   "hint": "re-run with --yes to execute"})
+        return
+    emit(ctx, session_core.run_async(
+        groups_core.update_group(login, gid, member_ids, operation)))
+
+
+@groups.command("add")
+@click.argument("group")
+@click.option("--entity", "entities", multiple=True, help="HA entity id (repeatable)")
+@click.option("--endpoint", "endpoints", multiple=True,
+              help="Alexa endpoint id (repeatable)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def groups_add(ctx, group, entities, endpoints, yes):
+    """Add members to a group (by name or id)."""
+    _groups_member_update(ctx, group, entities, endpoints, "ADD", yes)
+
+
+@groups.command("remove")
+@click.argument("group")
+@click.option("--entity", "entities", multiple=True, help="HA entity id (repeatable)")
+@click.option("--endpoint", "endpoints", multiple=True,
+              help="Alexa endpoint id (repeatable)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def groups_remove(ctx, group, entities, endpoints, yes):
+    """Remove members from a group (by name or id)."""
+    _groups_member_update(ctx, group, entities, endpoints, "REMOVE", yes)
+
+
+@groups.command("set")
+@click.argument("group")
+@click.option("--entity", "entities", multiple=True, help="HA entity id (repeatable)")
+@click.option("--endpoint", "endpoints", multiple=True,
+              help="Alexa endpoint id (repeatable)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def groups_set(ctx, group, entities, endpoints, yes):
+    """Replace a group's entire member set (by name or id)."""
+    _groups_member_update(ctx, group, entities, endpoints, "REPLACE", yes)
+
+
+@groups.command("delete")
+@click.argument("group")
+@click.option("--yes", is_flag=True, default=False,
+              help="Required to actually delete (guards live mutation)")
+@click.pass_context
+def groups_delete(ctx, group, yes):
+    """Delete a device-group (by name or id; dry-run unless --yes)."""
+    login = _login(ctx)
+    g = _find_group_or_abort(ctx, login, group)
+    gid = g.get("id")
+    name = (((g.get("friendlyName") or {}).get("value") or {}).get("text"))
+    if not yes:
+        emit(ctx, {"dry_run": True, "would_delete": name or group,
+                   "deviceGroupId": gid,
+                   "hint": "re-run with --yes to execute"})
+        return
+    emit(ctx, session_core.run_async(groups_core.delete_group(login, gid)))
 
 
 # ──────────────────────────────────────────────────────── routines

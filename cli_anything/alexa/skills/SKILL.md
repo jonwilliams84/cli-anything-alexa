@@ -28,7 +28,15 @@ Every command takes `--json`.
   appliances are never touched.
 - `devices delete <applianceId...>` — delete by id (`--yes`).
 - `echos list` — physical Echo devices.
-- `groups list` — smart-home groups (create/delete = TODO).
+- `groups list` — smart-home device-groups (rooms): name, id, member count/names.
+- `groups create <name> [--entity ha.x ...] [--endpoint amzn1... ...]` (`--yes`).
+- `groups add|remove|set <group(name|id)> [--entity ...] [--endpoint ...]` (`--yes`) —
+  ADD/REMOVE delta, `set` REPLACEs the whole member set.
+- `groups delete <group(name|id)>` (`--yes`).
+  Groups use the modern GraphQL `/nexus/v1/graphql` API (the legacy phoenix
+  group REST is dead). **Gotchas:** member id lists must be real JSON arrays
+  (a lone string silently no-ops); never send `associatedUnitIds` on create
+  (BAD_REQUEST — Alexa auto-associates the unit). Both handled internally.
 - `routines list` / `routines run <name|id>` (`--yes`) — trigger via behaviors/preview.
 - `notifications list` / `add-reminder` / `add-alarm` / `add-timer` / `delete` (`--yes`).
 - `announce <text> [--device ...]` (`--yes`) — TTS on all/one Echo.
