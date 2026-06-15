@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+
+# Connection profile + cookie — NEVER commit (holds live Amazon session)
+.config/
+*.pickle
+cli-anything-alexa.json
+config.json
