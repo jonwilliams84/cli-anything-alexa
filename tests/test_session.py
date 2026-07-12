@@ -172,3 +172,127 @@ def test_test_loggedin_false_throughout(monkeypatch):
         "you@example.com", reload_attempts=3, reload_sleep=0)) is False
     assert fake.login_calls == 1          # capped, no re-login storm
     assert fake.test_calls == 3
+
+
+# ── Amazon region host allow-list (SSRF / credential-redirect guard) ─────
+
+def test_validate_region_accepts_known_hosts():
+    """All allow-listed Amazon domains are accepted and normalized to bare form."""
+    for host in ("amazon.co.uk", "amazon.com", "amazon.de", "amazon.com.au"):
+        assert session.validate_region(host) == host
+
+
+def test_validate_region_accepts_alexa_prefix_and_scheme():
+    """``alexa.amazon.co.uk`` and ``https://alexa.amazon.fr`` normalize correctly."""
+    assert session.validate_region("alexa.amazon.co.uk") == "amazon.co.uk"
+    assert session.validate_region("https://alexa.amazon.fr") == "amazon.fr"
+    assert session.validate_region("http://alexa.amazon.it") == "amazon.it"
+
+
+def test_validate_region_case_insensitive():
+    assert session.validate_region("AMAZON.COM") == "amazon.com"
+    assert session.validate_region("Amazon.Co.UK") == "amazon.co.uk"
+
+
+def test_validate_region_strips_trailing_slash_and_dot():
+    assert session.validate_region("amazon.de/") == "amazon.de"
+    assert session.validate_region("amazon.de.") == "amazon.de"
+    assert session.validate_region("amazon.de/path") == "amazon.de"
+
+
+def test_validate_region_rejects_unknown_host():
+    """An attacker-controlled / typo host must be rejected (SSRF guard)."""
+    with pytest.raises(session.AlexaSessionError) as exc:
+        session.validate_region("evil.com")
+    assert "unsupported Amazon region host" in str(exc.value)
+
+
+def test_validate_region_rejects_alexa_prefixed_unknown():
+    with pytest.raises(session.AlexaSessionError):
+        session.validate_region("alexa.attacker.com")
+
+
+def test_validate_region_rejects_empty_and_none():
+    with pytest.raises(session.AlexaSessionError):
+        session.validate_region("")
+    with pytest.raises(session.AlexaSessionError):
+        session.validate_region(None)
+
+
+def test_base_url_validates_host():
+    """base_url must reject unknown hosts (not just build any URL)."""
+    assert session.base_url("amazon.co.uk") == "https://alexa.amazon.co.uk"
+    with pytest.raises(session.AlexaSessionError):
+        session.base_url("evil.com")
+
+
+def test_build_login_validates_url(monkeypatch):
+    """build_login must reject an unknown region before constructing AlexaLogin."""
+    class _FakeAlexaLogin:
+        def __init__(self, *a, **k):
+            raise AssertionError("AlexaLogin should not be constructed for bad url")
+    monkeypatch.setattr(session, "_import_alexapy",
+                        lambda: (_FakeAlexaLogin, object()))
+    with pytest.raises(session.AlexaSessionError):
+        session.build_login("you@example.com", url="evil.com")
+
+
+def test_load_session_validates_url(monkeypatch):
+    """load_session must reject an unknown region before any network call."""
+    class _FakeLogin:
+        async def load_cookie(self, *a, **k):
+            raise AssertionError("should not reach load_cookie for bad url")
+        async def login(self, *a, **k):
+            raise AssertionError("should not reach login for bad url")
+        async def test_loggedin(self, *a, **k):
+            raise AssertionError("should not reach test_loggedin for bad url")
+        async def close(self):
+            pass
+    monkeypatch.setattr(session, "build_login",
+                        lambda *a, **k: _FakeLogin())
+    with pytest.raises(session.AlexaSessionError):
+        asyncio.run(session.load_session("you@example.com", url="evil.com",
+                                          reload_attempts=1, reload_sleep=0))
+
+
+def test_test_loggedin_validates_url(monkeypatch):
+    """test_loggedin must reject an unknown region before any network call."""
+    class _FakeLogin:
+        async def load_cookie(self, *a, **k):
+            raise AssertionError("should not reach load_cookie for bad url")
+        async def login(self, *a, **k):
+            raise AssertionError("should not reach login for bad url")
+        async def test_loggedin(self, *a, **k):
+            raise AssertionError("should not reach test_loggedin for bad url")
+        async def close(self):
+            pass
+    monkeypatch.setattr(session, "build_login",
+                        lambda *a, **k: _FakeLogin())
+    # test_loggedin swallows exceptions and returns False, but validate_region
+    # raises AlexaSessionError BEFORE build_login is called, so it propagates.
+    with pytest.raises(session.AlexaSessionError):
+        asyncio.run(session.test_loggedin("you@example.com", url="evil.com",
+                                           reload_attempts=1, reload_sleep=0))
+
+
+def test_fresh_login_validates_url(monkeypatch):
+    """fresh_login must reject an unknown region before constructing AlexaLogin."""
+    class _FakeAlexaLogin:
+        def __init__(self, *a, **k):
+            raise AssertionError("AlexaLogin should not be constructed for bad url")
+    monkeypatch.setattr(session, "_import_alexapy",
+                        lambda: (_FakeAlexaLogin, object()))
+    with pytest.raises(session.AlexaSessionError):
+        asyncio.run(session.fresh_login("you@example.com", "pass",
+                                        url="evil.com"))
+
+
+def test_proxy_login_validates_url(monkeypatch):
+    """proxy_login must reject an unknown region before constructing AlexaLogin."""
+    class _FakeAlexaLogin:
+        def __init__(self, *a, **k):
+            raise AssertionError("AlexaLogin should not be constructed for bad url")
+    monkeypatch.setattr(session, "_import_alexapy",
+                        lambda: (_FakeAlexaLogin, object()))
+    with pytest.raises(session.AlexaSessionError):
+        asyncio.run(session.proxy_login("you@example.com", url="evil.com"))
