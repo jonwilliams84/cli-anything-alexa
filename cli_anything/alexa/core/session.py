@@ -100,6 +100,76 @@ def resolve_config_dir(cookie_dir: Optional[str | os.PathLike] = None) -> Path:
 DEFAULT_PROXY_HOST = "127.0.0.1"
 DEFAULT_PROXY_PORT = 3001
 
+# Known Amazon Alexa region hosts. The ``url``/``region`` argument selects
+# which Amazon domain the account authenticates against and which Alexa web
+# host API calls target (``https://alexa.<url>``). Because that value is fed
+# directly into ``AlexaLogin(url, ...)`` (authenticating against it) and into
+# ``base_url`` (building API URLs), an unvalidated ``url`` is an SSRF / credential-
+# exfiltration vector: a malicious or misconfigured ``--url`` / config ``url``
+# could redirect the user's email/password/cookie to an attacker-controlled host.
+# We therefore constrain it to this allow-list of Amazon's own regional domains.
+# (Alexa is only operated by Amazon on these hosts; a value outside this set is
+# either a typo or an attack — reject it with a clear error either way.)
+ALLOWED_AMAZON_HOSTS = frozenset({
+    "amazon.com",
+    "amazon.co.uk",
+    "amazon.de",
+    "amazon.fr",
+    "amazon.it",
+    "amazon.es",
+    "amazon.nl",
+    "amazon.com.au",
+    "amazon.in",
+    "amazon.com.mx",
+    "amazon.com.br",
+    "amazon.ca",
+    "amazon.jp",
+    "amazon.com.tr",
+    "amazon.sa",
+    "amazon.ae",
+    "amazon.sg",
+    "amazon.pl",
+    "amazon.se",
+    "amazon.eg",
+})
+
+# The default region — always in the allow-list (asserted at import for safety).
+DEFAULT_URL = "amazon.co.uk"
+assert DEFAULT_URL in ALLOWED_AMAZON_HOSTS
+
+
+def validate_region(url: str) -> str:
+    """Validate and normalize the Amazon region host (``url``).
+
+    Accepts either the bare domain (``amazon.co.uk`` — the documented form) or
+    the full Alexa web host (``alexa.amazon.co.uk``); both map to the same
+    allow-list entry. Returns the bare domain form (``amazon.co.uk``) so callers
+    can pass it straight to ``AlexaLogin`` / ``base_url``. Raises
+    ``AlexaSessionError`` for any host not in ``ALLOWED_AMZON_HOSTS`` — this is
+    the SSRF / credential-redirect guard: an unknown host is either a typo or a
+    malicious value, and in both cases we refuse to authenticate against it.
+    """
+    if not url or not isinstance(url, str):
+        raise AlexaSessionError(
+            "Amazon region host is required (e.g. amazon.co.uk)."
+        )
+    candidate = url.strip().lower()
+    # Strip a leading scheme / alexa. prefix so "alexa.amazon.co.uk" is accepted.
+    if candidate.startswith("https://"):
+        candidate = candidate[len("https://"):]
+    elif candidate.startswith("http://"):
+        candidate = candidate[len("http://"):]
+    if candidate.startswith("alexa."):
+        candidate = candidate[len("alexa."):]
+    # Drop any trailing path / slash.
+    candidate = candidate.split("/", 1)[0].rstrip(".")
+    if candidate not in ALLOWED_AMAZON_HOSTS:
+        raise AlexaSessionError(
+            f"unsupported Amazon region host {url!r}. Use one of the known "
+            f"Amazon domains: {', '.join(sorted(ALLOWED_AMAZON_HOSTS))}."
+        )
+    return candidate
+
 
 class AlexaSessionError(RuntimeError):
     """Raised for any auth/session failure."""
@@ -211,15 +281,17 @@ def _import_alexapy():
         ) from exc
 
 
-def build_login(email: str, url: str = "amazon.co.uk",
+def build_login(email: str, url: str = DEFAULT_URL,
                 config_dir: Path = DEFAULT_CONFIG_DIR,
                 otp_secret: str = "",
                 create_dir: bool = True):
     """Construct an `AlexaLogin` pointed at our config dir.
 
     ``create_dir=False`` (read-in-place ``--cookie-dir``) avoids creating or
-    writing into a directory we don't own — e.g. HA's ``/config``.
+    writing into a directory we don't own — e.g. HA's ``/config``. Validates
+    ``url`` against the Amazon region allow-list (SSRF guard).
     """
+    url = validate_region(url)
     AlexaLogin, _ = _import_alexapy()
     return AlexaLogin(
         url,
@@ -239,7 +311,7 @@ STALE_RELOAD_ATTEMPTS = 3
 STALE_RELOAD_SLEEP = 1.0
 
 
-async def load_session(email: str, url: str = "amazon.co.uk",
+async def load_session(email: str, url: str = DEFAULT_URL,
                        config_dir: Path = DEFAULT_CONFIG_DIR,
                        create_dir: bool = True,
                        reload_attempts: int = STALE_RELOAD_ATTEMPTS,
@@ -254,6 +326,7 @@ async def load_session(email: str, url: str = "amazon.co.uk",
 
     Raises ``AlexaSessionError`` if no cookie is present or it stays stale.
     """
+    url = validate_region(url)
     login = build_login(email, url=url, config_dir=config_dir,
                         create_dir=create_dir)
     try:
@@ -297,7 +370,7 @@ async def load_session(email: str, url: str = "amazon.co.uk",
     return login
 
 
-async def test_loggedin(email: str, url: str = "amazon.co.uk",
+async def test_loggedin(email: str, url: str = DEFAULT_URL,
                         config_dir: Path = DEFAULT_CONFIG_DIR,
                         create_dir: bool = True,
                         reload_attempts: int = STALE_RELOAD_ATTEMPTS,
@@ -307,6 +380,7 @@ async def test_loggedin(email: str, url: str = "amazon.co.uk",
     Same HA-rotation auto-recovery as ``load_session``: re-load the cookie
     from disk and re-test (bounded), without re-logging-in repeatedly.
     """
+    url = validate_region(url)
     login = None
     try:
         login = build_login(email, url=url, config_dir=config_dir,
@@ -337,7 +411,7 @@ async def test_loggedin(email: str, url: str = "amazon.co.uk",
                 pass
 
 
-async def fresh_login(email: str, password: str, url: str = "amazon.co.uk",
+async def fresh_login(email: str, password: str, url: str = DEFAULT_URL,
                       config_dir: Path = DEFAULT_CONFIG_DIR,
                       otp_secret: str = "",
                       otp_callback=None):
@@ -352,6 +426,7 @@ async def fresh_login(email: str, password: str, url: str = "amazon.co.uk",
     ``otp_callback`` (a no-arg callable returning the code) is used when
     alexapy reports a code is required. Returns the logged-in `AlexaLogin`.
     """
+    url = validate_region(url)
     AlexaLogin, _ = _import_alexapy()
     login = AlexaLogin(
         url, email, password, make_outputpath(config_dir), otp_secret=otp_secret
@@ -416,7 +491,7 @@ def proxy_access_url(host: str, port: int) -> str:
     return f"http://{shown}:{int(port)}"
 
 
-async def proxy_login(email: str, url: str = "amazon.co.uk",
+async def proxy_login(email: str, url: str = DEFAULT_URL,
                       config_dir: Path = DEFAULT_CONFIG_DIR,
                       host: str = DEFAULT_PROXY_HOST,
                       port: int = DEFAULT_PROXY_PORT,
@@ -440,6 +515,7 @@ async def proxy_login(email: str, url: str = "amazon.co.uk",
     Returns the logged-in ``AlexaLogin`` on success; raises
     ``AlexaSessionError`` on timeout or proxy failure.
     """
+    url = validate_region(url)
     AlexaLogin, _ = _import_alexapy()
     try:
         from alexapy import AlexaProxy
@@ -525,6 +601,10 @@ def csrf_header(login) -> dict[str, str]:
 
 
 def base_url(url: str = "amazon.co.uk") -> str:
-    """The Alexa web base for an account region, e.g. amazon.co.uk."""
-    host = url if url.startswith("alexa.") else f"alexa.{url}"
-    return f"https://{host}"
+    """The Alexa web base for an account region, e.g. amazon.co.uk.
+
+    Validates ``url`` against ``ALLOWED_AMAZON_HOSTS`` (the SSRF guard) and
+    returns ``https://alexa.<url>``.
+    """
+    url = validate_region(url)
+    return f"https://alexa.{url}"
