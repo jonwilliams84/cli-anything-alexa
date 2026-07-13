@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 from typing import Any, Optional
+from urllib.parse import quote
 
 from cli_anything.alexa.core.session import (
     AlexaSessionError,
@@ -108,7 +109,7 @@ async def delete_notification(login, notification_id: str) -> dict[str, Any]:
     headers = csrf_header(login)
     if not headers:
         raise AlexaSessionError("no csrf cookie — cannot delete a notification")
-    url = f"{base_url(login.url)}/api/notifications/{notification_id}"
+    url = f"{base_url(login.url)}/api/notifications/{quote(notification_id, safe='')}"
     async with login.session.delete(url, headers=headers) as resp:
         text = await resp.text()
         return {

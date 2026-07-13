@@ -145,7 +145,7 @@ def validate_region(url: str) -> str:
     the full Alexa web host (``alexa.amazon.co.uk``); both map to the same
     allow-list entry. Returns the bare domain form (``amazon.co.uk``) so callers
     can pass it straight to ``AlexaLogin`` / ``base_url``. Raises
-    ``AlexaSessionError`` for any host not in ``ALLOWED_AMZON_HOSTS`` — this is
+    ``AlexaSessionError`` for any host not in ``ALLOWED_AMAZON_HOSTS`` — this is
     the SSRF / credential-redirect guard: an unknown host is either a typo or a
     malicious value, and in both cases we refuse to authenticate against it.
     """
@@ -600,7 +600,7 @@ def csrf_header(login) -> dict[str, str]:
     return {}
 
 
-def base_url(url: str = "amazon.co.uk") -> str:
+def base_url(url: str = DEFAULT_URL) -> str:
     """The Alexa web base for an account region, e.g. amazon.co.uk.
 
     Validates ``url`` against ``ALLOWED_AMAZON_HOSTS`` (the SSRF guard) and

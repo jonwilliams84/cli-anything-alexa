@@ -297,3 +297,48 @@ def test_proxy_access_url_explicit_host_kept():
     assert session.proxy_access_url("192.168.1.5", 3001) == "http://192.168.1.5:3001"
     # port coerced to int
     assert session.proxy_access_url("10.0.0.2", "5000") == "http://10.0.0.2:5000"
+
+
+# ── regression: notification_id must be URL-quoted in delete URL ───────
+
+def test_delete_notification_quotes_id(monkeypatch):
+    """notification_id is URL-quoted to prevent path injection.
+
+    A malicious id like ``../devices`` must NOT escape the
+    ``/api/notifications/`` path segment — it must be percent-encoded.
+    """
+    from cli_anything.alexa.core import notifications
+
+    captured = {}
+
+    class _FakeResp:
+        status = 204
+
+        async def text(self):
+            return ""
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
+    class _FakeSession:
+        def delete(self, url, **kw):
+            captured["url"] = url
+            return _FakeResp()
+
+    class _FakeLogin:
+        url = "amazon.co.uk"
+        session = _FakeSession()
+
+    # csrf_header must return a truthy dict so delete_notification proceeds
+    monkeypatch.setattr(notifications, "csrf_header", lambda login: {"csrf": "x"})
+
+    import asyncio
+    asyncio.run(notifications.delete_notification(_FakeLogin(), "../devices"))
+
+    # The path-traversal payload must be percent-encoded, not interpolated raw
+    assert "/api/notifications/" in captured["url"]
+    assert "../devices" not in captured["url"]
+    assert "..%2Fdevices" in captured["url"]
