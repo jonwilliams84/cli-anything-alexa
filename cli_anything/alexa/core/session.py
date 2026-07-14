@@ -194,9 +194,32 @@ def run_async(coro):
     return _LOOP.run_until_complete(coro)
 
 
+def _sanitize_email(email: str) -> str:
+    """Reject path-traversal / separator characters in ``email``.
+
+    ``email`` is interpolated directly into cookie filenames
+    (``alexa_media.<email>.pickle``) under the config dir.  A value containing
+    ``/`` or ``..`` would let a malicious ``--email`` escape that directory
+    (path-traversal write).  We strip whitespace and reject anything that is
+    not a safe filename fragment.
+    """
+    if not email or not isinstance(email, str):
+        raise AlexaSessionError("Amazon account email is required.")
+    cleaned = email.strip()
+    if not cleaned:
+        raise AlexaSessionError("Amazon account email is required.")
+    # Reject path separators, traversal sequences, and other shell/path metachars.
+    if "/" in cleaned or "\\" in cleaned or ".." in cleaned or "\x00" in cleaned:
+        raise AlexaSessionError(
+            f"invalid email {email!r}: must not contain path separators or "
+            "'..' sequences."
+        )
+    return cleaned
+
+
 def cookie_filename(email: str) -> str:
     """The pickle filename `alexapy` reads/writes for this account."""
-    return f"alexa_media.{email}.pickle"
+    return f"alexa_media.{_sanitize_email(email)}.pickle"
 
 
 def make_outputpath(config_dir: Path, create: bool = True):

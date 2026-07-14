@@ -296,3 +296,89 @@ def test_proxy_login_validates_url(monkeypatch):
                         lambda: (_FakeAlexaLogin, object()))
     with pytest.raises(session.AlexaSessionError):
         asyncio.run(session.proxy_login("you@example.com", url="evil.com"))
+
+
+# ── path-traversal guard on email -> cookie filename (regression) ───────
+# ``email`` is interpolated directly into the cookie pickle filename
+# (``alexa_media.<email>.pickle``) written under the config dir.  A malicious
+# ``--email`` containing ``/`` or ``..`` would escape that directory (path-
+# traversal write).  ``cookie_filename`` must reject such values instead of
+# building a traversable path.  This is the most severe finding: an
+# unvalidated email is a filesystem write primitive.
+
+def test_cookie_filename_normal_email():
+    """A normal email produces the expected pickle name (behaviour preserved)."""
+    assert session.cookie_filename("you@example.com") == \
+        "alexa_media.you@example.com.pickle"
+
+
+def test_cookie_filename_strips_surrounding_whitespace():
+    """Whitespace-only / padded emails are trimmed; empty-after-trim rejected."""
+    assert session.cookie_filename("  you@example.com  ") == \
+        "alexa_media.you@example.com.pickle"
+
+
+def test_cookie_filename_rejects_path_separator_slash():
+    """A ``/`` in email must not yield a traversable filename."""
+    with pytest.raises(session.AlexaSessionError):
+        session.cookie_filename("a/../../etc/passwd")
+
+
+def test_cookie_filename_rejects_path_separator_backslash():
+    """A backslash separator must be rejected (Windows-style traversal)."""
+    with pytest.raises(session.AlexaSessionError):
+        session.cookie_filename("..\\evil")
+
+
+def test_cookie_filename_rejects_dotdot_traversal():
+    """A bare ``..`` segment must be rejected."""
+    with pytest.raises(session.AlexaSessionError):
+        session.cookie_filename("../etc/passwd")
+    with pytest.raises(session.AlexaSessionError):
+        session.cookie_filename("foo..bar/secret")
+
+
+def test_cookie_filename_rejects_null_byte():
+    """A NUL byte must be rejected (path truncation / injection)."""
+    with pytest.raises(session.AlexaSessionError):
+        session.cookie_filename("you@example.com\x00.txt")
+
+
+def test_cookie_filename_rejects_empty_and_none():
+    """Empty / None / whitespace-only emails are rejected, not silently used."""
+    for bad in ("", "   ", None):
+        with pytest.raises(session.AlexaSessionError):
+            session.cookie_filename(bad)
+
+
+def test_cookie_filename_rejects_non_string():
+    """Non-string emails (e.g. int) are rejected rather than stringified."""
+    with pytest.raises(session.AlexaSessionError):
+        session.cookie_filename(12345)  # type: ignore[arg-type]
+
+
+def test_cookie_path_in_dir_rejects_traversal_email(tmp_path):
+    """The HA-layout path builder must also reject a traversal email.
+
+    ``cookie_path_in_dir`` feeds ``email`` into ``cookie_filename``, so the
+    guard must apply here too — otherwise ``--cookie-dir`` + a bad ``--email``
+    could target an arbitrary path under the (foreign) config dir.
+    """
+    with pytest.raises(session.AlexaSessionError):
+        session.cookie_path_in_dir(tmp_path, "../escape")
+
+
+def test_import_pickle_rejects_traversal_email(tmp_path):
+    """``import_pickle`` must refuse to write a traversable destination.
+
+    Without the guard, a malicious ``--email`` would let ``import_pickle``
+    ``shutil.copy2`` an attacker-supplied source to an arbitrary path under
+    (or escaping) the config dir.
+    """
+    src = tmp_path / "src.pickle"
+    src.write_text("dummy")
+    dest_dir = tmp_path / "config"
+    with pytest.raises(session.AlexaSessionError):
+        session.import_pickle(src, "../escape", config_dir=dest_dir)
+    # Nothing should have been written outside the config dir.
+    assert not (dest_dir.parent / "alexa_media.../escape.pickle").exists()
