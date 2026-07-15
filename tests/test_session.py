@@ -94,6 +94,77 @@ def test_make_outputpath_create_makes_dir(tmp_path):
     assert target.is_dir()
 
 
+
+# ── cookie_filename path-traversal guard (regression) ────────────────────
+
+def test_cookie_filename_rejects_path_traversal():
+    """A malicious email with ``../../`` must NOT escape the config dir.
+
+    This is the most severe finding: ``cookie_filename`` embeds the email
+    directly into a filesystem path (``<config_dir>/.storage/alexa_media.<email>.pickle``).
+    Without sanitisation an attacker-controlled email like ``../../tmp/evil``
+    would write the pickle outside the config directory (arbitrary file write).
+    """
+    malicious = "../../tmp/evil"
+    fn = session.cookie_filename(malicious)
+    # The filename must be a single path component — no separators, no ``..``.
+    assert "/" not in fn
+    assert "\\" not in fn
+    assert ".." not in fn
+    # And it must NOT resolve outside a config dir when joined.
+    base = session.Path("/safe/config/.storage")
+    resolved = base / fn
+    assert resolved.is_relative_to(base)
+
+
+def test_cookie_filename_rejects_backslash_traversal():
+    """Windows-style ``..\\`` traversal must also be neutralised."""
+    fn = session.cookie_filename("..\\..\\evil")
+    assert "\\" not in fn
+    assert "/" not in fn
+    assert ".." not in fn
+
+
+def test_cookie_filename_neutralises_dot_only_emails():
+    """``.`` raises (empty after strip); ``..`` is collapsed to ``_`` (safe)."""
+    with pytest.raises(session.AlexaSessionError):
+        session.cookie_filename(".")
+    # ".." is collapsed to "_" — a safe single-component filename, not traversal
+    fn = session.cookie_filename("..")
+    assert fn == "alexa_media._.pickle"
+    assert ".." not in fn
+
+
+def test_cookie_filename_rejects_empty_and_non_string():
+    with pytest.raises(session.AlexaSessionError):
+        session.cookie_filename("")
+    with pytest.raises(session.AlexaSessionError):
+        session.cookie_filename(None)
+
+
+def test_cookie_filename_preserves_normal_email():
+    """A legitimate email must still produce the expected filename."""
+    assert session.cookie_filename("you@example.com") == (
+        "alexa_media.you@example.com.pickle")
+
+
+def test_cookie_path_in_dir_stays_within_config(tmp_path):
+    """``cookie_path_in_dir`` with a traversal email must not escape config_dir."""
+    config = tmp_path / "config"
+    p = session.cookie_path_in_dir(config, "../../etc/passwd")
+    assert p.is_relative_to(config)
+
+
+def test_import_pickle_uses_sanitized_filename(tmp_path):
+    """``import_pickle`` must write to a sanitised path, not a traversed one."""
+    src = tmp_path / "src.pickle"
+    src.write_text("fake")
+    config = tmp_path / "config"
+    dest = session.import_pickle(src, "../../evil", config_dir=config)
+    assert dest.is_relative_to(config)
+    assert ".." not in dest.name
+    assert dest.exists()
+
 # ── stale-auth retry decision ────────────────────────────────────────────
 
 class _FakeLogin:

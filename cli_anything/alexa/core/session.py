@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -194,9 +195,33 @@ def run_async(coro):
     return _LOOP.run_until_complete(coro)
 
 
+def _sanitize_email(email: str) -> str:
+    """Strip path separators / traversal sequences from an email for use in a
+    filename.  ``cookie_filename`` embeds the email directly into a path, so an
+    attacker-controlled value like ``../../tmp/evil`` would escape the config
+    directory (arbitrary file write).  We collapse every ``os.sep`` (and the
+    generic ``/``) to a safe ``_`` and reject a result that is empty or still
+    contains a path separator after normalisation.
+    """
+    if not email or not isinstance(email, str):
+        raise AlexaSessionError("account email is required for the cookie filename")
+    # Remove any path separator or traversal component.
+    cleaned = re.sub(r"[\\/]+", "_", email.strip())
+    cleaned = cleaned.replace("..", "_").strip(".")
+    if not cleaned or cleaned in (".", ".."):
+        raise AlexaSessionError(
+            f"account email {email!r} is not valid for a cookie filename"
+        )
+    return cleaned
+
+
 def cookie_filename(email: str) -> str:
-    """The pickle filename `alexapy` reads/writes for this account."""
-    return f"alexa_media.{email}.pickle"
+    """The pickle filename `alexapy` reads/writes for this account.
+
+    The email is sanitised (path separators / traversal stripped) so the
+    resulting filename can never escape the config directory.
+    """
+    return f"alexa_media.{_sanitize_email(email)}.pickle"
 
 
 def make_outputpath(config_dir: Path, create: bool = True):
@@ -359,9 +384,12 @@ async def load_session(email: str, url: str = DEFAULT_URL,
             reloaded = await login.load_cookie()
             if reloaded:
                 cookies = reloaded
-    except AlexaSessionError:
+    except Exception:
         # Close the half-open aiohttp session before bubbling up so the CLI
         # doesn't emit an "Unclosed client session" warning on a clean abort.
+        # Catch *all* exceptions (not just AlexaSessionError) so a network or
+        # alexapy error also gets the session closed — otherwise the aiohttp
+        # connector leaks.
         try:
             await login.close()
         except Exception:  # pragma: no cover - best-effort cleanup
