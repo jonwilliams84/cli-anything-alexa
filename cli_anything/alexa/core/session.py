@@ -359,9 +359,12 @@ async def load_session(email: str, url: str = DEFAULT_URL,
             reloaded = await login.load_cookie()
             if reloaded:
                 cookies = reloaded
-    except AlexaSessionError:
+    except Exception:
         # Close the half-open aiohttp session before bubbling up so the CLI
         # doesn't emit an "Unclosed client session" warning on a clean abort.
+        # Catches *any* exception (not just AlexaSessionError) — a network
+        # error / timeout from login() or load_cookie() must still close the
+        # aiohttp session, otherwise the client session leaks.
         try:
             await login.close()
         except Exception:  # pragma: no cover - best-effort cleanup

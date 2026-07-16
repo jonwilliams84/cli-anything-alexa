@@ -156,6 +156,33 @@ def test_load_session_gives_up_after_cap(monkeypatch):
     assert fake.closed                    # session closed on the friendly abort
 
 
+def test_load_session_closes_on_unexpected_error(monkeypatch):
+    """A non-AlexaSessionError (e.g. network error) must still close the session.
+
+    Regression: ``load_session`` used to catch only ``AlexaSessionError``,
+    so a network/timeout error from ``login()`` or ``load_cookie()`` leaked
+    the half-open aiohttp session (unclosed client session warning + resource
+    leak).  Any exception must trigger the best-effort ``close()``.
+    """
+    class _ExplodingLogin:
+        def __init__(self):
+            self.closed = False
+        async def load_cookie(self, *a, **k):
+            return {"session-id": "x"}
+        async def login(self, *a, **k):
+            raise RuntimeError("network boom")  # not AlexaSessionError
+        async def test_loggedin(self, *a, **k):
+            raise AssertionError("should not reach test_loggedin")
+        async def close(self):
+            self.closed = True
+    fake = _ExplodingLogin()
+    _patch_build_login(monkeypatch, fake)
+    with pytest.raises(RuntimeError, match="network boom"):
+        asyncio.run(session.load_session(
+            "you@example.com", reload_attempts=1, reload_sleep=0))
+    assert fake.closed                    # session closed even on unexpected error
+
+
 def test_test_loggedin_recovers_after_reload(monkeypatch):
     fake = _FakeLogin([False, True])
     _patch_build_login(monkeypatch, fake)
