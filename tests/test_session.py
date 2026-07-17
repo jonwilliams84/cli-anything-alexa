@@ -296,3 +296,49 @@ def test_proxy_login_validates_url(monkeypatch):
                         lambda: (_FakeAlexaLogin, object()))
     with pytest.raises(session.AlexaSessionError):
         asyncio.run(session.proxy_login("you@example.com", url="evil.com"))
+
+
+# ── path-traversal guard in cookie_filename (regression) ────────────────
+
+def test_cookie_filename_rejects_dotdot():
+    """``..`` in the email must not let the cookie path escape the config dir."""
+    with pytest.raises(session.AlexaSessionError) as exc:
+        session.cookie_filename("../../etc/passwd")
+    assert "path-traversal" in str(exc.value)
+
+
+def test_cookie_filename_rejects_forward_slash():
+    with pytest.raises(session.AlexaSessionError):
+        session.cookie_filename("a/b@example.com")
+
+
+def test_cookie_filename_rejects_backslash():
+    with pytest.raises(session.AlexaSessionError):
+        session.cookie_filename("a\\b@example.com")
+
+
+def test_cookie_filename_rejects_empty_and_non_str():
+    with pytest.raises(session.AlexaSessionError):
+        session.cookie_filename("")
+    with pytest.raises(session.AlexaSessionError):
+        session.cookie_filename(None)  # type: ignore[arg-type]
+
+
+def test_cookie_filename_accepts_normal_email():
+    """A legitimate email still produces the expected filename."""
+    assert session.cookie_filename("you@example.com") == (
+        "alexa_media.you@example.com.pickle")
+
+
+def test_cookie_path_in_dir_propagates_traversal_guard(tmp_path):
+    """cookie_path_in_dir must reject traversal emails (delegates to cookie_filename)."""
+    with pytest.raises(session.AlexaSessionError):
+        session.cookie_path_in_dir(tmp_path, "../../etc/passwd")
+
+
+def test_import_pickle_propagates_traversal_guard(tmp_path):
+    """import_pickle must reject traversal emails before touching the filesystem."""
+    src = tmp_path / "src.pickle"
+    src.write_text("dummy")
+    with pytest.raises(session.AlexaSessionError):
+        session.import_pickle(src, "../../evil", config_dir=tmp_path)

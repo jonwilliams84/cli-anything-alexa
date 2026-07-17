@@ -195,7 +195,19 @@ def run_async(coro):
 
 
 def cookie_filename(email: str) -> str:
-    """The pickle filename `alexapy` reads/writes for this account."""
+    """The pickle filename `alexapy` reads/writes for this account.
+
+    Raises ``AlexaSessionError`` if *email* contains path separators or
+    parent-directory sequences — the filename is joined onto a config dir and
+    must never escape it (path-traversal guard).
+    """
+    if not email or not isinstance(email, str):
+        raise AlexaSessionError("email is required to name the cookie file")
+    if os.sep in email or "/" in email or "\\" in email or ".." in email:
+        raise AlexaSessionError(
+            f"invalid email {email!r}: must not contain path separators or "
+            "'..' (path-traversal guard)."
+        )
     return f"alexa_media.{email}.pickle"
 
 
