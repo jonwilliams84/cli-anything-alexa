@@ -296,3 +296,152 @@ def test_proxy_login_validates_url(monkeypatch):
                         lambda: (_FakeAlexaLogin, object()))
     with pytest.raises(session.AlexaSessionError):
         asyncio.run(session.proxy_login("you@example.com", url="evil.com"))
+
+
+# ── proxy_login: session must stay open on success (regression) ──────────
+# The most severe fix: proxy_login previously ALWAYS closed login.session in
+# its ``finally`` block — even on success — so the returned AlexaLogin was
+# unusable for any subsequent API call.  The fix gates ``login.close()`` behind
+# ``if not success``.  These tests assert the session survives a successful
+# proxy login (so the caller can use the returned login) and is closed on
+# timeout (cleanup, no leak).
+
+class _FakeProxyLogin:
+    """AlexaLogin stand-in for proxy_login: test_loggedin True on first poll."""
+
+    def __init__(self):
+        self.closed = False
+        self.finalized = False
+        self.proxy_url = None
+        # Minimal session with a cookie_jar so the clear() call doesn't blow up.
+        self.session = type("S", (), {"cookie_jar": type("J", (), {
+            "clear": lambda self: None,
+        })()})()
+
+    async def test_loggedin(self, *a, **k):
+        return True
+
+    async def finalize_login(self, *a, **k):
+        self.finalized = True
+
+    async def close(self):
+        self.closed = True
+
+
+class _FakeProxy:
+    """AlexaProxy stand-in recording start/stop."""
+
+    def __init__(self, login, base):
+        self.login = login
+        self.base = base
+
+    async def start_proxy(self, host=None):
+        pass
+
+    def change_login(self, login):
+        pass
+
+    def access_url(self):
+        return "http://127.0.0.1:3001"
+
+    async def stop_proxy(self):
+        pass
+
+
+def _patch_proxy_alexapy(monkeypatch, fake_login):
+    """Patch _import_alexapy + sys.modules['alexapy'] for proxy_login tests.
+
+    ``proxy_login`` constructs ``AlexaLogin(...)`` directly (not via
+    ``build_login``) and does ``from alexapy import AlexaProxy`` locally, so
+    we patch both the import helper and the ``alexapy`` module in
+    ``sys.modules``.
+    """
+    import sys
+
+    class _FakeAlexaLoginCls:
+        def __new__(cls, *a, **k):
+            return fake_login
+
+    monkeypatch.setattr(session, "_import_alexapy",
+                        lambda: (_FakeAlexaLoginCls, None))
+    monkeypatch.setitem(sys.modules, "alexapy",
+                        type("M", (), {"AlexaProxy": _FakeProxy}))
+
+
+def test_proxy_login_keeps_session_open_on_success(monkeypatch, tmp_path):
+    """On success the returned login must NOT be closed (regression).
+
+    Previously the ``finally`` block unconditionally called
+    ``login.close()``, destroying the aiohttp session that every subsequent
+    API call depends on.  The fix only closes on failure/timeout.
+    """
+    fake_login = _FakeProxyLogin()
+    _patch_proxy_alexapy(monkeypatch, fake_login)
+
+    result = asyncio.run(session.proxy_login(
+        "you@example.com", config_dir=tmp_path,
+        timeout=10, poll_interval=0))
+
+    assert result is fake_login          # the login is returned
+    assert not fake_login.closed         # session NOT closed on success
+    assert fake_login.finalized           # finalize_login was called
+
+
+def test_proxy_login_closes_session_on_timeout(monkeypatch, tmp_path):
+    """On timeout the half-open session IS closed (cleanup, no leak)."""
+    fake_login = _FakeProxyLogin()
+    # Override test_loggedin to always return False so we hit the timeout.
+    async def _never(*a, **k):
+        return False
+    fake_login.test_loggedin = _never
+    _patch_proxy_alexapy(monkeypatch, fake_login)
+
+    with pytest.raises(session.AlexaSessionError) as exc:
+        asyncio.run(session.proxy_login(
+            "you@example.com", config_dir=tmp_path,
+            timeout=0, poll_interval=0))
+    assert "timed out" in str(exc.value)
+    assert fake_login.closed             # session closed on failure
+
+
+# ── fresh_login: session closed on error (regression) ───────────────────
+# fresh_login previously leaked the aiohttp session when it raised
+# AlexaSessionError (captcha / 2FA / error_message paths).  The fix wraps the
+# login logic in try/except so ``login.close()`` runs before re-raising.
+
+class _FakeFreshLogin:
+    """AlexaLogin stand-in for fresh_login with a captcha status."""
+
+    def __init__(self):
+        self.closed = False
+        self.login_calls = 0
+        # Simulate Amazon returning a captcha on the first login attempt.
+        self.status = {"captcha_required": True}
+
+    async def login(self, *a, **k):
+        self.login_calls += 1
+
+    async def close(self):
+        self.closed = True
+
+
+def test_fresh_login_closes_session_on_captcha_error(monkeypatch, tmp_path):
+    """On a captcha error the half-open session must be closed (regression).
+
+    Before the fix, raising AlexaSessionError for a captcha left the aiohttp
+    session open — the CLI would emit "Unclosed client session" warnings.
+    """
+    fake_login = _FakeFreshLogin()
+
+    class _FakeAlexaLoginCls:
+        def __new__(cls, *a, **k):
+            return fake_login
+
+    monkeypatch.setattr(session, "_import_alexapy",
+                        lambda: (_FakeAlexaLoginCls, None))
+
+    with pytest.raises(session.AlexaSessionError) as exc:
+        asyncio.run(session.fresh_login(
+            "you@example.com", "pass", config_dir=tmp_path))
+    assert "captcha" in str(exc.value).lower()
+    assert fake_login.closed             # session closed on the error path

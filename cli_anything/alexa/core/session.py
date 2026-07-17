@@ -437,46 +437,55 @@ async def fresh_login(email: str, password: str, url: str = DEFAULT_URL,
             login.set_totp(otp_secret)
         except Exception:  # pragma: no cover - alexapy/pyotp specifics
             pass
-    await login.login()
-    # alexapy surfaces required next-steps in login.status
-    for _ in range(5):
-        status = login.status or {}
-        if status.get("login_successful"):
-            break
-        data: dict[str, Any] = {}
-        if status.get("captcha_required"):
-            raise AlexaSessionError(
-                "Amazon returned a captcha for this scripted login. Captcha "
-                "cannot be solved headlessly — use the proxy browser login "
-                "instead:  `cli-anything-alexa auth login` (no --password). "
-                "It opens Amazon's own pages where captcha/2FA work normally."
-            )
-        if status.get("securitycode_required") or status.get("login_failed") == "2fa":
-            # If a TOTP secret was given, alexapy already injected the code;
-            # re-issuing without one would loop. Only prompt when we have no
-            # secret and a callback is available.
-            if otp_secret:
-                # let alexapy retry with its generated code
-                pass
-            elif otp_callback:
-                data["securitycode"] = otp_callback()
-            else:
+    try:
+        await login.login()
+        # alexapy surfaces required next-steps in login.status
+        for _ in range(5):
+            status = login.status or {}
+            if status.get("login_successful"):
+                break
+            data: dict[str, Any] = {}
+            if status.get("captcha_required"):
                 raise AlexaSessionError(
-                    "2FA/OTP required but no code available. Pass "
-                    "--otp-secret <base32 TOTP secret> for headless login, "
-                    "or use the proxy flow (`auth login` with no --password)."
+                    "Amazon returned a captcha for this scripted login. Captcha "
+                    "cannot be solved headlessly — use the proxy browser login "
+                    "instead:  `cli-anything-alexa auth login` (no --password). "
+                    "It opens Amazon's own pages where captcha/2FA work normally."
                 )
-        elif status.get("error_message"):
-            raise AlexaSessionError(str(status["error_message"]))
-        else:
-            break
-        await login.login(data=data)
-    if not (login.status or {}).get("login_successful"):
-        raise AlexaSessionError(
-            f"scripted login did not complete: {login.status!r}. Use the "
-            "proxy browser login: `cli-anything-alexa auth login` (no "
-            "--password)."
-        )
+            if status.get("securitycode_required") or status.get("login_failed") == "2fa":
+                # If a TOTP secret was given, alexapy already injected the code;
+                # re-issuing without one would loop. Only prompt when we have no
+                # secret and a callback is available.
+                if otp_secret:
+                    # let alexapy retry with its generated code
+                    pass
+                elif otp_callback:
+                    data["securitycode"] = otp_callback()
+                else:
+                    raise AlexaSessionError(
+                        "2FA/OTP required but no code available. Pass "
+                        "--otp-secret <base32 TOTP secret> for headless login, "
+                        "or use the proxy flow (`auth login` with no --password)."
+                    )
+            elif status.get("error_message"):
+                raise AlexaSessionError(str(status["error_message"]))
+            else:
+                break
+            await login.login(data=data)
+        if not (login.status or {}).get("login_successful"):
+            raise AlexaSessionError(
+                f"scripted login did not complete: {login.status!r}. Use the "
+                "proxy browser login: `cli-anything-alexa auth login` (no "
+                "--password)."
+            )
+    except AlexaSessionError:
+        # Close the half-open aiohttp session before bubbling up so the CLI
+        # doesn't emit an "Unclosed client session" warning on a clean abort.
+        try:
+            await login.close()
+        except Exception:  # pragma: no cover - best-effort cleanup
+            pass
+        raise
     return login
 
 
@@ -531,6 +540,7 @@ async def proxy_login(email: str, url: str = DEFAULT_URL,
 
     base = proxy_access_url(host, port)
     proxy = AlexaProxy(login, base)
+    success = False
     try:
         await proxy.start_proxy(host=host)
         proxy.change_login(login)
@@ -560,18 +570,21 @@ async def proxy_login(email: str, url: str = DEFAULT_URL,
                 )
 
         await login.finalize_login()
+        success = True
     finally:
+        # Always stop the proxy — the login dance is done (success or timeout).
         try:
             await proxy.stop_proxy()
         except Exception:  # pragma: no cover - best-effort cleanup
             pass
-        # Close alexapy's aiohttp session — the cookie is already on disk; we
-        # only used the live session to drive the login. Avoids "Unclosed
-        # client session" warnings.
-        try:
-            await login.close()
-        except Exception:  # pragma: no cover - best-effort cleanup
-            pass
+        # On failure / timeout, close the half-open aiohttp session so the CLI
+        # doesn't emit "Unclosed client session" warnings.  On success the
+        # login is NOT closed — the returned ``AlexaLogin`` remains usable.
+        if not success:
+            try:
+                await login.close()
+            except Exception:  # pragma: no cover - best-effort cleanup
+                pass
 
     # Lock down whatever cookie file alexapy just wrote.
     for name in (
