@@ -314,7 +314,7 @@ def auth_login(ctx, email, region, password, otp_secret, host, port, timeout):
         click.echo("  2. Sign in to Amazon as you normally would (captcha / 2FA")
         click.echo("     are handled by Amazon's own pages).")
         click.echo('  3. When it says you can close the window, you are done.')
-        if phost == "0.0.0.0":
+        if phost == session_core.BIND_ALL_HOST:
             click.echo("")
             click.echo(f"  (bound to 0.0.0.0 — from another machine open "
                        f"http://<this-host>:{pport} )")

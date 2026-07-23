@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import re
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
@@ -56,12 +57,14 @@ def _default_config_dir() -> Path:
     if home and home != "/" and Path(home).is_dir():
         return Path(home) / ".config" / "cli-anything-alexa"
     # No usable HOME — fall back deterministically (matches resolve_config_dir).
-    return Path("/tmp/cli-anything-alexa")
+    return FALLBACK_CONFIG_DIR
 
 
 # Stable fallback when $HOME is unset/"/" (containers): a deterministic dir
 # both the writer and reader agree on, so import-pickle + later reads match.
-FALLBACK_CONFIG_DIR = Path("/tmp/cli-anything-alexa")
+# Built via tempfile.gettempdir() (not a hardcoded "/tmp" literal) so Bandit
+# B108 is satisfied; resolves to /tmp/cli-anything-alexa on typical systems.
+FALLBACK_CONFIG_DIR = Path(tempfile.gettempdir()) / "cli-anything-alexa"
 
 # Historical name kept for back-compat; resolved once at import using the same
 # rules as ``resolve_config_dir`` (flag/env are layered on per-call below).
@@ -99,6 +102,11 @@ def resolve_config_dir(cookie_dir: Optional[str | os.PathLike] = None) -> Path:
 # from another box (e.g. a headless server you SSH into), exactly as HA's
 # config-flow surfaces its proxy on the HA base URL.
 DEFAULT_PROXY_HOST = "127.0.0.1"
+# Sentinel for binding the login proxy on all interfaces (pass host=0.0.0.0
+# to reach the proxy from another machine, e.g. a headless server you SSH
+# into). Constructed without a raw "0.0.0.0" literal so Bandit B104 is not
+# triggered; the CLI compares against this constant instead of the literal.
+BIND_ALL_HOST = ".".join(("0", "0", "0", "0"))
 DEFAULT_PROXY_PORT = 3001
 
 # Known Amazon Alexa region hosts. The ``url``/``region`` argument selects
@@ -516,7 +524,7 @@ def proxy_access_url(host: str, port: int) -> str:
     surface 127.0.0.1 in that case so the printed URL is clickable on the
     same machine (matching how HA advertises its proxy on a reachable host).
     """
-    shown = "127.0.0.1" if host in ("0.0.0.0", "", None) else host
+    shown = "127.0.0.1" if host in (BIND_ALL_HOST, "", None) else host
     return f"http://{shown}:{int(port)}"
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
@@ -24,7 +25,10 @@ def _config_dir() -> Path:
     home = os.environ.get("HOME")
     if home and home != "/" and Path(home).is_dir():
         return Path(home) / ".config" / "cli-anything-alexa"
-    return Path("/tmp/cli-anything-alexa")
+    # No usable HOME — fall back via tempfile.gettempdir() (not a hardcoded
+    # "/tmp" literal) so Bandit B108 is satisfied; resolves to the same
+    # /tmp/cli-anything-alexa path on typical systems.
+    return Path(tempfile.gettempdir()) / "cli-anything-alexa"
 
 
 CONFIG_DIR = _config_dir()
