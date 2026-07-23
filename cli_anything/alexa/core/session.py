@@ -38,6 +38,7 @@ host. So 3.14 is needed only for ``import-pickle`` from a 3.14 source.
 from __future__ import annotations
 
 import asyncio
+import re
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -194,9 +195,29 @@ def run_async(coro):
     return _LOOP.run_until_complete(coro)
 
 
+def _sanitize_email_for_filename(email: str) -> str:
+    """Reduce an email to a safe single path component (no traversal).
+
+    The email flows from user input (``--email`` flag / profile config) into
+    ``cookie_filename`` and thence into filesystem paths under the config dir.
+    An unsanitized value containing ``/`` or ``..`` would escape the config dir
+    (arbitrary file write / read). We strip path separators and ``..``
+    sequences so the result is always a bare filename component.
+    """
+    if not email or not isinstance(email, str):
+        raise AlexaSessionError("a non-empty email is required.")
+    # Replace OS path separators and NULs, then collapse any remaining ``..``
+    # sequences so the value can never traverse out of the config dir.
+    safe = re.sub(r"[\\/\x00]", "_", email.strip())
+    safe = safe.replace("..", "_")
+    if not safe or safe in (".", "_"):
+        raise AlexaSessionError(f"invalid email for cookie filename: {email!r}")
+    return safe
+
+
 def cookie_filename(email: str) -> str:
     """The pickle filename `alexapy` reads/writes for this account."""
-    return f"alexa_media.{email}.pickle"
+    return f"alexa_media.{_sanitize_email_for_filename(email)}.pickle"
 
 
 def make_outputpath(config_dir: Path, create: bool = True):
@@ -260,6 +281,14 @@ def import_pickle(src: str | os.PathLike, email: str,
     config_dir = Path(config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
     dest = config_dir / cookie_filename(email)
+    # Defence-in-depth: ensure the resolved destination stays inside the
+    # config dir (guards against any future path-traversal in the email).
+    try:
+        dest.resolve().relative_to(config_dir.resolve())
+    except ValueError:
+        raise AlexaSessionError(
+            f"resolved cookie path escapes the config dir: {dest}"
+        )
     shutil.copy2(src_path, dest)
     try:
         os.chmod(dest, 0o600)

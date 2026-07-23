@@ -12,6 +12,7 @@ Pure logic only — no alexapy, no live account. Covers:
 """
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -296,3 +297,48 @@ def test_proxy_login_validates_url(monkeypatch):
                         lambda: (_FakeAlexaLogin, object()))
     with pytest.raises(session.AlexaSessionError):
         asyncio.run(session.proxy_login("you@example.com", url="evil.com"))
+
+
+# ──────────────────────────────────────────────────────── path-traversal guard
+
+def test_cookie_filename_rejects_path_traversal():
+    """cookie_filename must never produce a path that escapes the config dir.
+
+    Regression: an unsanitized ``email`` containing ``/`` or ``..`` flowed
+    straight into ``f"alexa_media.{email}.pickle"``, allowing an arbitrary
+    file write outside the config directory via ``--email ../../etc/evil``.
+    """
+    # Normal email is unchanged.
+    assert session.cookie_filename("you@example.com") == "alexa_media.you@example.com.pickle"
+    # Traversal attempts are neutralised to a safe single component.
+    for evil in ("../../etc/evil", "a/../../../etc/evil", "../../../../etc/evil",
+                 "a\\..\\..\\etc"):
+        name = session.cookie_filename(evil)
+        assert "/" not in name
+        assert "\\" not in name
+        assert ".." not in name
+        # The resulting path stays inside the config dir.
+        dest = Path("/tmp/safe") / name
+        assert dest.resolve() == Path("/tmp/safe") / name
+
+
+def test_cookie_filename_rejects_empty_email():
+    """An empty or whitespace-only email must raise, not produce a bare dot."""
+    for bad in ("", "   ", None):
+        with pytest.raises(session.AlexaSessionError):
+            session.cookie_filename(bad)
+
+
+def test_import_pickle_traversal_stays_in_config_dir(tmp_path):
+    """import_pickle must never write outside the config dir, even if the
+    email contains path separators (defence-in-depth containment check)."""
+    src = tmp_path / "ha.pickle"
+    src.write_bytes(b"cookie")
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    dest = session.import_pickle(str(src), "../../etc/evil",
+                                 config_dir=config_dir)
+    # The file must land inside config_dir, not /etc/evil.pickle.
+    assert dest.resolve().relative_to(config_dir.resolve()) is not None
+    assert dest.exists()
+    assert dest.parent == config_dir
