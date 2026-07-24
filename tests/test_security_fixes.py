@@ -428,3 +428,294 @@ def test_proxy_login_cookie_jar_clear_logs_instead_of_pass(monkeypatch):
         "you@example.com", on_url=_on_url, timeout=1, poll_interval=0.01))
     assert result is not None
     assert on_url_called, "on_url must still be called after cookie_jar.clear fails"
+
+
+# ── B110: no try/except/pass in proxy_login test_loggedin poll (line 598) ─
+
+def test_proxy_login_test_loggedin_poll_logs_instead_of_pass():
+    """proxy_login's test_loggedin() poll except block logs, not passes.
+
+    Regression for B110 at session.py:598 — when ``login.test_loggedin()``
+    raises a transient exception during the polling loop, the except handler
+    must not be a bare ``pass``. We verify via AST that the handler body is
+    not just ``pass`` and contains a logging call.
+    """
+    import ast
+    src = Path(session.__file__).read_text()
+    tree = ast.parse(src)
+
+    found = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "proxy_login":
+            for child in ast.walk(node):
+                if isinstance(child, ast.ExceptHandler):
+                    handler_src = ast.get_source_segment(src, child) or ""
+                    if "test_loggedin()" in handler_src and "keep polling" in handler_src:
+                        has_pass_only = (
+                            len(child.body) == 1
+                            and isinstance(child.body[0], ast.Pass)
+                        )
+                        assert not has_pass_only, (
+                            "proxy_login test_loggedin poll handler still uses "
+                            "bare pass (B110 trigger)"
+                        )
+                        # Confirm a logging call is present.
+                        has_log = any(
+                            isinstance(c, ast.Expr)
+                            and isinstance(c.value, ast.Call)
+                            and getattr(c.value.func, "attr", "") == "debug"
+                            for c in ast.walk(child)
+                        )
+                        assert has_log, "handler must log via _log.debug"
+                        found = True
+    assert found, "Could not locate test_loggedin poll except handler"
+
+
+def test_proxy_login_test_loggedin_exception_keeps_polling(monkeypatch):
+    """A transient exception from test_loggedin() must not abort proxy_login.
+
+    Behaviour regression for B110 at session.py:598 — the polling loop
+    swallows the exception and keeps polling until test_loggedin() returns
+    True, after which proxy_login succeeds.
+    """
+    calls = {"n": 0}
+
+    class _FakeCookieJar:
+        def clear(self):
+            pass
+
+    class _FakeSession:
+        cookie_jar = _FakeCookieJar()
+
+    class _FakeAlexaLogin:
+        def __init__(self, *a, **k):
+            self.session = _FakeSession()
+            self.proxy_url = None
+
+        async def test_loggedin(self, *a, **k):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise RuntimeError("transient network blip")
+            return True
+
+        async def finalize_login(self):
+            pass
+
+        async def close(self):
+            pass
+
+    class _FakeProxy:
+        def __init__(self, *a, **k):
+            pass
+
+        async def start_proxy(self, *a, **k):
+            pass
+
+        def change_login(self, *a, **k):
+            pass
+
+        def access_url(self):
+            return "http://127.0.0.1:3000"
+
+        async def stop_proxy(self):
+            pass
+
+    monkeypatch.setattr(session, "_import_alexapy",
+                        lambda: (_FakeAlexaLogin, object()))
+    import types
+    fake_alexapy = types.ModuleType("alexapy")
+    fake_alexapy.AlexaProxy = _FakeProxy
+    monkeypatch.setitem(__import__("sys").modules, "alexapy", fake_alexapy)
+
+    result = asyncio.run(session.proxy_login(
+        "you@example.com", timeout=5, poll_interval=0.01))
+    assert result is not None
+    assert calls["n"] >= 3, "polling must continue past transient exceptions"
+
+
+# ── B110: no try/except/pass in proxy_login stop_proxy cleanup (line 611) ─
+
+def test_proxy_login_stop_proxy_cleanup_logs_instead_of_pass():
+    """proxy_login's stop_proxy() cleanup except block logs, not passes.
+
+    Regression for B110 at session.py:611 — the best-effort
+    ``proxy.stop_proxy()`` except handler must not be a bare ``pass``.
+    """
+    import ast
+    src = Path(session.__file__).read_text()
+    tree = ast.parse(src)
+
+    found = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "proxy_login":
+            for child in ast.walk(node):
+                if isinstance(child, ast.ExceptHandler):
+                    handler_src = ast.get_source_segment(src, child) or ""
+                    if "proxy.stop_proxy()" in handler_src:
+                        has_pass_only = (
+                            len(child.body) == 1
+                            and isinstance(child.body[0], ast.Pass)
+                        )
+                        assert not has_pass_only, (
+                            "proxy_login stop_proxy cleanup handler still uses "
+                            "bare pass (B110 trigger)"
+                        )
+                        has_log = any(
+                            isinstance(c, ast.Expr)
+                            and isinstance(c.value, ast.Call)
+                            and getattr(c.value.func, "attr", "") == "debug"
+                            for c in ast.walk(child)
+                        )
+                        assert has_log, "handler must log via _log.debug"
+                        found = True
+    assert found, "Could not locate stop_proxy cleanup except handler"
+
+
+def test_proxy_login_stop_proxy_failure_does_not_raise(monkeypatch):
+    """If proxy.stop_proxy() raises, proxy_login must still return the login.
+
+    Behaviour regression for B110 at session.py:611 — the finally-block
+    cleanup swallows the stop_proxy failure so the caller still gets the
+    logged-in login object.
+    """
+    class _FakeCookieJar:
+        def clear(self):
+            pass
+
+    class _FakeSession:
+        cookie_jar = _FakeCookieJar()
+
+    class _FakeAlexaLogin:
+        def __init__(self, *a, **k):
+            self.session = _FakeSession()
+            self.proxy_url = None
+
+        async def test_loggedin(self, *a, **k):
+            return True
+
+        async def finalize_login(self):
+            pass
+
+        async def close(self):
+            pass
+
+    class _FakeProxy:
+        def __init__(self, *a, **k):
+            pass
+
+        async def start_proxy(self, *a, **k):
+            pass
+
+        def change_login(self, *a, **k):
+            pass
+
+        def access_url(self):
+            return "http://127.0.0.1:3000"
+
+        async def stop_proxy(self):
+            raise OSError("proxy already stopped")
+
+    monkeypatch.setattr(session, "_import_alexapy",
+                        lambda: (_FakeAlexaLogin, object()))
+    import types
+    fake_alexapy = types.ModuleType("alexapy")
+    fake_alexapy.AlexaProxy = _FakeProxy
+    monkeypatch.setitem(__import__("sys").modules, "alexapy", fake_alexapy)
+
+    result = asyncio.run(session.proxy_login(
+        "you@example.com", timeout=1, poll_interval=0.01))
+    assert result is not None
+
+
+# ── B110: no try/except/pass in proxy_login login.close cleanup (line 618) ─
+
+def test_proxy_login_login_close_cleanup_logs_instead_of_pass():
+    """proxy_login's login.close() cleanup except block logs, not passes.
+
+    Regression for B110 at session.py:618 — the best-effort
+    ``login.close()`` except handler must not be a bare ``pass``.
+    """
+    import ast
+    src = Path(session.__file__).read_text()
+    tree = ast.parse(src)
+
+    found = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "proxy_login":
+            for child in ast.walk(node):
+                if isinstance(child, ast.ExceptHandler):
+                    handler_src = ast.get_source_segment(src, child) or ""
+                    if "login.close()" in handler_src and "proxy cleanup" in handler_src:
+                        has_pass_only = (
+                            len(child.body) == 1
+                            and isinstance(child.body[0], ast.Pass)
+                        )
+                        assert not has_pass_only, (
+                            "proxy_login login.close cleanup handler still uses "
+                            "bare pass (B110 trigger)"
+                        )
+                        has_log = any(
+                            isinstance(c, ast.Expr)
+                            and isinstance(c.value, ast.Call)
+                            and getattr(c.value.func, "attr", "") == "debug"
+                            for c in ast.walk(child)
+                        )
+                        assert has_log, "handler must log via _log.debug"
+                        found = True
+    assert found, "Could not locate login.close cleanup except handler"
+
+
+def test_proxy_login_login_close_failure_does_not_raise(monkeypatch):
+    """If login.close() raises, proxy_login must still return the login.
+
+    Behaviour regression for B110 at session.py:618 — the finally-block
+    cleanup swallows the close failure so the caller still gets the
+    logged-in login object.
+    """
+    class _FakeCookieJar:
+        def clear(self):
+            pass
+
+    class _FakeSession:
+        cookie_jar = _FakeCookieJar()
+
+    class _FakeAlexaLogin:
+        def __init__(self, *a, **k):
+            self.session = _FakeSession()
+            self.proxy_url = None
+
+        async def test_loggedin(self, *a, **k):
+            return True
+
+        async def finalize_login(self):
+            pass
+
+        async def close(self):
+            raise OSError("session already closed")
+
+    class _FakeProxy:
+        def __init__(self, *a, **k):
+            pass
+
+        async def start_proxy(self, *a, **k):
+            pass
+
+        def change_login(self, *a, **k):
+            pass
+
+        def access_url(self):
+            return "http://127.0.0.1:3000"
+
+        async def stop_proxy(self):
+            pass
+
+    monkeypatch.setattr(session, "_import_alexapy",
+                        lambda: (_FakeAlexaLogin, object()))
+    import types
+    fake_alexapy = types.ModuleType("alexapy")
+    fake_alexapy.AlexaProxy = _FakeProxy
+    monkeypatch.setitem(__import__("sys").modules, "alexapy", fake_alexapy)
+
+    result = asyncio.run(session.proxy_login(
+        "you@example.com", timeout=1, poll_interval=0.01))
+    assert result is not None

@@ -596,7 +596,7 @@ async def proxy_login(email: str, url: str = DEFAULT_URL,
                 if await login.test_loggedin():
                     break
             except Exception:  # transient during the login dance — keep polling
-                pass
+                _log.debug("test_loggedin() raised during login poll", exc_info=True)
             if asyncio.get_event_loop().time() >= deadline:
                 raise AlexaSessionError(
                     "timed out waiting for the browser login to complete. "
@@ -609,14 +609,14 @@ async def proxy_login(email: str, url: str = DEFAULT_URL,
         try:
             await proxy.stop_proxy()
         except Exception:  # pragma: no cover - best-effort cleanup
-            pass
+            _log.debug("proxy.stop_proxy() failed during cleanup", exc_info=True)
         # Close alexapy's aiohttp session — the cookie is already on disk; we
         # only used the live session to drive the login. Avoids "Unclosed
         # client session" warnings.
         try:
             await login.close()
         except Exception:  # pragma: no cover - best-effort cleanup
-            pass
+            _log.debug("login.close() failed during proxy cleanup", exc_info=True)
 
     # Lock down whatever cookie file alexapy just wrote.
     for name in (
