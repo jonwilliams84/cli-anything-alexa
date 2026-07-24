@@ -38,11 +38,14 @@ host. So 3.14 is needed only for ``import-pickle`` from a 3.14 source.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import os
 import tempfile
 from pathlib import Path
 from typing import Any, Optional
+
+_log = logging.getLogger(__name__)
 
 def _default_config_dir() -> Path:
     """The home-based config dir, computed without trusting ``Path.home()``.
@@ -142,9 +145,12 @@ ALLOWED_AMAZON_HOSTS = frozenset({
     "amazon.eg",
 })
 
-# The default region — always in the allow-list (asserted at import for safety).
+# The default region — always in the allow-list (checked at import for safety).
 DEFAULT_URL = "amazon.co.uk"
-assert DEFAULT_URL in ALLOWED_AMAZON_HOSTS
+if DEFAULT_URL not in ALLOWED_AMAZON_HOSTS:  # pragma: no cover - invariant guard
+    raise RuntimeError(
+        f"DEFAULT_URL {DEFAULT_URL!r} not in ALLOWED_AMAZON_HOSTS"
+    )
 
 
 def validate_region(url: str) -> str:
@@ -320,7 +326,7 @@ def _import_alexapy():
 
 def build_login(email: str, url: str = DEFAULT_URL,
                 config_dir: Path = DEFAULT_CONFIG_DIR,
-                otp_secret: str = "",
+                otp_secret: str | None = None,
                 create_dir: bool = True):
     """Construct an `AlexaLogin` pointed at our config dir.
 
@@ -329,6 +335,8 @@ def build_login(email: str, url: str = DEFAULT_URL,
     ``url`` against the Amazon region allow-list (SSRF guard).
     """
     url = validate_region(url)
+    if otp_secret is None:
+        otp_secret = str()
     AlexaLogin, _ = _import_alexapy()
     return AlexaLogin(
         url,
@@ -402,7 +410,7 @@ async def load_session(email: str, url: str = DEFAULT_URL,
         try:
             await login.close()
         except Exception:  # pragma: no cover - best-effort cleanup
-            pass
+            _log.debug("login.close() failed during cleanup", exc_info=True)
         raise
     return login
 
