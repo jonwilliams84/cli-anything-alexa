@@ -453,7 +453,7 @@ async def test_loggedin(email: str, url: str = DEFAULT_URL,
             try:
                 await login.close()
             except Exception:  # pragma: no cover - best-effort cleanup
-                pass
+                _log.debug("login.close() failed during cleanup", exc_info=True)
 
 
 async def fresh_login(email: str, password: str, url: str = DEFAULT_URL,
@@ -481,7 +481,7 @@ async def fresh_login(email: str, password: str, url: str = DEFAULT_URL,
         try:
             login.set_totp(otp_secret)
         except Exception:  # pragma: no cover - alexapy/pyotp specifics
-            pass
+            _log.debug("set_totp() failed; alexapy will prompt for OTP", exc_info=True)
     await login.login()
     # alexapy surfaces required next-steps in login.status
     for _ in range(5):
@@ -585,7 +585,7 @@ async def proxy_login(email: str, url: str = DEFAULT_URL,
         try:
             login.session.cookie_jar.clear()
         except Exception:  # pragma: no cover
-            pass
+            _log.debug("cookie_jar.clear() failed before proxy login", exc_info=True)
         if on_url:
             on_url(access_url)
 
