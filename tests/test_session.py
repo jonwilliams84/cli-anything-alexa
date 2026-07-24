@@ -342,3 +342,106 @@ def test_import_pickle_traversal_stays_in_config_dir(tmp_path):
     assert dest.resolve().relative_to(config_dir.resolve()) is not None
     assert dest.exists()
     assert dest.parent == config_dir
+
+
+# ── B110 regression: try/except/pass now logs instead of silently swallowing ──
+
+def test_test_loggedin_close_logs_on_failure(monkeypatch, caplog):
+    """test_loggedin's finally-block close() must log (not silently pass)
+    when login.close() raises — regression for B110 at session.py:455."""
+    import logging
+
+    class _CloseFailingLogin(_FakeLogin):
+        async def close(self):
+            raise RuntimeError("close boom")
+
+    fake = _CloseFailingLogin([True])
+    _patch_build_login(monkeypatch, fake)
+    with caplog.at_level(logging.DEBUG, logger="cli_anything.alexa.core.session"):
+        result = asyncio.run(session.test_loggedin("you@example.com"))
+    assert result is True
+    # The exception was swallowed (no re-raise) but now logged at DEBUG.
+    assert any("login.close() failed" in r.message for r in caplog.records)
+
+
+def test_fresh_login_set_totp_logs_on_failure(monkeypatch, caplog):
+    """fresh_login must log (not silently pass) when set_totp() raises —
+    regression for B110 at session.py:483."""
+    import logging
+
+    class _TotpFailingLogin:
+        def __init__(self, *a, **k):
+            self.status = {"login_successful": True}
+
+        def set_totp(self, secret):
+            raise RuntimeError("totp boom")
+
+        async def login(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(session, "_import_alexapy",
+                        lambda: (_TotpFailingLogin, object()))
+    with caplog.at_level(logging.DEBUG, logger="cli_anything.alexa.core.session"):
+        result = asyncio.run(session.fresh_login(
+            "you@example.com", "pass", otp_secret="JBSWY3DPEHPK3PXP"))
+    assert result is not None
+    assert any("set_totp() failed" in r.message for r in caplog.records)
+
+
+def test_proxy_login_cookie_jar_clear_logs_on_failure(monkeypatch, caplog):
+    """proxy_login must log (not silently pass) when cookie_jar.clear()
+    raises — regression for B110 at session.py:587."""
+    import logging
+    import alexapy
+
+    class _FakeCookieJar:
+        def clear(self):
+            raise RuntimeError("cookie jar boom")
+
+    class _FakeSession:
+        cookie_jar = _FakeCookieJar()
+
+    class _FakeProxyLogin:
+        def __init__(self, *a, **k):
+            self.session = _FakeSession()
+            self.proxy_url = None
+
+        async def test_loggedin(self, *a, **k):
+            return False
+
+        async def finalize_login(self, *a, **k):
+            pass
+
+        async def close(self):
+            pass
+
+    class _FakeProxy:
+        def __init__(self, login, base):
+            self._login = login
+
+        async def start_proxy(self, host=None):
+            pass
+
+        def change_login(self, login):
+            pass
+
+        def access_url(self):
+            return "http://127.0.0.1:9999"
+
+        async def stop_proxy(self):
+            pass
+
+    monkeypatch.setattr(session, "_import_alexapy",
+                        lambda: (_FakeProxyLogin, _FakeProxy))
+    # proxy_login imports AlexaProxy directly from alexapy inside the body,
+    # so we must patch it on the alexapy module itself.
+    monkeypatch.setattr(alexapy, "AlexaProxy", _FakeProxy)
+    # Short-circuit the polling loop by making it time out immediately.
+    monkeypatch.setattr(session.asyncio, "sleep", lambda *a, **k: asyncio.sleep(0))
+    with caplog.at_level(logging.DEBUG, logger="cli_anything.alexa.core.session"):
+        try:
+            asyncio.run(session.proxy_login(
+                "you@example.com", timeout=0.01, poll_interval=0.01))
+        except (session.AlexaSessionError, Exception):
+            pass  # timeout is expected; we only care about the log
+    assert any("cookie_jar.clear() failed" in r.message for r in caplog.records)
