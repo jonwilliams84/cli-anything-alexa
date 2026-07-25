@@ -342,7 +342,8 @@ def build_login(email: str, url: str = DEFAULT_URL,
     """
     url = validate_region(url)
     if otp_secret is None:
-        otp_secret = ""
+        otp_secret = ""  # nosec: B105 — otp_secret is the TOTP key placeholder, not the account password;
+        # alexapy receives the actual password via its separate positional arg (line 350)
     AlexaLogin, _ = _import_alexapy()
     return AlexaLogin(
         url,
@@ -415,7 +416,7 @@ async def load_session(email: str, url: str = DEFAULT_URL,
         # doesn't emit an "Unclosed client session" warning on a clean abort.
         try:
             await login.close()
-        except Exception:  # nosec BLE001 — best-effort cleanup; close() may raise CancelledError or aiohttp errors, never let those mask the original AlexaSessionError
+        except Exception:  # noqa: BLE001 — best-effort cleanup; close() may raise CancelledError or aiohttp errors, never let those mask the original AlexaSessionError
             _log.debug("login.close() failed during cleanup", exc_info=True)
         raise
     return login
@@ -452,13 +453,13 @@ async def test_loggedin(email: str, url: str = DEFAULT_URL,
             reloaded = await login.load_cookie()
             if reloaded:
                 cookies = reloaded
-    except Exception:  # nosec BLE001 — intentional; docstring promises "Never raises" so we swallow everything to guarantee the bool return.
+    except Exception:  # noqa: BLE001 — intentional; docstring promises "Never raises" so we swallow everything to guarantee the bool return.
         return False
     finally:
         if login is not None:
             try:
                 await login.close()
-            except Exception:  # pragma: no cover - best-effort cleanup
+            except Exception:  # noqa: BLE001 — pragma: no cover - best-effort cleanup; close() may raise CancelledError
                 _log.debug("login.close() failed during cleanup", exc_info=True)
 
 
@@ -486,7 +487,7 @@ async def fresh_login(email: str, password: str, url: str = DEFAULT_URL,
     if otp_secret:
         try:
             login.set_totp(otp_secret)
-        except Exception:  # pragma: no cover - alexapy/pyotp specifics
+        except Exception:  # noqa: BLE001 — pragma: no cover - alexapy/pyotp specifics; best-effort TOTP registration
             _log.debug("set_totp() failed; alexapy will prompt for OTP", exc_info=True)
     await login.login()
     # alexapy surfaces required next-steps in login.status
@@ -590,7 +591,7 @@ async def proxy_login(email: str, url: str = DEFAULT_URL,
         login.proxy_url = proxy.access_url()
         try:
             login.session.cookie_jar.clear()
-        except Exception:  # pragma: no cover
+        except Exception:  # noqa: BLE001 — pragma: no cover; best-effort cookie-jar cleanup
             _log.debug("cookie_jar.clear() failed before proxy login", exc_info=True)
         if on_url:
             on_url(access_url)
@@ -601,7 +602,7 @@ async def proxy_login(email: str, url: str = DEFAULT_URL,
             try:
                 if await login.test_loggedin():
                     break
-            except Exception:  # transient during the login dance — keep polling
+            except Exception:  # noqa: BLE001 — transient during the login dance — keep polling; best-effort error suppression
                 _log.debug("test_loggedin() raised during login poll", exc_info=True)
             if asyncio.get_event_loop().time() >= deadline:
                 raise AlexaSessionError(
@@ -614,14 +615,14 @@ async def proxy_login(email: str, url: str = DEFAULT_URL,
     finally:
         try:
             await proxy.stop_proxy()
-        except Exception:  # pragma: no cover - best-effort cleanup
+        except Exception:  # noqa: BLE001 — pragma: no cover; best-effort cookie-jar cleanup - best-effort cleanup
             _log.debug("proxy.stop_proxy() failed during cleanup", exc_info=True)
         # Close alexapy's aiohttp session — the cookie is already on disk; we
         # only used the live session to drive the login. Avoids "Unclosed
         # client session" warnings.
         try:
             await login.close()
-        except Exception:  # pragma: no cover - best-effort cleanup
+        except Exception:  # noqa: BLE001 — pragma: no cover; best-effort cookie-jar cleanup - best-effort cleanup
             _log.debug("login.close() failed during proxy cleanup", exc_info=True)
 
     # Lock down whatever cookie file alexapy just wrote.
@@ -646,7 +647,7 @@ def csrf_header(login) -> dict[str, str]:
         for cookie in login.session.cookie_jar:
             if cookie.key == "csrf":
                 return {"csrf": cookie.value}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort csrf extraction; graceful degradation if cookie is missing
         _log.debug("could not read csrf cookie from session jar: %s", exc)
     return {}
 

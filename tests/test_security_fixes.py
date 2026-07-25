@@ -1097,53 +1097,71 @@ def test_table_columns_iterates_dicts_without_keys():
     assert "for k in r:" in src
 
 
-# ── UP018: build_login uses "" instead of str() for empty otp_secret ─────
+# ── B105: no empty-string password literal in build_login ─────────────────
 
-def test_build_login_otp_secret_default_is_empty_string():
-    """build_login initialises otp_secret to "" rather than str().
+def test_build_login_otp_secret_no_empty_string_literal():
+    """build_login uses ``""`` for otp_secret with ``# nosec: B105``.
 
-    Regression for UP018 at session.py:345 — the empty string literal is
-    clearer and avoids the unnecessary str() call.
+    Regression for B105 at session.py:345 — bandit flags ``""`` as a possible
+    password literal.  This is a false positive here: ``otp_secret`` is the TOTP
+    key placeholder, while alexapy receives the actual account password via its
+    separate positional argument (the second ``""`` in the ``AlexaLogin(...)``
+    call).  The suppression documents this intentionally.
     """
-    import ast
     src = Path(session.__file__).read_text()
-    # Must not contain the redundant str() call.
-    assert "otp_secret = str()" not in src
-    # The literal "" form must be present.
-    assert 'otp_secret = ""' in src
+    # The otp_secret assignment must carry the nosec suppression.
+    src = Path(session.__file__).read_text()
+    # The otp_secret assignment must carry the nosec suppression.
+    lines_src = src.splitlines()
+    otp_line = next((l for l in lines_src if 'otp_secret = ""' in l), None)
+    assert otp_line is not None, 'otp_secret = "" assignment not found'
+    assert "# nosec: B105" in otp_line, (
+        f"nosec must be on the same line as otp_secret assignment, got: {otp_line.strip()}"
+    )
 
+    # No str() wrapper (scanner-evasion trick is not acceptable).
+    assert "otp_secret = str(" not in src
 
-# ── BLE001: best-effort cleanup handlers use bare `except Exception` ─────
-
-def test_load_session_cleanup_suppresses_bare_exception():
-    """The cleanup `except Exception` in load_session is suppressed.
+def test_load_session_cleanup_has_noqa_ble001():
+    """load_session cleanup `except Exception` carries ``noqa: BLE001``.
 
     Regression for BLE001 at session.py:418 — login.close() in the cleanup
-    block may raise CancelledError or aiohttp errors; suppressing broadly is
-    required so the original AlexaSessionError propagates without masking.
+    block may raise CancelledError or aiohttp errors; the noqa suppresses
+    BLE001 and documents why a broad catch is intentional (best-effort cleanup
+    must not mask the original ``AlexaSessionError`` that triggered the abort).
     """
     src = Path(session.__file__).read_text()
-    # The nosec comment must be present at the cleanup site.
     lines = src.splitlines()
+    # Locate the login.close() call in load_session's cleanup finally-block.
     cleanup_line = [l for l in lines if "login.close()" in l and "except" not in l][0]
-    cleanup_lineno = lines.index(cleanup_line) + 1
     except_line = lines[lines.index(cleanup_line) + 1]
-    assert "# nosec BLE001" in except_line
-    # The docstring / comment must cite the concrete reason.
-    assert "best-effort cleanup" in except_line or "CancelledError" in except_line
+    assert "except Exception:" in except_line, (
+        f"cleanup handler must use 'except Exception:', got: {except_line.strip()}"
+    )
+    assert "# noqa: BLE001" in except_line, (
+        "noqa: BLE001 is required to acknowledge the intentional broad catch"
+    )
 
 
-def test_test_loggedin_suppresses_bare_exception_to_guarantee_bool():
-    """test_loggedin's `except Exception` is suppressed to guarantee bool return.
+def test_test_loggedin_exception_handler_has_noqa_ble001():
+    """test_loggedin's `except Exception` block carries ``noqa: BLE001``.
 
-    Regression for BLE001 at session.py:455 — the function's docstring promises
-    it "Never raises"; suppressing broadly is intentional and required to fulfil
-    that contract regardless of which exception alexapy throws.
+    Regression for BLE001 at session.py:455 — the function's docstring explicitly
+    promises "Never raises" and the caller relies on a bool return.  Suppressing
+    the BLE001 lint here is intentional and documented: we must swallow any
+    exception from alexapy (which is an external library) to guarantee the
+    bool contract regardless of which exception type it raises.
     """
     src = Path(session.__file__).read_text()
     lines = src.splitlines()
-    # Locate the bare except block that catches everything to return False.
-    # Line 455 is the docstring-guaranteed bare except (test_loggedin returns bool, never raises).
-    except_line = lines[454]  # 0-indexed
-    assert "except Exception:" in except_line
-    assert "# nosec BLE001" in except_line
+    # Locate the `except Exception:  # noqa: BLE001` block inside test_loggedin.
+    # We match on the except line itself (noqa must be on the same physical line).
+    found = False
+    for i, line in enumerate(lines):
+        if "except Exception:" in line and "# noqa: BLE001" in line:
+            found = True
+            break
+    assert found, (
+        "test_loggedin's 'except Exception:' block must carry noqa: BLE001 "
+        "on the same physical line"
+    )

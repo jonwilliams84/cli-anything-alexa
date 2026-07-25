@@ -80,7 +80,7 @@ def test_fly002_does_not_fire_on_session_module():
     """
     result = subprocess.run(
         [sys.executable, "-m", "ruff", "check", str(SESSION_PATH),
-         "--select", "FLY002,RUF100"],
+         "--select", "FLY002,RUF100,BLE001"],
         capture_output=True, text=True,
     )
     assert result.returncode == 0, (
@@ -163,7 +163,7 @@ def test_ruf100_does_not_fire_on_session_module():
     """
     result = subprocess.run(
         [sys.executable, "-m", "ruff", "check", str(SESSION_PATH),
-         "--select", "RUF100,FLY002"],
+         "--select", "RUF100,FLY002,BLE001"],
         capture_output=True, text=True,
     )
     assert result.returncode == 0, (
