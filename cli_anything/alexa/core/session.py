@@ -342,7 +342,7 @@ def build_login(email: str, url: str = DEFAULT_URL,
     """
     url = validate_region(url)
     if otp_secret is None:
-        otp_secret = str()
+        otp_secret = ""
     AlexaLogin, _ = _import_alexapy()
     return AlexaLogin(
         url,
@@ -415,7 +415,7 @@ async def load_session(email: str, url: str = DEFAULT_URL,
         # doesn't emit an "Unclosed client session" warning on a clean abort.
         try:
             await login.close()
-        except Exception:  # pragma: no cover - best-effort cleanup
+        except Exception:  # nosec BLE001 — best-effort cleanup; close() may raise CancelledError or aiohttp errors, never let those mask the original AlexaSessionError
             _log.debug("login.close() failed during cleanup", exc_info=True)
         raise
     return login
@@ -452,7 +452,7 @@ async def test_loggedin(email: str, url: str = DEFAULT_URL,
             reloaded = await login.load_cookie()
             if reloaded:
                 cookies = reloaded
-    except Exception:
+    except Exception:  # nosec BLE001 — intentional; docstring promises "Never raises" so we swallow everything to guarantee the bool return.
         return False
     finally:
         if login is not None:
