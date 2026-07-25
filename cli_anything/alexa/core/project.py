@@ -12,7 +12,8 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
+
 
 def _config_dir() -> Path:
     """Profile dir, robust to an unset/"/" ``$HOME`` (containers).
@@ -41,7 +42,7 @@ DEFAULTS: dict[str, Any] = {
 }
 
 
-def load_config(path: Optional[Path] = None) -> dict:
+def load_config(path: Path | None = None) -> dict:
     p = path or DEFAULT_CONFIG_PATH
     out = dict(DEFAULTS)
     if p.exists():
@@ -57,7 +58,7 @@ def load_config(path: Optional[Path] = None) -> dict:
     return out
 
 
-def save_config(cfg: dict, path: Optional[Path] = None) -> Path:
+def save_config(cfg: dict, path: Path | None = None) -> Path:
     p = path or DEFAULT_CONFIG_PATH
     p.parent.mkdir(parents=True, exist_ok=True)
     safe = {k: v for k, v in cfg.items() if k in DEFAULTS}
