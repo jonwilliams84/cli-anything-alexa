@@ -44,6 +44,7 @@ __version__ = _resolve_version()
 
 # ──────────────────────────────────────────────────────── helpers
 
+
 def _abort(message: str) -> None:
     click.echo(f"error: {message}", err=True)
     sys.exit(1)
@@ -92,7 +93,8 @@ def _login(ctx):
     try:
         return session_core.run_async(
             session_core.load_session(
-                email, url=ctx.obj.get("url", "amazon.co.uk"),
+                email,
+                url=ctx.obj.get("url", "amazon.co.uk"),
                 config_dir=ctx.obj.get("cookie_dir", session_core.DEFAULT_CONFIG_DIR),
                 create_dir=not ctx.obj.get("read_in_place", False),
             )
@@ -126,18 +128,30 @@ def _run(ctx, coro):
 
 # ──────────────────────────────────────────────────────── root
 
+
 @click.group(context_settings=CONTEXT_SETTINGS, invoke_without_command=True)
 @click.option("--email", default=None, help="Amazon account email")
 @click.option("--url", default=None, help="Account region host (default amazon.co.uk)")
-@click.option("--config", "config_path", default=None, type=click.Path(),
-              help="Profile path (default ~/.config/cli-anything-alexa/config.json)")
-@click.option("--cookie-dir", "cookie_dir", default=None, envvar="CLI_ALEXA_COOKIE_DIR",
-              help="Read/write the cookie at this dir IN PLACE (HA layout: "
-                   "<dir>/.storage/alexa_media.<email>.pickle). Point it at HA's "
-                   "config base (e.g. /config) to reuse HA's LIVE rotating "
-                   "cookie. Env: CLI_ALEXA_COOKIE_DIR.")
-@click.option("--json", "as_json", is_flag=True, default=False,
-              help="Emit machine-readable JSON output")
+@click.option(
+    "--config",
+    "config_path",
+    default=None,
+    type=click.Path(),
+    help="Profile path (default ~/.config/cli-anything-alexa/config.json)",
+)
+@click.option(
+    "--cookie-dir",
+    "cookie_dir",
+    default=None,
+    envvar="CLI_ALEXA_COOKIE_DIR",
+    help="Read/write the cookie at this dir IN PLACE (HA layout: "
+    "<dir>/.storage/alexa_media.<email>.pickle). Point it at HA's "
+    "config base (e.g. /config) to reuse HA's LIVE rotating "
+    "cookie. Env: CLI_ALEXA_COOKIE_DIR.",
+)
+@click.option(
+    "--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON output"
+)
 @click.version_option(version=__version__, prog_name="cli-anything-alexa")
 @click.pass_context
 def cli(ctx, email, url, config_path, cookie_dir, as_json):
@@ -161,6 +175,7 @@ def cli(ctx, email, url, config_path, cookie_dir, as_json):
 
 # ──────────────────────────────────────────────────────── profile
 
+
 @cli.group()
 def config():
     """Local connection profile (~/.config/cli-anything-alexa/config.json)."""
@@ -169,8 +184,7 @@ def config():
 @config.command("show")
 @click.pass_context
 def config_show(ctx):
-    safe = {k: v for k, v in ctx.obj.items()
-            if k not in ("config_path", "as_json")}
+    safe = {k: v for k, v in ctx.obj.items() if k not in ("config_path", "as_json")}
     emit(ctx, safe)
 
 
@@ -183,6 +197,7 @@ def config_save(ctx):
 
 # ──────────────────────────────────────────────────────── auth
 
+
 @cli.group()
 def auth():
     """Manage the Alexa session (cookie import / fresh login / status)."""
@@ -190,8 +205,7 @@ def auth():
 
 @auth.command("import-pickle")
 @click.argument("pickle_path", type=click.Path())
-@click.option("--email", default=None,
-              help="Override the account email (else uses the profile's)")
+@click.option("--email", default=None, help="Override the account email (else uses the profile's)")
 @click.pass_context
 def auth_import_pickle(ctx, pickle_path, email):
     """Import an existing alexapy cookie (e.g. HA's alexa_media.<email>.pickle).
@@ -237,19 +251,33 @@ def auth_import_pickle(ctx, pickle_path, email):
 
 @auth.command("login")
 @click.option("--email", default=None, help="Amazon account email (prompted if omitted)")
-@click.option("--url", "region", default=None,
-              help="Account region host, e.g. amazon.co.uk / amazon.com / amazon.de")
-@click.option("--password", default=None,
-              help="Password — switches to the SCRIPTED (headless/CI) login")
-@click.option("--otp-secret", default=None,
-              help="Base32 TOTP secret for the scripted login's 2FA (headless)")
-@click.option("--host", default=None,
-              help=f"Proxy bind host (default {session_core.DEFAULT_PROXY_HOST}; "
-                   "use 0.0.0.0 to log in from another machine)")
-@click.option("--port", type=int, default=None,
-              help=f"Proxy port (default {session_core.DEFAULT_PROXY_PORT})")
-@click.option("--timeout", type=float, default=600.0,
-              help="Seconds to wait for the browser login (proxy flow)")
+@click.option(
+    "--url",
+    "region",
+    default=None,
+    help="Account region host, e.g. amazon.co.uk / amazon.com / amazon.de",
+)
+@click.option(
+    "--password", default=None, help="Password — switches to the SCRIPTED (headless/CI) login"
+)
+@click.option(
+    "--otp-secret", default=None, help="Base32 TOTP secret for the scripted login's 2FA (headless)"
+)
+@click.option(
+    "--host",
+    default=None,
+    help=f"Proxy bind host (default {session_core.DEFAULT_PROXY_HOST}; "
+    "use 0.0.0.0 to log in from another machine)",
+)
+@click.option(
+    "--port", type=int, default=None, help=f"Proxy port (default {session_core.DEFAULT_PROXY_PORT})"
+)
+@click.option(
+    "--timeout",
+    type=float,
+    default=600.0,
+    help="Seconds to wait for the browser login (proxy flow)",
+)
 @click.pass_context
 def auth_login(ctx, email, region, password, otp_secret, host, port, timeout):
     """Log in to Amazon. Guided browser-proxy login by default (recommended).
@@ -283,18 +311,21 @@ def auth_login(ctx, email, region, password, otp_secret, host, port, timeout):
 
     # ── Scripted (headless/CI) login: only when a password is supplied ──
     if password is not None:
+
         def otp_cb():
             return click.prompt("OTP / 2FA code")
 
         try:
-            _run(ctx,
+            _run(
+                ctx,
                 session_core.fresh_login(
-                    em, password, url=region,
-                    config_dir=ctx.obj.get(
-                        "cookie_dir", session_core.DEFAULT_CONFIG_DIR),
+                    em,
+                    password,
+                    url=region,
+                    config_dir=ctx.obj.get("cookie_dir", session_core.DEFAULT_CONFIG_DIR),
                     otp_secret=otp_secret or "",
                     otp_callback=None if otp_secret else otp_cb,
-                )
+                ),
             )
         except session_core.AlexaSessionError as exc:
             _abort(str(exc))
@@ -314,22 +345,25 @@ def auth_login(ctx, email, region, password, otp_secret, host, port, timeout):
         click.echo(f"  1. Open this URL in a browser:  {access_url}")
         click.echo("  2. Sign in to Amazon as you normally would (captcha / 2FA")
         click.echo("     are handled by Amazon's own pages).")
-        click.echo('  3. When it says you can close the window, you are done.')
+        click.echo("  3. When it says you can close the window, you are done.")
         if phost == session_core.BIND_ALL_HOST:
             click.echo("")
-            click.echo(f"  (bound to 0.0.0.0 — from another machine open "
-                       f"http://<this-host>:{pport} )")
+            click.echo(
+                f"  (bound to 0.0.0.0 — from another machine open http://<this-host>:{pport} )"
+            )
         click.echo("")
         click.echo("Waiting for login to complete... (Ctrl-C to cancel)")
 
     try:
         session_core.run_async(
             session_core.proxy_login(
-                em, url=region,
-                config_dir=ctx.obj.get(
-                    "cookie_dir", session_core.DEFAULT_CONFIG_DIR),
-                host=phost, port=pport,
-                timeout=timeout, on_url=on_url,
+                em,
+                url=region,
+                config_dir=ctx.obj.get("cookie_dir", session_core.DEFAULT_CONFIG_DIR),
+                host=phost,
+                port=pport,
+                timeout=timeout,
+                on_url=on_url,
             )
         )
     except KeyboardInterrupt:
@@ -345,8 +379,9 @@ def auth_login(ctx, email, region, password, otp_secret, host, port, timeout):
     if as_json:
         emit(ctx, {"logged_in": True, "email": em, "method": "proxy"})
     else:
-        click.echo(f"Logged in as {em} ({region}). You're all set — try "
-                   "`cli-anything-alexa devices list`.")
+        click.echo(
+            f"Logged in as {em} ({region}). You're all set — try `cli-anything-alexa devices list`."
+        )
 
 
 @auth.command("status")
@@ -356,7 +391,8 @@ def auth_status(ctx):
     email = _require_email(ctx)
     ok = session_core.run_async(
         session_core.test_loggedin(
-            email, url=ctx.obj.get("url", "amazon.co.uk"),
+            email,
+            url=ctx.obj.get("url", "amazon.co.uk"),
             config_dir=ctx.obj.get("cookie_dir", session_core.DEFAULT_CONFIG_DIR),
             create_dir=not ctx.obj.get("read_in_place", False),
         )
@@ -367,6 +403,7 @@ def auth_status(ctx):
 
 
 # ──────────────────────────────────────────────────────── devices (appliances)
+
 
 @cli.group()
 def devices():
@@ -385,12 +422,21 @@ def _resolve_one_or_abort(ctx, records, matches, what):
     if len(matches) > 1:
         cands = endpoints_core.ambiguous_matches(matches)
         if ctx.obj.get("as_json"):
-            click.echo(json.dumps(
-                {"error": "ambiguous", "target": what, "matches": cands},
-                indent=2, default=str, sort_keys=True), err=True)
+            click.echo(
+                json.dumps(
+                    {"error": "ambiguous", "target": what, "matches": cands},
+                    indent=2,
+                    default=str,
+                    sort_keys=True,
+                ),
+                err=True,
+            )
         else:
-            click.echo(f"error: {what!r} matches {len(matches)} devices — "
-                       "disambiguate by applianceId or endpoint id:", err=True)
+            click.echo(
+                f"error: {what!r} matches {len(matches)} devices — "
+                "disambiguate by applianceId or endpoint id:",
+                err=True,
+            )
             click.echo(render_table(cands), err=True)
         sys.exit(1)
     return matches[0]
@@ -399,8 +445,9 @@ def _resolve_one_or_abort(ctx, records, matches, what):
 @devices.command("list")
 @click.option("--ha-only", is_flag=True, help="Only Home-Assistant-sourced appliances")
 @click.option("--native-only", is_flag=True, help="Only native (non-HA) appliances")
-@click.option("--manufacturer", default=None,
-              help="Filter by manufacturer (case-insensitive substring)")
+@click.option(
+    "--manufacturer", default=None, help="Filter by manufacturer (case-insensitive substring)"
+)
 @click.pass_context
 def devices_list(ctx, ha_only, native_only, manufacturer):
     """List every smart-home device Alexa knows about.
@@ -416,28 +463,37 @@ def devices_list(ctx, ha_only, native_only, manufacturer):
     records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
     if ha_only:
         records = [r for r in records if r.get("ha_sourced")]
-    rows = endpoints_core.device_rows(
-        records, native_only=native_only, manufacturer=manufacturer
-    )
+    rows = endpoints_core.device_rows(records, native_only=native_only, manufacturer=manufacturer)
     emit(ctx, rows)
 
 
 def _emit_bulk_rename_preview(ctx, planned, mode):
     """Dry-run preview for a bulk rename plan (pattern or map)."""
     if ctx.obj.get("as_json"):
-        emit(ctx, {"dry_run": True, "mode": mode, "count": len(planned),
-                   "renames": planned, "hint": "re-run with --yes to execute"})
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "mode": mode,
+                "count": len(planned),
+                "renames": planned,
+                "hint": "re-run with --yes to execute",
+            },
+        )
         return
     if not planned:
         click.echo(f"no devices matched {mode} — nothing to rename")
         return
     click.echo(f"Dry-run: {len(planned)} rename(s) planned ({mode}).")
-    click.echo(render_table([{"old": p["old"], "new": p["new"],
-                              "source": p["source"]} for p in planned]))
+    click.echo(
+        render_table([{"old": p["old"], "new": p["new"], "source": p["source"]} for p in planned])
+    )
     warned = [p for p in planned if p.get("warning")]
     if warned:
-        click.echo("\nDACS warnings (Amazon may reject these non-speakable names; "
-                   "re-run with --speakable to auto-fix):")
+        click.echo(
+            "\nDACS warnings (Amazon may reject these non-speakable names; "
+            "re-run with --speakable to auto-fix):"
+        )
         for p in warned:
             click.echo(f"  - {p['warning']}")
     click.echo("\nRe-run with --yes to execute.")
@@ -446,18 +502,31 @@ def _emit_bulk_rename_preview(ctx, planned, mode):
 @devices.command("rename")
 @click.argument("target", required=False)
 @click.argument("new_name", required=False)
-@click.option("--pattern", "pattern", default=None,
-              help="Bulk rename via a sed-style s/REGEX/REPL/[ig] applied to "
-                   "EVERY device name (capture groups with \\1).")
-@click.option("--map", "map_file", default=None,
-              type=click.Path(exists=True, dir_okay=False),
-              help="Bulk rename from a file of 'current name => new name' "
-                   "(or 'endpointId => new name') lines; # comments allowed.")
-@click.option("--speakable", is_flag=True, default=False,
-              help="Auto-transform each new name into a DACS-speakable form "
-                   "(hyphens->spaces, strip control chars).")
-@click.option("--yes", is_flag=True, default=False,
-              help="Required to actually rename (guards live mutation)")
+@click.option(
+    "--pattern",
+    "pattern",
+    default=None,
+    help="Bulk rename via a sed-style s/REGEX/REPL/[ig] applied to "
+    "EVERY device name (capture groups with \\1).",
+)
+@click.option(
+    "--map",
+    "map_file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Bulk rename from a file of 'current name => new name' "
+    "(or 'endpointId => new name') lines; # comments allowed.",
+)
+@click.option(
+    "--speakable",
+    is_flag=True,
+    default=False,
+    help="Auto-transform each new name into a DACS-speakable form "
+    "(hyphens->spaces, strip control chars).",
+)
+@click.option(
+    "--yes", is_flag=True, default=False, help="Required to actually rename (guards live mutation)"
+)
 @click.pass_context
 def devices_rename(ctx, target, new_name, pattern, map_file, speakable, yes):
     """Rename device(s). Single TARGET NEW_NAME, or bulk --pattern / --map.
@@ -484,8 +553,7 @@ def devices_rename(ctx, target, new_name, pattern, map_file, speakable, yes):
     # ── bulk: --pattern ──
     if pattern:
         try:
-            planned = endpoints_core.plan_pattern_renames(
-                records, pattern, speakable=speakable)
+            planned = endpoints_core.plan_pattern_renames(records, pattern, speakable=speakable)
         except endpoints_core.PatternError as exc:
             _abort(str(exc))
         if not yes:
@@ -500,16 +568,22 @@ def devices_rename(ctx, target, new_name, pattern, map_file, speakable, yes):
             pairs = endpoints_core.parse_rename_map(Path(map_file).read_text())
         except ValueError as exc:
             _abort(str(exc))
-        planned, problems = endpoints_core.plan_map_renames(
-            records, pairs, speakable=speakable)
+        planned, problems = endpoints_core.plan_map_renames(records, pairs, speakable=speakable)
         if problems:
             if ctx.obj.get("as_json"):
-                click.echo(json.dumps({"error": "unresolved map entries",
-                                       "problems": problems}, indent=2,
-                                      default=str, sort_keys=True), err=True)
+                click.echo(
+                    json.dumps(
+                        {"error": "unresolved map entries", "problems": problems},
+                        indent=2,
+                        default=str,
+                        sort_keys=True,
+                    ),
+                    err=True,
+                )
             else:
-                click.echo("error: these --map targets did not resolve to exactly "
-                           "one device:", err=True)
+                click.echo(
+                    "error: these --map targets did not resolve to exactly one device:", err=True
+                )
                 click.echo(render_table(problems), err=True)
             sys.exit(1)
         if not yes:
@@ -528,10 +602,14 @@ def devices_rename(ctx, target, new_name, pattern, map_file, speakable, yes):
     if not eid:
         _abort(f"resolved device for {target!r} has no endpoint id (cannot rename)")
     if not yes:
-        out = {"dry_run": True, "would_rename": rec.get("name"),
-               "to": final_name, "endpointId": eid,
-               "applianceId": rec.get("applianceId"),
-               "hint": "re-run with --yes to execute"}
+        out = {
+            "dry_run": True,
+            "would_rename": rec.get("name"),
+            "to": final_name,
+            "endpointId": eid,
+            "applianceId": rec.get("applianceId"),
+            "hint": "re-run with --yes to execute",
+        }
         warn = endpoints_core.speakable_warning(final_name)
         if warn:
             out["warning"] = warn
@@ -565,13 +643,21 @@ def devices_duplicates(ctx):
 
 
 @devices.command("prune")
-@click.option("--whitelist", "whitelist_file", required=True,
-              type=click.Path(exists=True, dir_okay=False),
-              help="File of allowed HA entity ids (one per line)")
-@click.option("--dry-run/--no-dry-run", default=True,
-              help="Preview only (default). --no-dry-run + --yes to execute.")
-@click.option("--yes", is_flag=True, default=False,
-              help="Required to actually DELETE (guards live mutation)")
+@click.option(
+    "--whitelist",
+    "whitelist_file",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="File of allowed HA entity ids (one per line)",
+)
+@click.option(
+    "--dry-run/--no-dry-run",
+    default=True,
+    help="Preview only (default). --no-dry-run + --yes to execute.",
+)
+@click.option(
+    "--yes", is_flag=True, default=False, help="Required to actually DELETE (guards live mutation)"
+)
 @click.pass_context
 def devices_prune(ctx, whitelist_file, dry_run, yes):
     """Delete HA-sourced appliances whose mapped entity isn't whitelisted.
@@ -605,25 +691,33 @@ def devices_prune(ctx, whitelist_file, dry_run, yes):
 
     results = []
     for row in plan["delete"]:
-        res = _run(ctx, 
-            devices_core.delete_appliance(login, row["applianceId"])
-        )
+        res = _run(ctx, devices_core.delete_appliance(login, row["applianceId"]))
         results.append(res)
     emit(ctx, {**summary, "results": results})
 
 
 @devices.command("delete")
 @click.argument("appliance_ids", nargs=-1)
-@click.option("--entity", "entity", default=None,
-              help="Resolve the appliance to delete by HA entity id (ha.entity_id)")
-@click.option("--name", "name", default=None,
-              help="Resolve the appliance to delete by Alexa display name")
-@click.option("--verify", is_flag=True, default=False,
-              help="After deleting, re-discover + re-query and report which "
-                   "devices re-synced/re-appeared (native devices re-sync from "
-                   "their source bridge/skill).")
-@click.option("--yes", is_flag=True, default=False,
-              help="Required to actually delete (guards live mutation)")
+@click.option(
+    "--entity",
+    "entity",
+    default=None,
+    help="Resolve the appliance to delete by HA entity id (ha.entity_id)",
+)
+@click.option(
+    "--name", "name", default=None, help="Resolve the appliance to delete by Alexa display name"
+)
+@click.option(
+    "--verify",
+    is_flag=True,
+    default=False,
+    help="After deleting, re-discover + re-query and report which "
+    "devices re-synced/re-appeared (native devices re-sync from "
+    "their source bridge/skill).",
+)
+@click.option(
+    "--yes", is_flag=True, default=False, help="Required to actually delete (guards live mutation)"
+)
 @click.pass_context
 def devices_delete(ctx, appliance_ids, entity, name, verify, yes):
     """Delete appliances by applianceId, --entity <ha.id>, or --name "<display>".
@@ -667,47 +761,51 @@ def devices_delete(ctx, appliance_ids, entity, name, verify, yes):
             click.echo(f"warning: {w}", err=True)
 
     if not yes:
-        emit(ctx, {
-            "dry_run": True,
-            "would_delete": targets,
-            "native_warnings": warnings,
-            "hint": "re-run with --yes to execute"
-                    + (" (--verify to re-check after)" if not verify else ""),
-        })
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "would_delete": targets,
+                "native_warnings": warnings,
+                "hint": "re-run with --yes to execute"
+                + (" (--verify to re-check after)" if not verify else ""),
+            },
+        )
         return
-    results = [
-        _run(ctx, devices_core.delete_appliance(login, aid))
-        for aid in targets
-    ]
+    results = [_run(ctx, devices_core.delete_appliance(login, aid)) for aid in targets]
     if not verify:
         emit(ctx, results)
         return
     # build the "deleted" rows (applianceId + name) for the reappear diff
     deleted_rows = [
-        {"applianceId": aid,
-         "name": (by_appliance.get(aid) or {}).get("name")}
-        for aid in targets
+        {"applianceId": aid, "name": (by_appliance.get(aid) or {}).get("name")} for aid in targets
     ]
     verification = _run(ctx, devices_core.verify_deletes(login, deleted_rows))
-    emit(ctx, {"results": results, "verify": verification,
-               "native_warnings": warnings})
+    emit(ctx, {"results": results, "verify": verification, "native_warnings": warnings})
 
 
 @cli.command("discover")
-@click.option("--yes", is_flag=True, default=False,
-              help="Required to actually trigger discovery (guards live mutation)")
+@click.option(
+    "--yes",
+    is_flag=True,
+    default=False,
+    help="Required to actually trigger discovery (guards live mutation)",
+)
 @click.pass_context
 def discover_cmd(ctx, yes):
     """Trigger Alexa smart-home device discovery (POST /api/phoenix/discovery)."""
     login = _login(ctx)
     if not yes:
-        emit(ctx, {"dry_run": True, "would_trigger": "discovery",
-                   "hint": "re-run with --yes to execute"})
+        emit(
+            ctx,
+            {"dry_run": True, "would_trigger": "discovery", "hint": "re-run with --yes to execute"},
+        )
         return
     emit(ctx, _run(ctx, devices_core.trigger_discovery(login)))
 
 
 # ──────────────────────────────────────────────────────── echo devices
+
 
 @cli.group("echos")
 def echos():
@@ -725,6 +823,7 @@ def echos_list(ctx):
 
 # ──────────────────────────────────────────────────────── groups
 
+
 @cli.group()
 def groups():
     """Smart-home device-groups / rooms — list / create / add / remove / set / delete."""
@@ -741,9 +840,7 @@ def _resolve_group_members(ctx, login, entities, endpoints, devices=()):
     ent_map = {}
     if entities:
         ent_map = _run(ctx, groups_core.fetch_endpoint_map(login))
-    member_ids, unresolved = groups_core.resolve_members(
-        list(entities), list(endpoints), ent_map
-    )
+    member_ids, unresolved = groups_core.resolve_members(list(entities), list(endpoints), ent_map)
     if unresolved:
         _abort(
             "could not resolve these entities to Alexa endpoints "
@@ -767,8 +864,7 @@ def _resolve_child_groups(ctx, login, child_groups):
     raw = _run(ctx, groups_core.fetch_groups(login))
     child_ids, unresolved = groups_core.resolve_child_groups(raw, list(child_groups))
     if unresolved:
-        _abort("could not resolve these child groups (no such group?): "
-               + ", ".join(unresolved))
+        _abort("could not resolve these child groups (no such group?): " + ", ".join(unresolved))
     return child_ids
 
 
@@ -791,15 +887,25 @@ def groups_list(ctx):
 
 @groups.command("create")
 @click.argument("name")
-@click.option("--entity", "entities", multiple=True,
-              help="HA entity id to add as a member (repeatable)")
-@click.option("--endpoint", "endpoints", multiple=True,
-              help="Alexa endpoint id (amzn1.alexa.endpoint.*) to add (repeatable)")
-@click.option("--child-group", "child_groups", multiple=True,
-              help="Nest another group (by name or id) as a child — the rollup "
-                   "pattern, e.g. 'Downstairs' of room groups (repeatable)")
-@click.option("--yes", is_flag=True, default=False,
-              help="Required to actually create (guards live mutation)")
+@click.option(
+    "--entity", "entities", multiple=True, help="HA entity id to add as a member (repeatable)"
+)
+@click.option(
+    "--endpoint",
+    "endpoints",
+    multiple=True,
+    help="Alexa endpoint id (amzn1.alexa.endpoint.*) to add (repeatable)",
+)
+@click.option(
+    "--child-group",
+    "child_groups",
+    multiple=True,
+    help="Nest another group (by name or id) as a child — the rollup "
+    "pattern, e.g. 'Downstairs' of room groups (repeatable)",
+)
+@click.option(
+    "--yes", is_flag=True, default=False, help="Required to actually create (guards live mutation)"
+)
 @click.pass_context
 def groups_create(ctx, name, entities, endpoints, child_groups, yes):
     """Create a device-group with members and/or child groups (dry-run unless --yes)."""
@@ -809,17 +915,23 @@ def groups_create(ctx, name, entities, endpoints, child_groups, yes):
     if not member_ids and not child_ids:
         _abort("no members given — pass at least one --entity / --endpoint / --child-group")
     if not yes:
-        emit(ctx, {"dry_run": True, "would_create": name,
-                   "memberDeviceIds": member_ids,
-                   "childDeviceGroupIds": child_ids,
-                   "hint": "re-run with --yes to execute"})
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "would_create": name,
+                "memberDeviceIds": member_ids,
+                "childDeviceGroupIds": child_ids,
+                "hint": "re-run with --yes to execute",
+            },
+        )
         return
-    emit(ctx, _run(ctx,
-        groups_core.create_group(login, name, member_ids, child_ids)))
+    emit(ctx, _run(ctx, groups_core.create_group(login, name, member_ids, child_ids)))
 
 
-def _groups_member_update(ctx, group, entities, endpoints, operation, yes,
-                          devices=(), child_groups=()):
+def _groups_member_update(
+    ctx, group, entities, endpoints, operation, yes, devices=(), child_groups=()
+):
     """Shared add/remove/set body: resolve members + child groups + updateDeviceGroup."""
     login = _login(ctx)
     g = _find_group_or_abort(ctx, login, group)
@@ -827,89 +939,123 @@ def _groups_member_update(ctx, group, entities, endpoints, operation, yes,
     member_ids = _resolve_group_members(ctx, login, entities, endpoints, devices)
     child_ids = _resolve_child_groups(ctx, login, child_groups)
     if not member_ids and not child_ids:
-        _abort("nothing to change — pass at least one --entity / --endpoint / "
-               "--device / --child-group")
+        _abort(
+            "nothing to change — pass at least one --entity / --endpoint / --device / --child-group"
+        )
     if not yes:
-        emit(ctx, {"dry_run": True, "group": group, "deviceGroupId": gid,
-                   "operation": operation, "memberDeviceIds": member_ids,
-                   "childDeviceGroupIds": child_ids,
-                   "hint": "re-run with --yes to execute"})
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "group": group,
+                "deviceGroupId": gid,
+                "operation": operation,
+                "memberDeviceIds": member_ids,
+                "childDeviceGroupIds": child_ids,
+                "hint": "re-run with --yes to execute",
+            },
+        )
         return
-    emit(ctx, _run(ctx,
-        groups_core.update_group(login, gid, member_ids, operation, child_ids)))
+    emit(ctx, _run(ctx, groups_core.update_group(login, gid, member_ids, operation, child_ids)))
 
 
 @groups.command("add")
 @click.argument("group")
 @click.option("--entity", "entities", multiple=True, help="HA entity id (repeatable)")
-@click.option("--endpoint", "endpoints", multiple=True,
-              help="Alexa endpoint id (repeatable)")
-@click.option("--device", "devices_", multiple=True,
-              help="Alexa display name — targets native/non-HA devices (repeatable)")
-@click.option("--child-group", "child_groups", multiple=True,
-              help="Nest another group (by name or id) as a child (repeatable)")
+@click.option("--endpoint", "endpoints", multiple=True, help="Alexa endpoint id (repeatable)")
+@click.option(
+    "--device",
+    "devices_",
+    multiple=True,
+    help="Alexa display name — targets native/non-HA devices (repeatable)",
+)
+@click.option(
+    "--child-group",
+    "child_groups",
+    multiple=True,
+    help="Nest another group (by name or id) as a child (repeatable)",
+)
 @click.option("--yes", is_flag=True, default=False, help="Required to execute")
 @click.pass_context
 def groups_add(ctx, group, entities, endpoints, devices_, child_groups, yes):
     """Add members and/or child groups to a group (by name or id)."""
-    _groups_member_update(ctx, group, entities, endpoints, "ADD", yes,
-                          devices_, child_groups)
+    _groups_member_update(ctx, group, entities, endpoints, "ADD", yes, devices_, child_groups)
 
 
 @groups.command("remove")
 @click.argument("group")
 @click.option("--entity", "entities", multiple=True, help="HA entity id (repeatable)")
-@click.option("--endpoint", "endpoints", multiple=True,
-              help="Alexa endpoint id (repeatable)")
-@click.option("--device", "devices_", multiple=True,
-              help="Alexa display name — targets native/non-HA devices (repeatable)")
-@click.option("--child-group", "child_groups", multiple=True,
-              help="Remove a nested child group (by name or id) (repeatable)")
+@click.option("--endpoint", "endpoints", multiple=True, help="Alexa endpoint id (repeatable)")
+@click.option(
+    "--device",
+    "devices_",
+    multiple=True,
+    help="Alexa display name — targets native/non-HA devices (repeatable)",
+)
+@click.option(
+    "--child-group",
+    "child_groups",
+    multiple=True,
+    help="Remove a nested child group (by name or id) (repeatable)",
+)
 @click.option("--yes", is_flag=True, default=False, help="Required to execute")
 @click.pass_context
 def groups_remove(ctx, group, entities, endpoints, devices_, child_groups, yes):
     """Remove members and/or child groups from a group (by name or id)."""
-    _groups_member_update(ctx, group, entities, endpoints, "REMOVE", yes,
-                          devices_, child_groups)
+    _groups_member_update(ctx, group, entities, endpoints, "REMOVE", yes, devices_, child_groups)
 
 
 @groups.command("set")
 @click.argument("group")
 @click.option("--entity", "entities", multiple=True, help="HA entity id (repeatable)")
-@click.option("--endpoint", "endpoints", multiple=True,
-              help="Alexa endpoint id (repeatable)")
-@click.option("--device", "devices_", multiple=True,
-              help="Alexa display name — targets native/non-HA devices (repeatable)")
-@click.option("--child-group", "child_groups", multiple=True,
-              help="Replace the child-group set with these (by name or id) (repeatable)")
+@click.option("--endpoint", "endpoints", multiple=True, help="Alexa endpoint id (repeatable)")
+@click.option(
+    "--device",
+    "devices_",
+    multiple=True,
+    help="Alexa display name — targets native/non-HA devices (repeatable)",
+)
+@click.option(
+    "--child-group",
+    "child_groups",
+    multiple=True,
+    help="Replace the child-group set with these (by name or id) (repeatable)",
+)
 @click.option("--yes", is_flag=True, default=False, help="Required to execute")
 @click.pass_context
 def groups_set(ctx, group, entities, endpoints, devices_, child_groups, yes):
     """Replace a group's entire member (and child-group) set (by name or id)."""
-    _groups_member_update(ctx, group, entities, endpoints, "REPLACE", yes,
-                          devices_, child_groups)
+    _groups_member_update(ctx, group, entities, endpoints, "REPLACE", yes, devices_, child_groups)
 
 
 @groups.command("delete")
 @click.argument("group")
-@click.option("--yes", is_flag=True, default=False,
-              help="Required to actually delete (guards live mutation)")
+@click.option(
+    "--yes", is_flag=True, default=False, help="Required to actually delete (guards live mutation)"
+)
 @click.pass_context
 def groups_delete(ctx, group, yes):
     """Delete a device-group (by name or id; dry-run unless --yes)."""
     login = _login(ctx)
     g = _find_group_or_abort(ctx, login, group)
     gid = g.get("id")
-    name = (((g.get("friendlyName") or {}).get("value") or {}).get("text"))
+    name = ((g.get("friendlyName") or {}).get("value") or {}).get("text")
     if not yes:
-        emit(ctx, {"dry_run": True, "would_delete": name or group,
-                   "deviceGroupId": gid,
-                   "hint": "re-run with --yes to execute"})
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "would_delete": name or group,
+                "deviceGroupId": gid,
+                "hint": "re-run with --yes to execute",
+            },
+        )
         return
     emit(ctx, _run(ctx, groups_core.delete_group(login, gid)))
 
 
 # ──────────────────────────────────────────────────────── routines
+
 
 @cli.group()
 def routines():
@@ -925,15 +1071,17 @@ def routines_list(ctx):
 
 @routines.command("run")
 @click.argument("name_or_id")
-@click.option("--yes", is_flag=True, default=False,
-              help="Required to actually trigger (guards live mutation)")
+@click.option(
+    "--yes", is_flag=True, default=False, help="Required to actually trigger (guards live mutation)"
+)
 @click.pass_context
 def routines_run(ctx, name_or_id, yes):
     """Trigger a routine by name or id (via behaviors/preview)."""
     login = _login(ctx)
     if not yes:
-        emit(ctx, {"dry_run": True, "would_run": name_or_id,
-                   "hint": "re-run with --yes to execute"})
+        emit(
+            ctx, {"dry_run": True, "would_run": name_or_id, "hint": "re-run with --yes to execute"}
+        )
         return
     try:
         emit(ctx, _run(ctx, routines_core.run_routine(login, name_or_id)))
@@ -942,6 +1090,7 @@ def routines_run(ctx, name_or_id, yes):
 
 
 # ──────────────────────────────────────────────────────── notifications
+
 
 @cli.group()
 def notifications():
@@ -958,10 +1107,8 @@ def notifications_list(ctx):
 @notifications.command("add-reminder")
 @click.argument("label")
 @click.option("--device", required=True, help="Echo accountName or serial")
-@click.option("--in", "in_seconds", type=float, default=None,
-              help="Seconds from now")
-@click.option("--at", "at_epoch_ms", type=int, default=None,
-              help="Absolute epoch milliseconds")
+@click.option("--in", "in_seconds", type=float, default=None, help="Seconds from now")
+@click.option("--at", "at_epoch_ms", type=int, default=None, help="Absolute epoch milliseconds")
 @click.option("--yes", is_flag=True, default=False, help="Required to execute")
 @click.pass_context
 def notifications_add_reminder(ctx, label, device, in_seconds, at_epoch_ms, yes):
@@ -972,15 +1119,11 @@ def notifications_add_reminder(ctx, label, device, in_seconds, at_epoch_ms, yes)
     if not d:
         _abort(f"no device matching {device!r}")
     when = notifications_core._epoch_ms(in_seconds, at_epoch_ms)
-    payload = notifications_core.build_reminder(
-        label, d["serialNumber"], d["deviceType"], when
-    )
+    payload = notifications_core.build_reminder(label, d["serialNumber"], d["deviceType"], when)
     if not yes:
-        emit(ctx, {"dry_run": True, "payload": payload,
-                   "hint": "re-run with --yes to execute"})
+        emit(ctx, {"dry_run": True, "payload": payload, "hint": "re-run with --yes to execute"})
         return
-    emit(ctx, _run(ctx, 
-        notifications_core.create_notification(login, payload)))
+    emit(ctx, _run(ctx, notifications_core.create_notification(login, payload)))
 
 
 @notifications.command("add-alarm")
@@ -998,21 +1141,18 @@ def notifications_add_alarm(ctx, device, in_seconds, at_epoch_ms, label, yes):
     if not d:
         _abort(f"no device matching {device!r}")
     when = notifications_core._epoch_ms(in_seconds, at_epoch_ms)
-    payload = notifications_core.build_alarm(
-        d["serialNumber"], d["deviceType"], when, label=label
-    )
+    payload = notifications_core.build_alarm(d["serialNumber"], d["deviceType"], when, label=label)
     if not yes:
-        emit(ctx, {"dry_run": True, "payload": payload,
-                   "hint": "re-run with --yes to execute"})
+        emit(ctx, {"dry_run": True, "payload": payload, "hint": "re-run with --yes to execute"})
         return
-    emit(ctx, _run(ctx, 
-        notifications_core.create_notification(login, payload)))
+    emit(ctx, _run(ctx, notifications_core.create_notification(login, payload)))
 
 
 @notifications.command("add-timer")
 @click.option("--device", required=True)
-@click.option("--duration", "duration_seconds", type=float, required=True,
-              help="Timer duration in seconds")
+@click.option(
+    "--duration", "duration_seconds", type=float, required=True, help="Timer duration in seconds"
+)
 @click.option("--label", default="")
 @click.option("--yes", is_flag=True, default=False, help="Required to execute")
 @click.pass_context
@@ -1027,11 +1167,9 @@ def notifications_add_timer(ctx, device, duration_seconds, label, yes):
         d["serialNumber"], d["deviceType"], int(duration_seconds * 1000), label=label
     )
     if not yes:
-        emit(ctx, {"dry_run": True, "payload": payload,
-                   "hint": "re-run with --yes to execute"})
+        emit(ctx, {"dry_run": True, "payload": payload, "hint": "re-run with --yes to execute"})
         return
-    emit(ctx, _run(ctx, 
-        notifications_core.create_notification(login, payload)))
+    emit(ctx, _run(ctx, notifications_core.create_notification(login, payload)))
 
 
 @notifications.command("delete")
@@ -1042,28 +1180,39 @@ def notifications_delete(ctx, notification_id, yes):
     """Delete a notification by id."""
     login = _login(ctx)
     if not yes:
-        emit(ctx, {"dry_run": True, "would_delete": notification_id,
-                   "hint": "re-run with --yes to execute"})
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "would_delete": notification_id,
+                "hint": "re-run with --yes to execute",
+            },
+        )
         return
-    emit(ctx, _run(ctx, 
-        notifications_core.delete_notification(login, notification_id)))
+    emit(ctx, _run(ctx, notifications_core.delete_notification(login, notification_id)))
 
 
 # ──────────────────────────────────────────────────────── announce / dnd
 
+
 @cli.command("announce")
 @click.argument("text")
-@click.option("--device", default=None,
-              help="Echo accountName/serial (default: all devices)")
+@click.option("--device", default=None, help="Echo accountName/serial (default: all devices)")
 @click.option("--yes", is_flag=True, default=False, help="Required to execute")
 @click.pass_context
 def announce_cmd(ctx, text, device, yes):
     """Speak an announcement on all devices (or one named target)."""
     login = _login(ctx)
     if not yes:
-        emit(ctx, {"dry_run": True, "would_announce": text,
-                   "device": device or "all",
-                   "hint": "re-run with --yes to execute"})
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "would_announce": text,
+                "device": device or "all",
+                "hint": "re-run with --yes to execute",
+            },
+        )
         return
     try:
         emit(ctx, _run(ctx, control_core.announce(login, text, device)))
@@ -1080,17 +1229,24 @@ def dnd_cmd(ctx, device, state, yes):
     """Toggle Do-Not-Disturb for a device."""
     login = _login(ctx)
     if not yes:
-        emit(ctx, {"dry_run": True, "device": device, "dnd": state,
-                   "hint": "re-run with --yes to execute"})
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "device": device,
+                "dnd": state,
+                "hint": "re-run with --yes to execute",
+            },
+        )
         return
     try:
-        emit(ctx, _run(ctx, 
-            control_core.set_dnd(login, device, state == "on")))
+        emit(ctx, _run(ctx, control_core.set_dnd(login, device, state == "on")))
     except ValueError as exc:
         _abort(str(exc))
 
 
 # ──────────────────────────────────────────────────────── REPL
+
 
 @cli.command()
 @click.pass_context

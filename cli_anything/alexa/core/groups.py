@@ -82,6 +82,7 @@ _APPLIANCE_TAIL_RE = re.compile(r"_([a-z_]+)#(.+)$")
 
 # ── pure helpers ───────────────────────────────────────────────────────────
 
+
 def normalize_name(name: str) -> str:
     """Normalize a group friendly name for case/space/punct-insensitive match."""
     if not name:
@@ -94,16 +95,14 @@ def group_rows(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Flatten raw listDeviceGroups records to display rows (pure)."""
     out: list[dict[str, Any]] = []
     for g in groups or []:
-        name = (((g.get("friendlyName") or {}).get("value") or {}).get("text"))
+        name = ((g.get("friendlyName") or {}).get("value") or {}).get("text")
         members = ((g.get("memberDevices") or {}).get("items")) or []
         member_names = [
-            (((m.get("friendlyNameObject") or {}).get("value") or {}).get("text"))
-            for m in members
+            (((m.get("friendlyNameObject") or {}).get("value") or {}).get("text")) for m in members
         ]
         children = g.get("childDeviceGroups") or []
         child_names = [
-            (((c.get("friendlyName") or {}).get("value") or {}).get("text"))
-            for c in children
+            (((c.get("friendlyName") or {}).get("value") or {}).get("text")) for c in children
         ]
         out.append(
             {
@@ -207,6 +206,7 @@ def resolve_members(
 
 # ── GraphQL variables builders (pure; the gotchas live HERE) ───────────────
 
+
 def build_create_variables(
     name: str,
     member_ids: list[str],
@@ -267,6 +267,7 @@ def build_delete_variables(group_id: str) -> dict[str, Any]:
 
 # ── network (alexapy GraphQL via _static_request) ──────────────────────────
 
+
 async def _graphql(login, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
     """POST a GraphQL doc to /nexus/v1/graphql via alexapy's static request.
 
@@ -280,9 +281,7 @@ async def _graphql(login, query: str, variables: dict[str, Any] | None = None) -
         # Pass through verbatim: lists stay lists so they serialize as JSON
         # arrays (NOT json.dumps'd strings — that silently no-ops, see docstring).
         data["variables"] = variables
-    resp = await AlexaAPI._static_request(
-        "post", login, "/nexus/v1/graphql", data=data
-    )
+    resp = await AlexaAPI._static_request("post", login, "/nexus/v1/graphql", data=data)
     body = json.loads(await resp.text())
     errors = body.get("errors")
     if errors:
