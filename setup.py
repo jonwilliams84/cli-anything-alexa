@@ -27,6 +27,12 @@ setup(
         # tested without alexapy or a live account.
         "test": [
             "pytest>=7.0",
+            # tests/test_security_fixes.py shells out to `python -m ruff` to assert
+            # the import block stays I001-clean, so ruff must exist in the SAME
+            # interpreter the tests run under. It was never declared, so CI's
+            # `pip install -e . pytest pytest-cov` left it absent and the subprocess
+            # exited 1 — surfacing as a lint failure when nothing was mis-sorted.
+            "ruff>=0.5",
         ],
     },
     entry_points={
