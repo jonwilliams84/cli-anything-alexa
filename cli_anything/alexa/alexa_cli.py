@@ -11,20 +11,21 @@ from __future__ import annotations
 import json
 import shlex
 import sys
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 import click
 
-from cli_anything.alexa.core import project
 from cli_anything.alexa.core import appliances as appliances_pure
+from cli_anything.alexa.core import control as control_core
 from cli_anything.alexa.core import devices as devices_core
 from cli_anything.alexa.core import devices_meta as devices_meta_core
 from cli_anything.alexa.core import endpoints as endpoints_core
-from cli_anything.alexa.core import notifications as notifications_core
-from cli_anything.alexa.core import routines as routines_core
-from cli_anything.alexa.core import control as control_core
 from cli_anything.alexa.core import groups as groups_core
+from cli_anything.alexa.core import notifications as notifications_core
+from cli_anything.alexa.core import project
+from cli_anything.alexa.core import routines as routines_core
 from cli_anything.alexa.core import session as session_core
 from cli_anything.alexa.core.formatting import render_table
 
@@ -322,7 +323,7 @@ def auth_login(ctx, email, region, password, otp_secret, host, port, timeout):
         click.echo("Waiting for login to complete... (Ctrl-C to cancel)")
 
     try:
-        login = session_core.run_async(
+        session_core.run_async(
             session_core.proxy_login(
                 em, url=region,
                 config_dir=ctx.obj.get(

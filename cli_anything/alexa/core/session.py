@@ -640,8 +640,8 @@ def csrf_header(login) -> dict[str, str]:
         for cookie in login.session.cookie_jar:
             if cookie.key == "csrf":
                 return {"csrf": cookie.value}
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("could not read csrf cookie from session jar: %s", exc)
     return {}
 
 
