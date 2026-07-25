@@ -39,11 +39,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import os
+import re
 import tempfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 _log = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ FALLBACK_CONFIG_DIR = Path(tempfile.gettempdir()) / "cli-anything-alexa"
 DEFAULT_CONFIG_DIR = _default_config_dir()
 
 
-def resolve_config_dir(cookie_dir: Optional[str | os.PathLike] = None) -> Path:
+def resolve_config_dir(cookie_dir: str | os.PathLike | None = None) -> Path:
     """Resolve the cookie/config dir ONCE, deterministically.
 
     Precedence (first that yields a value wins):
@@ -190,7 +190,7 @@ class AlexaSessionError(RuntimeError):
     """Raised for any auth/session failure."""
 
 
-_LOOP: Optional[asyncio.AbstractEventLoop] = None
+_LOOP: asyncio.AbstractEventLoop | None = None
 
 
 def run_async(coro):
@@ -313,7 +313,7 @@ def import_pickle(src: str | os.PathLike, email: str,
 
 def _import_alexapy():
     try:
-        from alexapy import AlexaLogin, AlexaAPI  # noqa: F401
+        from alexapy import AlexaAPI, AlexaLogin  # noqa: F401
 
         return AlexaLogin, AlexaAPI
     except ImportError as exc:  # pragma: no cover - exercised only without dep
