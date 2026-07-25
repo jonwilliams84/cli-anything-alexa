@@ -14,3 +14,6 @@ venv/
 *.pickle
 cli-anything-alexa.json
 config.json
+coverage.xml
+.coverage.*
+htmlcov/
