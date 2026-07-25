@@ -735,7 +735,7 @@ def test_csrf_header_no_bare_try_except_pass():
     tree = ast.parse(src)
     # Find the csrf_header function and verify no bare except+pass.
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "csrf_header":
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "csrf_header":
             for child in ast.walk(node):
                 if isinstance(child, ast.ExceptHandler):
                     # The handler body must NOT be a single bare `pass`.
@@ -825,7 +825,7 @@ def test_auth_login_no_unused_login_variable():
     tree = ast.parse(src)
     # Find the auth_login function.
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "auth_login":
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "auth_login":
             # No assignment to a bare name `login` inside the function body.
             for child in ast.walk(node):
                 if isinstance(child, ast.Assign):
@@ -861,3 +861,91 @@ def test_alexa_cli_imports_sorted():
     assert result.returncode == 0, (
         f"ruff I001 check failed on alexa_cli.py:\n{result.stdout}\n{result.stderr}"
     )
+
+
+# ── UP045: use `X | None` for type annotations ───────────────────────────
+
+def test_announce_device_param_uses_union_none():
+    """announce() device parameter uses `str | None`, not `Optional[str]`.
+
+    Regression for UP045 at control.py:10 — the annotation must use the
+    modern union syntax so ruff's UP045 rule is not triggered.
+    """
+    import ast
+    from cli_anything.alexa.core import control
+
+    src = Path(control.__file__).read_text()
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "announce":
+            args = node.args
+            break
+    else:
+        raise AssertionError("announce not found")
+
+    defaults_offset = len(args.args) - len(args.defaults)
+    for i, arg in enumerate(args.args):
+        if arg.arg == "device":
+            annotation = arg.annotation
+            default = args.defaults[i - defaults_offset] if i >= defaults_offset else None
+            break
+    else:
+        raise AssertionError("device arg not found")
+
+    assert isinstance(annotation, ast.BinOp), "expected str | None annotation"
+    assert isinstance(annotation.left, ast.Name) and annotation.left.id == "str"
+    assert isinstance(annotation.op, ast.BitOr)
+    assert isinstance(annotation.right, ast.Constant) and annotation.right.value is None
+    assert isinstance(default, ast.Constant) and default.value is None
+    assert "Optional" not in src
+
+
+def test_find_device_return_uses_union_none():
+    """find_device() return type uses `dict[str, Any] | None`, not `Optional[...]`.
+
+    Regression for UP045 at devices_meta.py:36 — the annotation must use the
+    modern union syntax so ruff's UP045 rule is not triggered.
+    """
+    import ast
+    from cli_anything.alexa.core import devices_meta
+
+    src = Path(devices_meta.__file__).read_text()
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "find_device":
+            returns = node.returns
+            break
+    else:
+        raise AssertionError("find_device not found")
+
+    assert isinstance(returns, ast.BinOp), "expected dict[str, Any] | None annotation"
+    assert isinstance(returns.left, ast.Subscript)
+    assert isinstance(returns.left.value, ast.Name) and returns.left.value.id == "dict"
+    assert isinstance(returns.op, ast.BitOr)
+    assert isinstance(returns.right, ast.Constant) and returns.right.value is None
+    assert "Optional" not in src
+
+
+def test_parse_entity_id_return_uses_union_none():
+    """parse_entity_id() return type uses `str | None`, not `Optional[str]`.
+
+    Regression for UP045 at appliances.py:24 — the annotation must use the
+    modern union syntax so ruff's UP045 rule is not triggered.
+    """
+    import ast
+    from cli_anything.alexa.core import appliances
+
+    src = Path(appliances.__file__).read_text()
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "parse_entity_id":
+            returns = node.returns
+            break
+    else:
+        raise AssertionError("parse_entity_id not found")
+
+    assert isinstance(returns, ast.BinOp), "expected str | None annotation"
+    assert isinstance(returns.left, ast.Name) and returns.left.id == "str"
+    assert isinstance(returns.op, ast.BitOr)
+    assert isinstance(returns.right, ast.Constant) and returns.right.value is None
+    assert "Optional" not in src

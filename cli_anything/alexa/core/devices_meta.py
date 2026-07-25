@@ -6,7 +6,7 @@ routine-run, distinct from the smart-home `appliances` graph.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 
 async def fetch_devices(login) -> list[dict[str, Any]]:
@@ -33,7 +33,7 @@ def device_rows(devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def find_device(devices: list[dict[str, Any]], name_or_serial: str) -> Optional[dict[str, Any]]:
+def find_device(devices: list[dict[str, Any]], name_or_serial: str) -> dict[str, Any] | None:
     """Match a device by accountName (case-insensitive) or serialNumber."""
     if not name_or_serial:
         return None

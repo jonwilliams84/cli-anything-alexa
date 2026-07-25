@@ -16,12 +16,12 @@ with `#` so it survives Alexa's id grammar).
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 HA_MANUFACTURER = "Home Assistant"
 
 
-def parse_entity_id(appliance_id: str) -> Optional[str]:
+def parse_entity_id(appliance_id: str) -> str | None:
     """Decode the HA entity id from an Alexa applianceId, or None.
 
     The HA-sourced applianceId always ends in `_<domain>#<object_id>`.
