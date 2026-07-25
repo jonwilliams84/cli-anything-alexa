@@ -1095,3 +1095,55 @@ def test_table_columns_iterates_dicts_without_keys():
     src = Path(formatting.__file__).read_text()
     assert "for k in r.keys():" not in src
     assert "for k in r:" in src
+
+
+# ── UP018: build_login uses "" instead of str() for empty otp_secret ─────
+
+def test_build_login_otp_secret_default_is_empty_string():
+    """build_login initialises otp_secret to "" rather than str().
+
+    Regression for UP018 at session.py:345 — the empty string literal is
+    clearer and avoids the unnecessary str() call.
+    """
+    import ast
+    src = Path(session.__file__).read_text()
+    # Must not contain the redundant str() call.
+    assert "otp_secret = str()" not in src
+    # The literal "" form must be present.
+    assert 'otp_secret = ""' in src
+
+
+# ── BLE001: best-effort cleanup handlers use bare `except Exception` ─────
+
+def test_load_session_cleanup_suppresses_bare_exception():
+    """The cleanup `except Exception` in load_session is suppressed.
+
+    Regression for BLE001 at session.py:418 — login.close() in the cleanup
+    block may raise CancelledError or aiohttp errors; suppressing broadly is
+    required so the original AlexaSessionError propagates without masking.
+    """
+    src = Path(session.__file__).read_text()
+    # The nosec comment must be present at the cleanup site.
+    lines = src.splitlines()
+    cleanup_line = [l for l in lines if "login.close()" in l and "except" not in l][0]
+    cleanup_lineno = lines.index(cleanup_line) + 1
+    except_line = lines[lines.index(cleanup_line) + 1]
+    assert "# nosec BLE001" in except_line
+    # The docstring / comment must cite the concrete reason.
+    assert "best-effort cleanup" in except_line or "CancelledError" in except_line
+
+
+def test_test_loggedin_suppresses_bare_exception_to_guarantee_bool():
+    """test_loggedin's `except Exception` is suppressed to guarantee bool return.
+
+    Regression for BLE001 at session.py:455 — the function's docstring promises
+    it "Never raises"; suppressing broadly is intentional and required to fulfil
+    that contract regardless of which exception alexapy throws.
+    """
+    src = Path(session.__file__).read_text()
+    lines = src.splitlines()
+    # Locate the bare except block that catches everything to return False.
+    # Line 455 is the docstring-guaranteed bare except (test_loggedin returns bool, never raises).
+    except_line = lines[454]  # 0-indexed
+    assert "except Exception:" in except_line
+    assert "# nosec BLE001" in except_line
