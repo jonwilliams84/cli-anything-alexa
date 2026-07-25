@@ -5,7 +5,7 @@
 # they drifted between repos and could not be reproduced locally).
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 100
 extend-exclude = [".venv", "build", "dist"]
 
@@ -92,6 +92,12 @@ external = ["BLE001", "FLY002", "FURB188", "UP", "I001", "SIM", "C4", "PTH", "RE
 # --- individually justified file carve-outs ---
 # prompt_toolkit probed inside try/except ImportError
 "cli_anything/alexa/utils/repl_skin.py" = ["F401"]
+# proxy_login()'s `timeout` is a documented public parameter - callers pass their
+# own budget for an interactive browser login (default 600s). ASYNC109 suggests
+# replacing it with asyncio.timeout at the call site, which would be a breaking
+# signature change to a public API for a style preference.
+"cli_anything/alexa/core/session.py" = ["ASYNC109"]
+
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"

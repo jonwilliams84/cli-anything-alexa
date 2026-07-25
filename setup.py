@@ -45,10 +45,17 @@ setup(
     },
     include_package_data=True,
     # Fresh proxy/scripted logins are persisted by alexapy on YOUR Python and
-    # load back fine on 3.10+. Python 3.14 is needed ONLY to import a pickle
+    # load back fine on 3.11+. Python 3.14 is needed ONLY to import a pickle
     # written on Python 3.14 (e.g. Home Assistant's) — the cookie
     # ``partitioned`` attribute is unpicklable on older interpreters.
-    python_requires=">=3.10",
+    #
+    # The floor is 3.11 because of the alexapy pin above, not our own code:
+    # alexapy 1.27.0 (the first release shipping AlexaProxy, which the primary
+    # browser-proxy login depends on) declares Requires-Python >=3.11. Claiming
+    # >=3.10 here made `pip install -e .` fail on 3.10 with "No matching
+    # distribution found for alexapy>=1.27.0" — the metadata promised support
+    # that could not be installed.
+    python_requires=">=3.11",
     classifiers=[
         "Development Status :: 4 - Beta",
         "Environment :: Console",
@@ -56,7 +63,6 @@ setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
         "Programming Language :: Python :: 3.13",
