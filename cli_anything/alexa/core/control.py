@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from cli_anything.alexa.core.devices_meta import fetch_devices, find_device
 
 
-async def announce(login, text: str, device: Optional[str] = None) -> dict[str, Any]:
+async def announce(login, text: str, device: str | None = None) -> dict[str, Any]:
     """Send a TTS announcement to all devices (or one named target)."""
     from alexapy import AlexaAPI
 

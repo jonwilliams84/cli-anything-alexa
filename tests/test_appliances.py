@@ -1,3 +1,4 @@
+from pathlib import Path
 """Unit tests for the pure appliance logic — no alexapy, no network."""
 
 from cli_anything.alexa.core import appliances
@@ -127,3 +128,29 @@ def test_plan_prune_unparseable_ha_is_deleted():
 def test_plan_prune_empty():
     plan = appliances.plan_prune([], {"light.kitchen"})
     assert plan == {"delete": [], "keep": [], "skipped": []}
+
+
+def test_parse_entity_id_return_annotation_uses_union_none():
+    """parse_entity_id return type uses `str | None`, not `Optional[str]`.
+
+    Regression for UP045 at appliances.py:24 — the annotation must use the
+    modern union syntax so ruff's UP045 rule is not triggered.
+    """
+    import ast
+    from cli_anything.alexa.core import appliances
+
+    src = Path(appliances.__file__).read_text()
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "parse_entity_id":
+            returns = node.returns
+            break
+    else:
+        raise AssertionError("parse_entity_id not found")
+
+    assert isinstance(returns, ast.BinOp), "expected str | None annotation"
+    assert isinstance(returns.left, ast.Name) and returns.left.id == "str"
+    assert isinstance(returns.op, ast.BitOr)
+    assert isinstance(returns.right, ast.Constant) and returns.right.value is None
+    # No Optional import usage for this annotation.
+    assert "Optional" not in src
