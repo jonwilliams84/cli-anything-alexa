@@ -91,7 +91,7 @@ def device_rows(
     records: list[dict[str, Any]],
     *,
     native_only: bool = False,
-    manufacturer: Optional[str] = None,
+    manufacturer: str | None = None,
 ) -> list[dict[str, Any]]:
     """Display rows for ``devices list`` (pure).
 
@@ -262,7 +262,7 @@ _NATIVE_SOURCE_HINTS = {
 }
 
 
-def native_source_hint(manufacturer: Optional[str]) -> str:
+def native_source_hint(manufacturer: str | None) -> str:
     """A human source name for where a native device re-syncs from (pure)."""
     m = (manufacturer or "").strip().lower()
     for key, hint in _NATIVE_SOURCE_HINTS.items():
@@ -273,7 +273,7 @@ def native_source_hint(manufacturer: Optional[str]) -> str:
     return "its source app / bridge"
 
 
-def native_delete_warning(record: dict[str, Any]) -> Optional[str]:
+def native_delete_warning(record: dict[str, Any]) -> str | None:
     """Warn if deleting ``record`` won't stick because it's native (pure).
 
     Returns ``None`` for HA-sourced devices (safe to delete). For a native
@@ -366,7 +366,7 @@ def is_speakable(s: str) -> bool:
     return True
 
 
-def speakable_warning(s: str) -> Optional[str]:
+def speakable_warning(s: str) -> str | None:
     """A friendly "Amazon will reject ..." warning for a non-speakable name, or None.
 
     Used both to pre-validate a planned rename and to explain an actual
@@ -558,7 +558,7 @@ def plan_map_renames(
 
 # ── network (alexapy GraphQL / phoenix via _static_request) ────────────────
 
-async def _graphql(login, query: str, variables: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+async def _graphql(login, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
     """POST a GraphQL doc to /nexus/v1/graphql via alexapy's static request.
 
     Reuses ``AlexaAPI._static_request`` so auth/headers/host are correct.
