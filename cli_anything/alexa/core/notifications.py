@@ -9,7 +9,7 @@ notes. The payload builders here are kept pure where practical.
 from __future__ import annotations
 
 import time
-from typing import Any, Optional
+from typing import Any
 
 from cli_anything.alexa.core.session import (
     AlexaSessionError,
@@ -36,8 +36,8 @@ def notification_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _epoch_ms(seconds_from_now: Optional[float] = None,
-              at_epoch_ms: Optional[int] = None) -> int:
+def _epoch_ms(seconds_from_now: float | None = None,
+              at_epoch_ms: int | None = None) -> int:
     if at_epoch_ms is not None:
         return int(at_epoch_ms)
     return int((time.time() + (seconds_from_now or 0)) * 1000)
