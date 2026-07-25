@@ -288,7 +288,6 @@ class ReplSkin:
         Returns:
             list of (style, text) tuples for prompt_toolkit.
         """
-        accent_hex = _ANSI_256_TO_HEX.get(self.accent, "#5fafff")
         tokens = []
 
         tokens.append(("class:icon", "◆ "))
@@ -446,7 +445,6 @@ class ReplSkin:
         print(header_line)
 
         # Separator
-        sep_parts = [self._c(_DARK_GRAY, _H_LINE * w) for w in col_widths]
         sep_line = self._c(_DARK_GRAY, f"  {'───'.join([_H_LINE * w for w in col_widths])}")
         print(sep_line)
 
@@ -491,9 +489,9 @@ class ReplSkin:
         """
         try:
             from prompt_toolkit import PromptSession
-            from prompt_toolkit.history import FileHistory
             from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
             from prompt_toolkit.formatted_text import FormattedText
+            from prompt_toolkit.history import FileHistory
 
             style = self.get_prompt_style()
 
