@@ -28,7 +28,7 @@ def table_columns(rows: list[dict], max_cols: int = 10) -> list[str]:
     """Ordered list of column keys across rows (skipping `_`-prefixed)."""
     keys: list[str] = []
     for r in rows:
-        for k in r.keys():
+        for k in r:
             if k not in keys and not str(k).startswith("_"):
                 keys.append(k)
     return keys[:max_cols]

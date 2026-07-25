@@ -10,12 +10,13 @@ preserved (same resolved path / same displayed host).
 """
 
 import ast
+import re
 import asyncio
 import tempfile
 from pathlib import Path
 
 import pytest
-from cli_anything.alexa.core import endpoints, project, session
+from cli_anything.alexa.core import endpoints, formatting, project, session
 
 
 # ── B108: no hardcoded "/tmp" literal in the fallback paths ───────────────
@@ -1038,3 +1039,59 @@ def _endpoint_record(eid, appliance_id, manufacturer, display, enablement="ENABL
         "friendlyNameObject": {"value": {"text": display}},
         "enablement": enablement,
     }
+
+
+# ── F401: no unused `typing.Optional` import in endpoints.py ─────────────
+
+def test_endpoints_no_unused_optional_import():
+    """endpoints.py imports only what it uses from typing.
+
+    Regression for F401 at endpoints.py:36 — `typing.Optional` was removed
+    because all optional annotations now use PEP 604 `X | None` syntax.
+    """
+    src = Path(endpoints.__file__).read_text()
+    assert "from typing import Any, Optional" not in src
+    assert "from typing import Any" in src
+
+
+# ── SIM103: is_speakable returns the negated regex result directly ───────
+
+def test_is_speakable_returns_negated_control_char_search():
+    """is_speakable returns `not _CONTROL_CHARS_RE.search(s)` directly.
+
+    Regression for SIM103 at endpoints.py:364 — the redundant `if ...: return
+    False; return True` pair was collapsed into a single return statement.
+    Behaviour is preserved for all previously-tested inputs.
+    """
+    assert endpoints.is_speakable("elt k8s 1 Temperature") is True
+    assert endpoints.is_speakable("elt-k8s-1") is False
+    assert endpoints.is_speakable("Den\x05Lamp") is False
+    assert endpoints.is_speakable(None) is True
+    # Source shape: exactly one return statement after the bad-chars guard.
+    src = Path(endpoints.__file__).read_text()
+    func_match = re.search(
+        r"def is_speakable\(s: str\) -> bool:.*?\n\ndef ", src, re.DOTALL
+    )
+    assert func_match, "is_speakable source not found"
+    body = func_match.group(0)
+    assert body.count("return") == 3, "expected two return statements (None guard + final)"
+    assert "return not _CONTROL_CHARS_RE.search(s)" in body
+
+
+# ── SIM118: table_columns iterates dicts directly, not via .keys() ──────
+
+def test_table_columns_iterates_dicts_without_keys():
+    """table_columns uses `for k in r` instead of `for k in r.keys()`.
+
+    Regression for SIM118 at formatting.py:31 — iterating a dict directly is
+    equivalent and avoids the ruff SIM118 warning. Column ordering and the
+    underscore-prefix skip are unchanged.
+    """
+    rows = [
+        {"a": 1, "b": 2, "_hidden": 9},
+        {"a": 3, "c": 4},
+    ]
+    assert formatting.table_columns(rows) == ["a", "b", "c"]
+    src = Path(formatting.__file__).read_text()
+    assert "for k in r.keys():" not in src
+    assert "for k in r:" in src
