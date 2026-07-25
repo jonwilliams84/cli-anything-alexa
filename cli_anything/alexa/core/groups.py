@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Optional
+from typing import Any
 
 from cli_anything.alexa.core.appliances import parse_entity_id
 
@@ -118,7 +118,7 @@ def group_rows(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def find_group(groups: list[dict[str, Any]], name_or_id: str) -> Optional[dict[str, Any]]:
+def find_group(groups: list[dict[str, Any]], name_or_id: str) -> dict[str, Any] | None:
     """Match a raw group by id (exact) or friendly name (normalized), pure."""
     if not name_or_id:
         return None
@@ -210,7 +210,7 @@ def resolve_members(
 def build_create_variables(
     name: str,
     member_ids: list[str],
-    child_group_ids: Optional[list[str]] = None,
+    child_group_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Variables for createDeviceGroup.
 
@@ -234,7 +234,7 @@ def build_update_variables(
     group_id: str,
     member_ids: list[str],
     operation: str,
-    child_group_ids: Optional[list[str]] = None,
+    child_group_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Variables for updateDeviceGroup.
 
@@ -267,7 +267,7 @@ def build_delete_variables(group_id: str) -> dict[str, Any]:
 
 # ── network (alexapy GraphQL via _static_request) ──────────────────────────
 
-async def _graphql(login, query: str, variables: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+async def _graphql(login, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
     """POST a GraphQL doc to /nexus/v1/graphql via alexapy's static request.
 
     Reuses ``AlexaAPI._static_request`` so auth/headers/host are correct.
@@ -313,7 +313,7 @@ async def create_group(
     login,
     name: str,
     member_ids: list[str],
-    child_group_ids: Optional[list[str]] = None,
+    child_group_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """createDeviceGroup with friendlyName + memberDeviceIds (+ childDeviceGroupIds)."""
     variables = build_create_variables(name, member_ids, child_group_ids)
@@ -333,7 +333,7 @@ async def update_group(
     group_id: str,
     member_ids: list[str],
     operation: str,
-    child_group_ids: Optional[list[str]] = None,
+    child_group_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """updateDeviceGroup with an ADD/REMOVE/REPLACE member + child-group operation."""
     variables = build_update_variables(group_id, member_ids, operation, child_group_ids)
