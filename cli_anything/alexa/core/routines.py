@@ -21,10 +21,10 @@ Net: do routine edits in the Alexa app. This module only *lists* routines
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 
-def _node_summary(node: dict[str, Any]) -> Optional[str]:
+def _node_summary(node: dict[str, Any]) -> str | None:
     """Summarize one action node from a routine sequence (pure, best-effort)."""
     node = node or {}
     ntype = node.get("type") or (node.get("@type") or "").rsplit(".", 1)[-1]
@@ -90,7 +90,7 @@ def routine_rows(automations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def find_routine(automations: list[dict[str, Any]], name_or_id: str) -> Optional[dict[str, Any]]:
+def find_routine(automations: list[dict[str, Any]], name_or_id: str) -> dict[str, Any] | None:
     """Match a routine by automationId or by name/utterance (ci, pure)."""
     if not name_or_id:
         return None
