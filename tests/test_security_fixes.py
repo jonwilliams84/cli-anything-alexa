@@ -9,12 +9,13 @@ Each test asserts the fix holds *and* that the original behaviour is
 preserved (same resolved path / same displayed host).
 """
 
+import ast
 import asyncio
 import tempfile
 from pathlib import Path
 
 import pytest
-from cli_anything.alexa.core import project, session
+from cli_anything.alexa.core import endpoints, project, session
 
 
 # ── B108: no hardcoded "/tmp" literal in the fallback paths ───────────────
@@ -949,3 +950,91 @@ def test_parse_entity_id_return_uses_union_none():
     assert isinstance(returns.op, ast.BitOr)
     assert isinstance(returns.right, ast.Constant) and returns.right.value is None
     assert "Optional" not in src
+
+
+# ── UP045: use X | None for type annotations in endpoints.py ──────────────
+
+def test_endpoints_uses_pipe_none_for_optional_annotations():
+    """endpoints.py uses ``str | None`` / ``dict | None`` instead of Optional.
+
+    Regression for UP045 at endpoints.py:94, 265, 276 — the type annotations
+    must use the PEP 604 union syntax so ruff's UP045 rule is not triggered.
+    The module still imports ``Optional`` from typing for any remaining uses.
+    """
+    import ast
+    src = Path(endpoints.__file__).read_text()
+    tree = ast.parse(src)
+    # Collect all annotations that contain Optional[...]
+    optional_annotations = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign):
+            if _contains_optional(node.annotation):
+                optional_annotations.append((node.lineno, node.annotation))
+        elif isinstance(node, ast.arg) and node.annotation:
+            if _contains_optional(node.annotation):
+                optional_annotations.append((node.lineno, node.annotation))
+        elif isinstance(node, ast.FunctionDef) and node.returns:
+            if _contains_optional(node.returns):
+                optional_annotations.append((node.lineno, node.returns))
+        elif isinstance(node, ast.AsyncFunctionDef) and node.returns:
+            if _contains_optional(node.returns):
+                optional_annotations.append((node.lineno, node.returns))
+    assert not optional_annotations, (
+        f"Optional[...] annotations still present at lines "
+        f"{[ln for ln, _ in optional_annotations]} (UP045 trigger)"
+    )
+    # The scanner's three target lines no longer contain Optional.
+    lines = src.splitlines()
+    for lineno in (94, 265, 276):
+        assert "Optional" not in lines[lineno - 1], (
+            f"line {lineno} still uses Optional (UP045 trigger): "
+            f"{lines[lineno - 1]}"
+        )
+
+
+def _contains_optional(node: ast.AST) -> bool:
+    """Return True if the annotation AST contains a subscript on Optional."""
+    for child in ast.walk(node):
+        if isinstance(child, ast.Subscript):
+            value = child.value
+            if isinstance(value, ast.Name) and value.id == "Optional":
+                return True
+    return False
+
+
+def test_endpoints_pipe_none_preserves_runtime_behaviour():
+    """``str | None`` annotations behave the same as the old ``Optional[str]``.
+
+    Behaviour preservation: functions with the updated annotations still
+    accept strings and None and return the same values.
+    """
+    # native_source_hint accepts None and a real string.
+    assert endpoints.native_source_hint(None) == "its source app / bridge"
+    assert endpoints.native_source_hint("  Signify Netherlands B.V. ") == (
+        "Hue bridge (Philips Hue app)"
+    )
+    # native_delete_warning returns None for HA-sourced records and a string
+    # for native records.
+    ha_record = {"ha_sourced": True, "name": "Light"}
+    native_record = {"ha_sourced": False, "name": "Plug", "manufacturer": "Tuya"}
+    assert endpoints.native_delete_warning(ha_record) is None
+    assert "Tuya" in endpoints.native_delete_warning(native_record)
+    # device_rows manufacturer filter still works with str | None default.
+    rows = endpoints.device_rows(endpoints.endpoint_records([_endpoint_record("amzn1.alexa.endpoint.native1", "AAA_SonarCloudService_uuid:Socket-1_0-XYZ", "Belkin International Inc.", "Lounge Plug")]), manufacturer="belkin")
+    assert len(rows) == 1 and rows[0]["name"] == "Lounge Plug"
+    rows_all = endpoints.device_rows(endpoints.endpoint_records([_endpoint_record("amzn1.alexa.endpoint.ha2", "SKILL_blob_light#kitchen_big", "Home Assistant", "Kitchen Spots")]))
+    assert len(rows_all) == 1
+
+
+def _endpoint_record(eid, appliance_id, manufacturer, display, enablement="ENABLED"):
+    """Build a raw `endpoints` query item for UP045 behaviour tests."""
+    return {
+        "id": eid,
+        "legacyAppliance": {
+            "applianceId": appliance_id,
+            "manufacturerName": manufacturer,
+            "friendlyName": display,
+        },
+        "friendlyNameObject": {"value": {"text": display}},
+        "enablement": enablement,
+    }
