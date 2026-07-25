@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Optional
+from typing import Any
 
 from cli_anything.alexa.core.appliances import HA_MANUFACTURER, parse_entity_id
 from cli_anything.alexa.core.groups import normalize_name
@@ -361,9 +361,7 @@ def is_speakable(s: str) -> bool:
         return True
     if _DACS_BAD_CHARS_RE.search(s):
         return False
-    if _CONTROL_CHARS_RE.search(s):
-        return False
-    return True
+    return not _CONTROL_CHARS_RE.search(s)
 
 
 def speakable_warning(s: str) -> str | None:
