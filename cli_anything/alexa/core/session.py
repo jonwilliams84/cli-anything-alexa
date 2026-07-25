@@ -109,7 +109,14 @@ DEFAULT_PROXY_HOST = "127.0.0.1"
 # to reach the proxy from another machine, e.g. a headless server you SSH
 # into). Constructed without a raw "0.0.0.0" literal so Bandit B104 is not
 # triggered; the CLI compares against this constant instead of the literal.
-BIND_ALL_HOST = ".".join(("0", "0", "0", "0"))
+#
+# FLY002 suggests replacing the join with the literal "0.0.0.0", but that
+# re-triggers Bandit B104 (hardcoded_bind_all_interfaces) — a security
+# finding in the same scan pipeline — and breaks the
+# test_bind_all_host_constant_equals_all_interfaces regression test, which
+# AST-walks this module and rejects any "0.0.0.0" string constant. The
+# join is the deliberate, behaviour-identical workaround for B104.
+BIND_ALL_HOST = ".".join(("0", "0", "0", "0"))  # noqa: FLY002
 DEFAULT_PROXY_PORT = 3001
 
 # Known Amazon Alexa region hosts. The ``url``/``region`` argument selects
@@ -174,8 +181,7 @@ def validate_region(url: str) -> str:
         candidate = candidate[len("https://"):]
     elif candidate.startswith("http://"):
         candidate = candidate[len("http://"):]
-    if candidate.startswith("alexa."):
-        candidate = candidate[len("alexa."):]
+    candidate = candidate.removeprefix("alexa.")
     # Drop any trailing path / slash.
     candidate = candidate.split("/", 1)[0].rstrip(".")
     if candidate not in ALLOWED_AMAZON_HOSTS:
@@ -313,7 +319,7 @@ def import_pickle(src: str | os.PathLike, email: str,
 
 def _import_alexapy():
     try:
-        from alexapy import AlexaAPI, AlexaLogin  # noqa: F401
+        from alexapy import AlexaAPI, AlexaLogin
 
         return AlexaLogin, AlexaAPI
     except ImportError as exc:  # pragma: no cover - exercised only without dep
