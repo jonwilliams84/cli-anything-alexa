@@ -57,6 +57,7 @@ _RENAME_MUTATION = (
 
 # ── pure helpers: flatten + classify ───────────────────────────────────────
 
+
 def endpoint_record(item: dict[str, Any]) -> dict[str, Any]:
     """Flatten one raw ``endpoints`` item into a stable record (pure).
 
@@ -67,8 +68,9 @@ def endpoint_record(item: dict[str, Any]) -> dict[str, Any]:
     legacy = item.get("legacyAppliance") or {}
     appliance_id = legacy.get("applianceId") or ""
     manufacturer = legacy.get("manufacturerName")
-    display = (((item.get("friendlyNameObject") or {}).get("value") or {})
-               .get("text")) or legacy.get("friendlyName")
+    display = (
+        ((item.get("friendlyNameObject") or {}).get("value") or {}).get("text")
+    ) or legacy.get("friendlyName")
     ha_sourced = manufacturer == HA_MANUFACTURER
     entity_id = parse_entity_id(appliance_id) if ha_sourced else None
     return {
@@ -121,6 +123,7 @@ def device_rows(
 
 
 # ── pure helpers: target resolution ────────────────────────────────────────
+
 
 def resolve_target(records: list[dict[str, Any]], target: str) -> list[dict[str, Any]]:
     """Resolve a ``<target>`` to matching endpoint records (pure).
@@ -197,6 +200,7 @@ def ambiguous_matches(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 # ── pure helpers: duplicate detection ──────────────────────────────────────
+
 
 def find_duplicates(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Detect the same physical device exposed twice (pure).
@@ -286,9 +290,11 @@ def native_delete_warning(record: dict[str, Any]) -> str | None:
     man = record.get("manufacturer")
     hint = native_source_hint(man)
     man_part = f" {man}" if man else ""
-    return (f"{name} is a native{man_part} device — deleting may not stick; it "
-            f"re-syncs from its source. Remove it at source ({hint}) to clear it "
-            "permanently.")
+    return (
+        f"{name} is a native{man_part} device — deleting may not stick; it "
+        f"re-syncs from its source. Remove it at source ({hint}) to clear it "
+        "permanently."
+    )
 
 
 def reappeared_after_delete(
@@ -316,6 +322,7 @@ def reappeared_after_delete(
 
 
 # ── pure helpers: GraphQL variables builders ───────────────────────────────
+
 
 def build_rename_variables(endpoint_id: str, friendly_name: str) -> dict[str, Any]:
     """Variables for ``setEndpointFriendlyName`` (pure)."""
@@ -372,8 +379,10 @@ def speakable_warning(s: str) -> str | None:
     """
     if is_speakable(s):
         return None
-    return (f"Amazon will reject {s!r} — non-speakable (hyphen / control char); "
-            f"suggest {speakable_name(s)!r}")
+    return (
+        f"Amazon will reject {s!r} — non-speakable (hyphen / control char); "
+        f"suggest {speakable_name(s)!r}"
+    )
 
 
 def is_dacs_error(message: str) -> bool:
@@ -383,6 +392,7 @@ def is_dacs_error(message: str) -> bool:
 
 
 # ── pure helpers: bulk / pattern rename planning ───────────────────────────
+
 
 class PatternError(ValueError):
     """A malformed ``s/REGEX/REPL/`` pattern."""
@@ -399,8 +409,7 @@ def parse_sed(pattern: str) -> tuple[re.Pattern, str, bool]:
     ``0`` when ``g`` else ``1``.
     """
     if not pattern or len(pattern) < 2 or pattern[0] != "s":
-        raise PatternError(
-            f"not a substitution pattern (expected s/REGEX/REPL/): {pattern!r}")
+        raise PatternError(f"not a substitution pattern (expected s/REGEX/REPL/): {pattern!r}")
     delim = pattern[1]
     body = pattern[2:]
     # Split on UNescaped delimiters into exactly: regex, repl, flags.
@@ -425,7 +434,8 @@ def parse_sed(pattern: str) -> tuple[re.Pattern, str, bool]:
     parts.append("".join(cur))
     if len(parts) < 3:
         raise PatternError(
-            f"malformed substitution (need s{delim}REGEX{delim}REPL{delim}): {pattern!r}")
+            f"malformed substitution (need s{delim}REGEX{delim}REPL{delim}): {pattern!r}"
+        )
     regex_src, repl, flags = parts[0], parts[1], parts[2]
     # Unescape the delimiter in regex/repl (\/ -> /) now that splitting is done.
     if delim != "\\":
@@ -476,14 +486,16 @@ def plan_pattern_renames(
             new = speakable_name(new)
         if not new or new == old:
             continue
-        out.append({
-            "endpointId": r.get("endpointId"),
-            "applianceId": r.get("applianceId"),
-            "old": old,
-            "new": new,
-            "source": "HA" if r.get("ha_sourced") else "native",
-            "warning": speakable_warning(new),
-        })
+        out.append(
+            {
+                "endpointId": r.get("endpointId"),
+                "applianceId": r.get("applianceId"),
+                "old": old,
+                "new": new,
+                "source": "HA" if r.get("ha_sourced") else "native",
+                "warning": speakable_warning(new),
+            }
+        )
     return out
 
 
@@ -531,30 +543,35 @@ def plan_map_renames(
     for target, new in pairs:
         matches = resolve_target(records, target)
         if len(matches) != 1:
-            problems.append({
-                "target": target,
-                "new": new,
-                "count": len(matches),
-                "reason": "no match" if not matches else "ambiguous",
-            })
+            problems.append(
+                {
+                    "target": target,
+                    "new": new,
+                    "count": len(matches),
+                    "reason": "no match" if not matches else "ambiguous",
+                }
+            )
             continue
         rec = matches[0]
         old = rec.get("name") or ""
         final = speakable_name(new) if speakable else new
         if not final or final == old:
             continue
-        planned.append({
-            "endpointId": rec.get("endpointId"),
-            "applianceId": rec.get("applianceId"),
-            "old": old,
-            "new": final,
-            "source": "HA" if rec.get("ha_sourced") else "native",
-            "warning": speakable_warning(final),
-        })
+        planned.append(
+            {
+                "endpointId": rec.get("endpointId"),
+                "applianceId": rec.get("applianceId"),
+                "old": old,
+                "new": final,
+                "source": "HA" if rec.get("ha_sourced") else "native",
+                "warning": speakable_warning(final),
+            }
+        )
     return planned, problems
 
 
 # ── network (alexapy GraphQL / phoenix via _static_request) ────────────────
+
 
 async def _graphql(login, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
     """POST a GraphQL doc to /nexus/v1/graphql via alexapy's static request.
@@ -567,9 +584,7 @@ async def _graphql(login, query: str, variables: dict[str, Any] | None = None) -
     data: dict[str, Any] = {"query": query}
     if variables is not None:
         data["variables"] = variables
-    resp = await AlexaAPI._static_request(
-        "post", login, "/nexus/v1/graphql", data=data
-    )
+    resp = await AlexaAPI._static_request("post", login, "/nexus/v1/graphql", data=data)
     body = json.loads(await resp.text())
     errors = body.get("errors")
     if errors:
@@ -602,7 +617,8 @@ async def rename_endpoint(login, endpoint_id: str, friendly_name: str) -> dict[s
     except RuntimeError as exc:
         if is_dacs_error(str(exc)):
             warn = speakable_warning(friendly_name) or (
-                f"Amazon rejected {friendly_name!r} (non-speakable name)")
+                f"Amazon rejected {friendly_name!r} (non-speakable name)"
+            )
             raise ValueError(warn) from exc
         raise
     return {

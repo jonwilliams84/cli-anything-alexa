@@ -36,15 +36,15 @@ def notification_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _epoch_ms(seconds_from_now: float | None = None,
-              at_epoch_ms: int | None = None) -> int:
+def _epoch_ms(seconds_from_now: float | None = None, at_epoch_ms: int | None = None) -> int:
     if at_epoch_ms is not None:
         return int(at_epoch_ms)
     return int((time.time() + (seconds_from_now or 0)) * 1000)
 
 
-def build_reminder(label: str, device_serial: str, device_type: str,
-                   at_epoch_ms: int) -> dict[str, Any]:
+def build_reminder(
+    label: str, device_serial: str, device_type: str, at_epoch_ms: int
+) -> dict[str, Any]:
     """Build a Reminder creation payload (pure)."""
     return {
         "type": "Reminder",
@@ -57,8 +57,9 @@ def build_reminder(label: str, device_serial: str, device_type: str,
     }
 
 
-def build_alarm(device_serial: str, device_type: str,
-                at_epoch_ms: int, label: str = "") -> dict[str, Any]:
+def build_alarm(
+    device_serial: str, device_type: str, at_epoch_ms: int, label: str = ""
+) -> dict[str, Any]:
     """Build an Alarm creation payload (pure)."""
     return {
         "type": "Alarm",
@@ -71,8 +72,9 @@ def build_alarm(device_serial: str, device_type: str,
     }
 
 
-def build_timer(device_serial: str, device_type: str,
-                duration_ms: int, label: str = "") -> dict[str, Any]:
+def build_timer(
+    device_serial: str, device_type: str, duration_ms: int, label: str = ""
+) -> dict[str, Any]:
     """Build a Timer creation payload (pure)."""
     return {
         "type": "Timer",

@@ -47,6 +47,7 @@ from typing import Any
 
 _log = logging.getLogger(__name__)
 
+
 def _default_config_dir() -> Path:
     """The home-based config dir, computed without trusting ``Path.home()``.
 
@@ -100,6 +101,7 @@ def resolve_config_dir(cookie_dir: str | os.PathLike | None = None) -> Path:
         return Path(home) / ".config" / "cli-anything-alexa"
     return FALLBACK_CONFIG_DIR
 
+
 # Default loopback host + a known port for the login proxy. 127.0.0.1 keeps
 # the proxy private to the local machine; pass host="0.0.0.0" to reach it
 # from another box (e.g. a headless server you SSH into), exactly as HA's
@@ -129,35 +131,35 @@ DEFAULT_PROXY_PORT = 3001
 # We therefore constrain it to this allow-list of Amazon's own regional domains.
 # (Alexa is only operated by Amazon on these hosts; a value outside this set is
 # either a typo or an attack — reject it with a clear error either way.)
-ALLOWED_AMAZON_HOSTS = frozenset({
-    "amazon.com",
-    "amazon.co.uk",
-    "amazon.de",
-    "amazon.fr",
-    "amazon.it",
-    "amazon.es",
-    "amazon.nl",
-    "amazon.com.au",
-    "amazon.in",
-    "amazon.com.mx",
-    "amazon.com.br",
-    "amazon.ca",
-    "amazon.jp",
-    "amazon.com.tr",
-    "amazon.sa",
-    "amazon.ae",
-    "amazon.sg",
-    "amazon.pl",
-    "amazon.se",
-    "amazon.eg",
-})
+ALLOWED_AMAZON_HOSTS = frozenset(
+    {
+        "amazon.com",
+        "amazon.co.uk",
+        "amazon.de",
+        "amazon.fr",
+        "amazon.it",
+        "amazon.es",
+        "amazon.nl",
+        "amazon.com.au",
+        "amazon.in",
+        "amazon.com.mx",
+        "amazon.com.br",
+        "amazon.ca",
+        "amazon.jp",
+        "amazon.com.tr",
+        "amazon.sa",
+        "amazon.ae",
+        "amazon.sg",
+        "amazon.pl",
+        "amazon.se",
+        "amazon.eg",
+    }
+)
 
 # The default region — always in the allow-list (checked at import for safety).
 DEFAULT_URL = "amazon.co.uk"
 if DEFAULT_URL not in ALLOWED_AMAZON_HOSTS:  # pragma: no cover - invariant guard
-    raise RuntimeError(
-        f"DEFAULT_URL {DEFAULT_URL!r} not in ALLOWED_AMAZON_HOSTS"
-    )
+    raise RuntimeError(f"DEFAULT_URL {DEFAULT_URL!r} not in ALLOWED_AMAZON_HOSTS")
 
 
 def validate_region(url: str) -> str:
@@ -172,15 +174,13 @@ def validate_region(url: str) -> str:
     malicious value, and in both cases we refuse to authenticate against it.
     """
     if not url or not isinstance(url, str):
-        raise AlexaSessionError(
-            "Amazon region host is required (e.g. amazon.co.uk)."
-        )
+        raise AlexaSessionError("Amazon region host is required (e.g. amazon.co.uk).")
     candidate = url.strip().lower()
     # Strip a leading scheme / alexa. prefix so "alexa.amazon.co.uk" is accepted.
     if candidate.startswith("https://"):
-        candidate = candidate[len("https://"):]
+        candidate = candidate[len("https://") :]
     elif candidate.startswith("http://"):
-        candidate = candidate[len("http://"):]
+        candidate = candidate[len("http://") :]
     candidate = candidate.removeprefix("alexa.")
     # Drop any trailing path / slash.
     candidate = candidate.split("/", 1)[0].rstrip(".")
@@ -279,8 +279,9 @@ def cookie_path_in_dir(config_dir: Path, email: str) -> Path:
     return Path(config_dir) / ".storage" / cookie_filename(email)
 
 
-def import_pickle(src: str | os.PathLike, email: str,
-                  config_dir: Path = DEFAULT_CONFIG_DIR) -> Path:
+def import_pickle(
+    src: str | os.PathLike, email: str, config_dir: Path = DEFAULT_CONFIG_DIR
+) -> Path:
     """Copy an existing alexapy cookie pickle into our config dir.
 
     Renames to the ``alexa_media.<email>.pickle`` form `alexapy` expects.
@@ -306,9 +307,7 @@ def import_pickle(src: str | os.PathLike, email: str,
     try:
         dest.resolve().relative_to(config_dir.resolve())
     except ValueError:
-        raise AlexaSessionError(
-            f"resolved cookie path escapes the config dir: {dest}"
-        )
+        raise AlexaSessionError(f"resolved cookie path escapes the config dir: {dest}")
     shutil.copy2(src_path, dest)
     try:
         os.chmod(dest, 0o600)
@@ -330,10 +329,13 @@ def _import_alexapy():
         ) from exc
 
 
-def build_login(email: str, url: str = DEFAULT_URL,
-                config_dir: Path = DEFAULT_CONFIG_DIR,
-                otp_secret: str | None = None,
-                create_dir: bool = True):
+def build_login(
+    email: str,
+    url: str = DEFAULT_URL,
+    config_dir: Path = DEFAULT_CONFIG_DIR,
+    otp_secret: str | None = None,
+    create_dir: bool = True,
+):
     """Construct an `AlexaLogin` pointed at our config dir.
 
     ``create_dir=False`` (read-in-place ``--cookie-dir``) avoids creating or
@@ -363,11 +365,14 @@ STALE_RELOAD_ATTEMPTS = 3
 STALE_RELOAD_SLEEP = 1.0
 
 
-async def load_session(email: str, url: str = DEFAULT_URL,
-                       config_dir: Path = DEFAULT_CONFIG_DIR,
-                       create_dir: bool = True,
-                       reload_attempts: int = STALE_RELOAD_ATTEMPTS,
-                       reload_sleep: float = STALE_RELOAD_SLEEP):
+async def load_session(
+    email: str,
+    url: str = DEFAULT_URL,
+    config_dir: Path = DEFAULT_CONFIG_DIR,
+    create_dir: bool = True,
+    reload_attempts: int = STALE_RELOAD_ATTEMPTS,
+    reload_sleep: float = STALE_RELOAD_SLEEP,
+):
     """Load + validate a saved cookie. Returns a logged-in `AlexaLogin`.
 
     Auto-recovers the HA-rotation race: if the first ``test_loggedin`` is
@@ -379,8 +384,7 @@ async def load_session(email: str, url: str = DEFAULT_URL,
     Raises ``AlexaSessionError`` if no cookie is present or it stays stale.
     """
     url = validate_region(url)
-    login = build_login(email, url=url, config_dir=config_dir,
-                        create_dir=create_dir)
+    login = build_login(email, url=url, config_dir=config_dir, create_dir=create_dir)
     try:
         cookies = await login.load_cookie()
         if not cookies:
@@ -422,11 +426,14 @@ async def load_session(email: str, url: str = DEFAULT_URL,
     return login
 
 
-async def test_loggedin(email: str, url: str = DEFAULT_URL,
-                        config_dir: Path = DEFAULT_CONFIG_DIR,
-                        create_dir: bool = True,
-                        reload_attempts: int = STALE_RELOAD_ATTEMPTS,
-                        reload_sleep: float = STALE_RELOAD_SLEEP) -> bool:
+async def test_loggedin(
+    email: str,
+    url: str = DEFAULT_URL,
+    config_dir: Path = DEFAULT_CONFIG_DIR,
+    create_dir: bool = True,
+    reload_attempts: int = STALE_RELOAD_ATTEMPTS,
+    reload_sleep: float = STALE_RELOAD_SLEEP,
+) -> bool:
     """Return True iff the saved cookie authenticates. Never raises.
 
     Same HA-rotation auto-recovery as ``load_session``: re-load the cookie
@@ -435,8 +442,7 @@ async def test_loggedin(email: str, url: str = DEFAULT_URL,
     url = validate_region(url)
     login = None
     try:
-        login = build_login(email, url=url, config_dir=config_dir,
-                            create_dir=create_dir)
+        login = build_login(email, url=url, config_dir=config_dir, create_dir=create_dir)
         cookies = await login.load_cookie()
         if not cookies:
             return False
@@ -463,10 +469,14 @@ async def test_loggedin(email: str, url: str = DEFAULT_URL,
                 _log.debug("login.close() failed during cleanup", exc_info=True)
 
 
-async def fresh_login(email: str, password: str, url: str = DEFAULT_URL,
-                      config_dir: Path = DEFAULT_CONFIG_DIR,
-                      otp_secret: str = "",
-                      otp_callback=None):
+async def fresh_login(
+    email: str,
+    password: str,
+    url: str = DEFAULT_URL,
+    config_dir: Path = DEFAULT_CONFIG_DIR,
+    otp_secret: str = "",
+    otp_callback=None,
+):
     """Drive alexapy's *scripted* login (password + optional OTP).
 
     This is the non-interactive fallback for headless/CI use. Prefer the
@@ -480,9 +490,7 @@ async def fresh_login(email: str, password: str, url: str = DEFAULT_URL,
     """
     url = validate_region(url)
     AlexaLogin, _ = _import_alexapy()
-    login = AlexaLogin(
-        url, email, password, make_outputpath(config_dir), otp_secret=otp_secret
-    )
+    login = AlexaLogin(url, email, password, make_outputpath(config_dir), otp_secret=otp_secret)
     # Register the TOTP secret so alexapy can fill the 2FA code itself.
     if otp_secret:
         try:
@@ -543,13 +551,16 @@ def proxy_access_url(host: str, port: int) -> str:
     return f"http://{shown}:{int(port)}"
 
 
-async def proxy_login(email: str, url: str = DEFAULT_URL,
-                      config_dir: Path = DEFAULT_CONFIG_DIR,
-                      host: str = DEFAULT_PROXY_HOST,
-                      port: int = DEFAULT_PROXY_PORT,
-                      timeout: float = 600.0,
-                      poll_interval: float = 3.0,
-                      on_url=None):
+async def proxy_login(
+    email: str,
+    url: str = DEFAULT_URL,
+    config_dir: Path = DEFAULT_CONFIG_DIR,
+    host: str = DEFAULT_PROXY_HOST,
+    port: int = DEFAULT_PROXY_PORT,
+    timeout: float = 600.0,
+    poll_interval: float = 3.0,
+    on_url=None,
+):
     """Robust browser-based login via alexapy's ``AlexaProxy``.
 
     Starts a local web proxy, hands the caller (via ``on_url`` and the return

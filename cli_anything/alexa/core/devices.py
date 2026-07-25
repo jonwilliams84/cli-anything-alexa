@@ -74,9 +74,7 @@ async def delete_appliance(login, appliance_id: str) -> dict[str, Any]:
     url = f"{base_url(login.url)}/api/phoenix/appliance/{quote(appliance_id, safe='')}"
     headers = csrf_header(login)
     if not headers:
-        raise AlexaSessionError(
-            "no csrf cookie on the session — cannot perform a mutating call"
-        )
+        raise AlexaSessionError("no csrf cookie on the session — cannot perform a mutating call")
     async with login.session.delete(url, headers=headers) as resp:
         body = await resp.text()
         ok = resp.status == 200
@@ -97,9 +95,7 @@ async def trigger_discovery(login) -> dict[str, Any]:
     url = f"{base_url(login.url)}/api/phoenix/discovery"
     headers = csrf_header(login)
     if not headers:
-        raise AlexaSessionError(
-            "no csrf cookie on the session — cannot perform a mutating call"
-        )
+        raise AlexaSessionError("no csrf cookie on the session — cannot perform a mutating call")
     async with login.session.post(url, headers=headers) as resp:
         body = await resp.text()
         return {

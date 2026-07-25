@@ -40,8 +40,7 @@ def render_table(rows: list[dict], max_cols: int = 10) -> str:
         return ""
     keys = table_columns(rows, max_cols=max_cols)
     widths = {
-        k: max(len(k), max((len(_fmt_cell(r.get(k))) for r in rows), default=0))
-        for k in keys
+        k: max(len(k), max((len(_fmt_cell(r.get(k))) for r in rows), default=0)) for k in keys
     }
     lines = [
         "  ".join(k.ljust(widths[k]) for k in keys),
