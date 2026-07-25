@@ -719,3 +719,145 @@ def test_proxy_login_login_close_failure_does_not_raise(monkeypatch):
     result = asyncio.run(session.proxy_login(
         "you@example.com", timeout=1, poll_interval=0.01))
     assert result is not None
+
+
+# ── B110: no bare try/except/pass in csrf_header ──────────────────────────
+
+def test_csrf_header_no_bare_try_except_pass():
+    """csrf_header logs exceptions at debug level instead of silently passing.
+
+    Regression for B110 at session.py:643 — the ``except Exception: pass``
+    was replaced with ``except Exception as exc: _log.debug(...)`` so errors
+    reading the cookie jar are no longer swallowed silently.
+    """
+    import ast
+    src = Path(session.__file__).read_text()
+    tree = ast.parse(src)
+    # Find the csrf_header function and verify no bare except+pass.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "csrf_header":
+            for child in ast.walk(node):
+                if isinstance(child, ast.ExceptHandler):
+                    # The handler body must NOT be a single bare `pass`.
+                    assert not (
+                        len(child.body) == 1
+                        and isinstance(child.body[0], ast.Pass)
+                    ), "csrf_header still has a bare try/except/pass (B110)"
+            break
+    else:
+        raise AssertionError("csrf_header function not found in session.py")
+
+
+def test_csrf_header_logs_debug_on_exception(caplog):
+    """csrf_header emits a debug log when iterating the cookie jar raises.
+
+    Behaviour change: the old code silently swallowed all exceptions; the fix
+    logs them at DEBUG level so failures are diagnosable.
+    """
+    import logging
+
+    class _BrokenJar:
+        """Simulates a session whose cookie_jar raises on iteration."""
+
+        class session:
+            class cookie_jar:
+                def __iter__(self):
+                    raise RuntimeError("jar corrupted")
+
+    with caplog.at_level(logging.DEBUG, logger="cli_anything.alexa.core.session"):
+        result = session.csrf_header(_BrokenJar())
+    # Still returns an empty dict (behaviour preserved).
+    assert result == {}
+    # A debug message was logged mentioning the exception.
+    debug_msgs = [r for r in caplog.records if r.levelno == logging.DEBUG]
+    assert any("csrf" in r.getMessage().lower() for r in debug_msgs), (
+        "expected a debug log about the csrf cookie failure"
+    )
+
+
+def test_csrf_header_returns_dict_when_csrf_cookie_present():
+    """csrf_header still returns {'csrf': value} when the cookie exists.
+
+    Behaviour preservation: the happy path is unchanged by the B110 fix.
+    """
+
+    class _Cookie:
+        def __init__(self, key, value):
+            self.key = key
+            self.value = value
+
+    class _FakeLogin:
+        class session:
+            cookie_jar = [_Cookie("csrf", "abc123"), _Cookie("other", "x")]
+
+    assert session.csrf_header(_FakeLogin()) == {"csrf": "abc123"}
+
+
+def test_csrf_header_returns_empty_dict_when_no_csrf_cookie():
+    """csrf_header returns {} when the jar has no csrf cookie.
+
+    Behaviour preservation: no exception, just no match.
+    """
+
+    class _Cookie:
+        def __init__(self, key, value):
+            self.key = key
+            self.value = value
+
+    class _FakeLogin:
+        class session:
+            cookie_jar = [_Cookie("session-id", "x")]
+
+    assert session.csrf_header(_FakeLogin()) == {}
+
+
+# ── F841: no unused `login` variable in auth_login ────────────────────────
+
+def test_auth_login_no_unused_login_variable():
+    """auth_login does not assign the proxy_login result to an unused var.
+
+    Regression for F841 at alexa_cli.py:325 — the ``login =`` assignment was
+    removed because the return value was never used.
+    """
+    import ast
+    from cli_anything.alexa import alexa_cli
+    src = Path(alexa_cli.__file__).read_text()
+    tree = ast.parse(src)
+    # Find the auth_login function.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "auth_login":
+            # No assignment to a bare name `login` inside the function body.
+            for child in ast.walk(node):
+                if isinstance(child, ast.Assign):
+                    for target in child.targets:
+                        if (isinstance(target, ast.Name)
+                                and target.id == "login"):
+                            raise AssertionError(
+                                "auth_login still assigns to unused `login` "
+                                "(F841 trigger)"
+                            )
+            break
+    else:
+        raise AssertionError("auth_login function not found in alexa_cli.py")
+
+
+# ── I001: import block in alexa_cli.py is sorted ──────────────────────────
+
+def test_alexa_cli_imports_sorted():
+    """alexa_cli.py top-level import block is sorted (isort/ruff I001).
+
+    Regression for I001 at alexa_cli.py:9 — the import block was re-sorted to
+    satisfy ruff's isort rules.
+    """
+    import subprocess
+    import sys
+    from cli_anything.alexa import alexa_cli
+    result = subprocess.run(
+        [sys.executable, "-m", "ruff", "check",
+         str(Path(alexa_cli.__file__)),
+         "--select", "I001"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, (
+        f"ruff I001 check failed on alexa_cli.py:\n{result.stdout}\n{result.stderr}"
+    )
