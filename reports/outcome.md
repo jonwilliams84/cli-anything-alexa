@@ -1,73 +1,84 @@
-# repl_skin.py — Top 3 Scanner Findings Fixed
+# Test Coverage Improvement Outcome
 
-## Findings Addressed
+## Summary
 
-All three findings were in `cli_anything/alexa/utils/repl_skin.py`:
+Raised the repo's test coverage from 68% to 70.55% by adding 18 behavioural
+tests targeting the lowest-coverage modules containing real logic. The CI
+`--cov-fail-under` gate was raised from 68 to 70 (1 point below the achieved
+figure, providing a buffer against rounding/flakes).
 
-| # | Code | Location | Fix |
-|---|------|----------|-----|
-| 1 | F841 | line 291 — `accent_hex` in `prompt_tokens` | Removed the unused local assignment |
-| 2 | F841 | line 449 — `sep_parts` in `table` separator | Removed the unused local assignment |
-| 3 | I001  | line 493 — `prompt_toolkit` import block | Reordered imports alphabetically by module path |
+## What Was Done
 
-## Root Cause & Fix Details
+### 1. Identified Lowest-Coverage Modules
 
-### F841 — `accent_hex` (prompt_tokens)
-`prompt_tokens` built `class:`-style tokens for prompt_toolkit; the
-`accent_hex = _ANSI_256_TO_HEX.get(self.accent, "#5fafff")` line computed a
-hex colour that was never referenced. Removed the dead assignment. A
-*separate* `accent_hex` in `get_prompt_style` is genuinely used (it feeds
-`Style.from_dict`), so it was left untouched.
+Ran the repo's own coverage command (`python -m pytest tests --cov=cli_anything
+--cov-report=term-missing`) and identified:
 
-### F841 — `sep_parts` (table separator)
-`table` computed `sep_parts = [self._c(_DARK_GRAY, _H_LINE * w) for w in col_widths]`
-but only the immediately-following `sep_line` (which re-derives the widths
-inline) is printed. Removed the dead `sep_parts` assignment; the printed
-separator line is unchanged.
+- `cli_anything/alexa/alexa_cli.py` — 26% coverage (lowest, contains real
+  formatting/resolution logic in `emit`, `_abort`, `_resolve_one_or_abort`)
+- `cli_anything/alexa/core/endpoints.py` — 85% coverage (uncovered error paths
+  in `apply_renames`, `resolve_by_entity` edge cases, `find_duplicates`)
 
-### I001 — prompt_toolkit import block
-The four `from prompt_toolkit...` imports were out of module-path order.
-Reordered to:
-`prompt_toolkit` → `prompt_toolkit.auto_suggest` →
-`prompt_toolkit.formatted_text` → `prompt_toolkit.history`.
+### 2. New Test File: `tests/test_cli_helpers.py` (18 tests)
+
+All tests assert **behaviour** (stdout/stderr/exit codes/return values), not
+source text. No test asserts on line numbers, suppression comments, or
+hardcoded paths.
+
+**`emit()` — all output branches:**
+- `test_emit_json_serialises_and_sorts_keys` — JSON output with sorted keys
+- `test_emit_none_produces_no_output` — None produces empty output
+- `test_emit_string_echoes_directly` — string echoed verbatim
+- `test_emit_list_of_dicts_renders_table` — list of dicts renders as table
+- `test_emit_list_of_scalars_prints_each_on_own_line` — list of scalars, one per line
+- `test_emit_dict_with_nested_value_uses_json_for_nested` — nested dict JSON-dumped
+- `test_emit_dict_with_list_value_uses_json_for_list` — list value JSON-dumped
+- `test_emit_fallback_str_for_unknown_type` — fallback to str() for float
+
+**`_abort()`:**
+- `test_abort_writes_error_prefix_and_exits_nonzero` — "error:" prefix + exit code 1
+
+**`_resolve_one_or_abort()` — zero/one/many match paths:**
+- `test_resolve_one_or_abort_returns_single_match` — single match returned
+- `test_resolve_one_or_abort_zero_matches_aborts` — zero matches → exit 1 + error message
+- `test_resolve_one_or_abort_multiple_matches_text_mode_lists_candidates` — ambiguous in text mode lists both candidates
+- `test_resolve_one_or_abort_multiple_matches_json_mode_emits_structured_error` — ambiguous in JSON mode emits structured error JSON
+
+**`endpoints.apply_renames` error paths:**
+- `test_apply_renames_missing_endpoint_id_records_error` — missing endpointId → ok=False
+- `test_apply_renames_empty_plan_returns_empty_list` — empty plan → empty list
+
+**`endpoints.resolve_by_entity` edge cases:**
+- `test_resolve_by_entity_empty_string_returns_empty` — empty entity_id → empty list
+- `test_resolve_by_entity_none_records_returns_empty` — None records → empty list
+
+**`endpoints.find_duplicates`:**
+- `test_find_duplicates_two_native_same_name_no_twin_flag` — two native devices same name → native_plus_ha=False
+
+### 3. CI Gate Raised
+
+In `.github/workflows/ci.yml`, `--cov-fail-under` raised from 68 to 70.
+Set 1 point below the achieved 70.55% to avoid red pipelines from rounding.
+
+### 4. Housekeeping
+
+- Removed `.coverage` binary artifact from git tracking
+- Added `.coverage` to `.gitignore`
 
 ## Verification
 
-- `python3 -m ruff check --select F841,I001 ./cli_anything/alexa/utils/repl_skin.py`
-  → **All checks passed** (exit 0).
-- `python3 -m pytest tests/ -q` → **212 passed** (204 pre-existing + 8 new).
+```
+359 passed in 2.81s
+Required test coverage of 70% reached. Total coverage: 70.55%
+```
 
-## Regression Tests
+The verify command (`python -m pytest tests --cov=cli_anything --cov-report=term-missing
+--cov-report=xml --cov-fail-under=70 -q --durations=10`) exits 0.
 
-Added `tests/test_repl_skin_lint.py` (8 tests):
+## Coverage by Module (After)
 
-1. `test_prompt_tokens_has_no_unused_accent_hex` — source-level: `accent_hex`
-   absent from the `prompt_tokens` body.
-2. `test_prompt_tokens_returns_tokens` — behaviour preserved: returns a
-   non-empty token list with `class:icon` first.
-3. `test_ruff_no_f841_accent_hex` — ruff subprocess reports no F841 for
-   `accent_hex`.
-4. `test_table_separator_has_no_unused_sep_parts` — source-level: `sep_parts`
-   absent from the `table` body.
-5. `test_table_prints_separator` — behaviour preserved: `table` still prints
-   the `───` box-drawing separator.
-6. `test_ruff_no_f841_sep_parts` — ruff subprocess reports no F841 for
-   `sep_parts`.
-7. `test_repl_skin_import_block_is_sorted` — ruff `--select I001` passes on
-   `repl_skin.py`.
-8. `test_repl_skin_prompt_toolkit_imports_order` — the `prompt_toolkit`
-   import block is ordered by module path.
-
-## Commit
-
-`b84f740` — "Fix F841 (accent_hex, sep_parts) and I001 in repl_skin.py"
-(2 files changed, 118 insertions, 3 deletions).
-
-## Notes
-
-- The F401 finding (`FormattedText` imported but unused) was pre-existing
-  and NOT among the reported top-3; it was left untouched to keep the fix
-  minimal and targeted. The I001 regression test is scoped to
-  `--select I001` so the unrelated F401 does not affect it.
-- No `# nosec` suppressions were needed — all three findings were genuine
-  and fixed at the source.
+| Module | Before | After |
+|--------|--------|-------|
+| alexa_cli.py | 26% | 33% |
+| endpoints.py | 85% | 89% |
+| **TOTAL** | **68%** | **71%** |
