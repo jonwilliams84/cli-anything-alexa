@@ -161,6 +161,26 @@ def test_resolve_one_or_abort_zero_matches_aborts():
     assert "no device matching 'Lamp'" in res.output
 
 
+
+
+def test_resolve_one_or_abort_multiple_matches_text_mode_lists_candidates():
+    recs = [_rec("Lamp", source="HA", appliance_id="aid_ha"),
+            _rec("Lamp", source="native", appliance_id="aid_native", entity_id=None)]
+    runner = CliRunner()
+
+    @click.command()
+    @click.pass_context
+    def _cmd(ctx):
+        ctx.obj = {"as_json": False}
+        _resolve_one_or_abort(ctx, recs, recs, "Lamp")
+
+    res = runner.invoke(_cmd, [], catch_exceptions=False)
+    assert res.exit_code == 1
+    assert "matches" in res.output.lower()
+    # both candidates should be listed in the table
+    assert "aid_ha" in res.output
+    assert "aid_native" in res.output
+
 def test_resolve_one_or_abort_multiple_matches_json_mode_emits_structured_error():
     recs = [_rec("Lamp", source="HA", appliance_id="aid_ha"),
             _rec("Lamp", source="native", appliance_id="aid_native", entity_id=None)]
