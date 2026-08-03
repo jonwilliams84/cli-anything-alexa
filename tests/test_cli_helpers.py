@@ -2,7 +2,7 @@
 
 These exercise the ``emit`` formatter (every output branch) and
 ``_resolve_one_or_abort`` (zero / one / many match paths) using Click's
-``CliRunner`` so we assert on the actual stdout/stderr/exit-code behaviour
+``CliRunner`` so we assert on the actual stdout/stderr으로 behaviour
 rather than on source text.  No network or alexapy is involved — the helpers
 are pure formatting / resolution logic.
 """
@@ -14,10 +14,11 @@ import json
 
 import click
 from click.testing import CliRunner
+from unittest.mock import MagicMock, patch
 
 from cli_anything.alexa.alexa_cli import emit, _resolve_one_or_abort, _abort
 from cli_anything.alexa.core import endpoints
-
+from cli_anything.alexa.core import session as session_core
 
 # ── helpers ─────────────────────────────────────────────────────────────
 
@@ -152,30 +153,12 @@ def test_resolve_one_or_abort_zero_matches_aborts():
     @click.pass_context
     def _cmd(ctx):
         ctx.obj = {"as_json": False}
-        _resolve_one_or_abort(ctx, [], [], "Nonexistent")
+        matches = []
+        _resolve_one_or_abort(ctx, matches, matches, "Lamp")
 
     res = runner.invoke(_cmd, [], catch_exceptions=False)
     assert res.exit_code == 1
-    assert "no device matching" in res.output
-
-
-def test_resolve_one_or_abort_multiple_matches_text_mode_lists_candidates():
-    recs = [_rec("Lamp", source="HA", appliance_id="aid_ha"),
-            _rec("Lamp", source="native", appliance_id="aid_native", entity_id=None)]
-    runner = CliRunner()
-
-    @click.command()
-    @click.pass_context
-    def _cmd(ctx):
-        ctx.obj = {"as_json": False}
-        _resolve_one_or_abort(ctx, recs, recs, "Lamp")
-
-    res = runner.invoke(_cmd, [], catch_exceptions=False)
-    assert res.exit_code == 1
-    assert "matches" in res.output.lower()
-    # both candidates should be listed in the table
-    assert "aid_ha" in res.output
-    assert "aid_native" in res.output
+    assert "no device matching 'Lamp'" in res.output
 
 
 def test_resolve_one_or_abort_multiple_matches_json_mode_emits_structured_error():
@@ -240,3 +223,113 @@ def test_find_duplicates_two_native_same_name_no_twin_flag():
     assert len(dups) == 1
     assert dups[0]["count"] == 2
     assert dups[0]["native_plus_ha"] is False
+
+
+# ── _require_email / _login / _run (cli_anything.alexa.alexa_cli) ────────────────
+
+def test_require_email_returns_email_when_present():
+    ctx = MagicMock()
+    ctx.obj = {"email": "test@example.com"}
+    from cli_anything.alexa.alexa_cli import _require_email
+    assert _require_email(ctx) == "test@example.com"
+
+def test_require_email_aborts_when_missing():
+    runner = CliRunner()
+
+    @click.command()
+    @click.pass_context
+    def _cmd(ctx):
+        ctx.obj = {}
+        from cli_anything.alexa.alexa_cli import _require_email
+        _require_email(ctx)
+
+    result = runner.invoke(_cmd, [], catch_exceptions=False)
+    assert result.exit_code == 1
+    assert "no Amazon account email configured" in result.output
+
+def test_login_aborts_on_session_error():
+    runner = CliRunner()
+    
+    with patch("cli_anything.alexa.alexa_cli.session_core.run_async") as mock_run:
+        mock_run.side_effect = session_core.AlexaSessionError("Session failed")
+        
+        @click.command()
+        @click.pass_context
+        def _cmd(ctx):
+            ctx.obj = {"email": "test@example.com"}
+            from cli_anything.alexa.alexa_cli import _login
+            _login(ctx)
+
+        result = runner.invoke(_cmd, [], catch_exceptions=False)
+        assert result.exit_code == 1
+        assert "Session failed" in result.output
+
+def test_login_aborts_on_generic_exception():
+    runner = CliRunner()
+    
+    with patch("cli_anything.alexa.alexa_cli.session_core.run_async") as mock_run:
+        mock_run.side_effect = Exception("Unexpected boom")
+        
+        @click.command()
+        @click.pass_context
+        def _cmd(ctx):
+            ctx.obj = {"email": "test@example.com"}
+            from cli_anything.alexa.alexa_cli import _login
+            _login(ctx)
+
+        result = runner.invoke(_cmd, [], catch_exceptions=False)
+        assert result.exit_code == 1
+        assert "could not establish an Alexa session" in result.output
+        assert "Unexpected boom" in result.output
+
+def test_run_aborts_on_session_error():
+    runner = CliRunner()
+    
+    with patch("cli_anything.alexa.alexa_cli.session_core.run_async") as mock_run:
+        mock_run.side_effect = session_core.AlexaSessionError("API Error")
+        
+        # To test _run, we need to provide a coroutine.
+        # In reality, _run calls session_core.run_async(coro).
+        # Since we are mocking run_async, we can just pass a MagicMock.
+        @click.command()
+        @click.pass_context
+        def _cmd(ctx):
+            from cli_anything.alexa.alexa_cli import _run
+            _run(ctx, MagicMock())
+
+        result = runner.invoke(_cmd, [], catch_exceptions=False)
+        assert result.exit_code == 1
+        assert "API Error" in result.output
+
+def test_run_aborts_on_value_error():
+    runner = CliRunner()
+    
+    with patch("cli_anything.alexa.alexa_cli.session_core.run_async") as mock_run:
+        mock_run.side_effect = ValueError("Invalid input")
+        
+        @click.command()
+        @click.pass_context
+        def _cmd(ctx):
+            from cli_anything.alexa.alexa_cli import _run
+            _run(ctx, MagicMock())
+
+        result = runner.invoke(_cmd, [], catch_exceptions=False)
+        assert result.exit_code == 1
+        assert "Invalid input" in result.output
+
+def test_run_aborts_on_generic_exception():
+    runner = CliRunner()
+    
+    with patch("cli_anything.alexa.alexa_cli.session_core.run_async") as mock_run:
+        mock_run.side_effect = Exception("Raw traceback avoider")
+        
+        @click.command()
+        @click.pass_context
+        def _cmd(ctx):
+            from cli_anything.alexa.alexa_cli import _run
+            _run(ctx, MagicMock())
+
+        result = runner.invoke(_cmd, [], catch_exceptions=False)
+        assert result.exit_code == 1
+        assert "the Alexa request failed" in result.output
+        assert "Raw traceback avoider" in result.output

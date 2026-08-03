@@ -541,3 +541,10 @@ def test_proxy_login_test_loggedin_exception_keeps_polling(monkeypatch):
     asyncio.run(session.proxy_login(
         "you@example.com", timeout=1.0, poll_interval=0.01))
     assert call_count[0] == 1  # first raised, second succeeded
+
+def test__default_config_dir_no_home(monkeypatch):
+    from cli_anything.alexa.core.session import _default_config_dir, FALLBACK_CONFIG_DIR
+    monkeypatch.setenv("HOME", "")
+    res = _default_config_dir()
+    assert res == FALLBACK_CONFIG_DIR
+
