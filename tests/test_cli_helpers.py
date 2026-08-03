@@ -2,7 +2,7 @@
 
 These exercise the ``emit`` formatter (every output branch) and
 ``_resolve_one_or_abort`` (zero / one / many match paths) using Click's
-``CliRunner`` so we assert on the actual stdout/stderr으로 behaviour
+``CliRunner`` so we assert on the actual stdout/stderr behaviour
 rather than on source text.  No network or alexapy is involved — the helpers
 are pure formatting / resolution logic.
 """
