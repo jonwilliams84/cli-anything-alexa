@@ -194,6 +194,17 @@ class _NoCookieLogin:
 
 
 def test_test_loggedin_no_cookie_returns_false(monkeypatch):
+    # Patch _import_alexapy so AlexaLogin() returns fake_login
+    def _import():
+        class _FakeAlexaLogin:
+            def __init__(self, *a, **k):
+                pass
+            def __new__(cls, *a, **k):
+                return fake_login
+        return _FakeAlexaLogin, None
+    monkeypatch.setattr(session, "_import_alexapy", _import)
+
+    # Also mock _import_alexapy since proxy_login calls it first
     monkeypatch.setattr(session, "build_login", lambda *a, **k: _NoCookieLogin())
     result = asyncio.run(session.test_loggedin("you@example.com",
                                                 reload_attempts=1, reload_sleep=0))
@@ -290,3 +301,250 @@ def test_test_loggedin_recovers_after_reload(monkeypatch):
                                                 reload_attempts=3, reload_sleep=0))
     assert result is True
     assert fake.close_called is True
+
+
+
+# ── fresh_login: captcha / 2FA / error / success branches ──────────
+
+class _FreshFakeLogin:
+    """Stand-in for the (url, email, password, output_path) AlexaLogin ctor."""
+
+    def __init__(self, *a, url="", email="", password="", output_path="", **kwargs):
+        self._statuses: list[dict] = []
+        self.status: dict = {}
+        self.set_totp_calls = 0
+        self.login_calls = 0
+
+    def set_totp(self, secret: str) -> None:
+        self.set_totp_calls += 1
+
+    async def login(self, *a, data=None, **k):
+        self.login_calls += 1
+        self.status = self._statuses.pop(0) if self._statuses else {}
+
+
+def _patch_fresh_login(monkeypatch, fake):
+    """Patch _import_alexapy so it returns a class whose instance IS fake."""
+    def _import():
+        # Return a class whose __new__ always returns the same fake instance.
+        # This simulates what real alexapy does: constructs and returns an object.
+        class _FakeAlexaLogin(type(fake)):
+            def __new__(cls, *a, **k):
+                return fake
+        return _FakeAlexaLogin, None
+    monkeypatch.setattr(session, "_import_alexapy", _import)
+    monkeypatch.setattr(session, "make_outputpath", lambda *a, **k: lambda *x: str(a[0]))
+
+
+def test_fresh_login_captcha_raises_AlexaSessionError(monkeypatch):
+    """When Amazon returns a captcha, fresh_login must raise with guidance."""
+    fake = _FreshFakeLogin()
+    fake._statuses = [{"captcha_required": True}]
+    _patch_fresh_login(monkeypatch, fake)
+    with pytest.raises(session.AlexaSessionError, match="Amazon returned a captcha"):
+        asyncio.run(session.fresh_login("you@example.com", "pass"))
+
+
+def test_fresh_login_2fa_no_secret_no_callback_raises(monkeypatch):
+    """When 2FA is required but no secret or callback is available, raise."""
+    fake = _FreshFakeLogin()
+    fake._statuses = [{"securitycode_required": True}]
+    _patch_fresh_login(monkeypatch, fake)
+    with pytest.raises(session.AlexaSessionError, match="no code available"):
+        asyncio.run(session.fresh_login("you@example.com", "pass"))
+
+
+def test_fresh_login_2fa_callback_provides_code(monkeypatch):
+    """When 2FA is required and a callback is given, the code is injected."""
+    fake = _FreshFakeLogin()
+    fake._statuses = [
+        {"securitycode_required": True},
+        {"login_successful": True},
+    ]
+    _patch_fresh_login(monkeypatch, fake)
+
+    def get_code():
+        return "123456"
+
+    asyncio.run(session.fresh_login("you@example.com", "pass", otp_callback=get_code))
+    assert fake.login_calls == 2
+
+
+def test_fresh_login_error_message_becomes_AlexaSessionError(monkeypatch):
+    """An error_message in the status dict must become an AlexaSessionError."""
+    fake = _FreshFakeLogin()
+    fake._statuses = [{"error_message": "Too many attempts."}]
+    _patch_fresh_login(monkeypatch, fake)
+    with pytest.raises(session.AlexaSessionError, match="Too many attempts"):
+        asyncio.run(session.fresh_login("you@example.com", "pass"))
+
+
+def test_fresh_login_incomplete_raises(monkeypatch):
+    """When status never reaches login_successful, raise with diagnostic."""
+    fake = _FreshFakeLogin()
+    fake._statuses = [{"some": "unrecognised status"}] * 5
+    _patch_fresh_login(monkeypatch, fake)
+    with pytest.raises(session.AlexaSessionError, match="scripted login did not complete"):
+        asyncio.run(session.fresh_login("you@example.com", "pass"))
+
+
+def test_fresh_login_first_status_successful_returns_login(monkeypatch):
+    """If the first status already has login_successful, return without retry."""
+    fake = _FreshFakeLogin()
+    fake._statuses = [{"login_successful": True}]
+    _patch_fresh_login(monkeypatch, fake)
+    result = asyncio.run(session.fresh_login("you@example.com", "pass"))
+    assert result is fake
+    assert fake.login_calls == 1
+
+
+def test_fresh_login_totp_secret_passed_to_set_totp(monkeypatch):
+    """When otp_secret is given, it is registered before the first login call."""
+    fake = _FreshFakeLogin()
+    fake._statuses = [{"login_successful": True}]
+    _patch_fresh_login(monkeypatch, fake)
+    asyncio.run(session.fresh_login("you@example.com", "pass", otp_secret="SECRET"))
+    assert fake.set_totp_calls == 1
+
+
+# ── import_pickle: source is a directory → raises ───────────────────
+
+def test_import_pickle_source_is_directory_raises(tmp_path):
+    """If the source path is a directory, import_pickle must raise."""
+    src = tmp_path / "somedir"
+    src.mkdir()
+    config = tmp_path / "config"
+    config.mkdir()
+    with pytest.raises(session.AlexaSessionError):
+        session.import_pickle(str(src), "you@example.com", config_dir=config)
+
+
+# ── proxy_login: timeout and exception-in-poll paths ──────────────
+
+class _ProxyFakeLogin:
+    def __init__(self, test_loggedin_results: list[bool]):
+        self._results = list(test_loggedin_results)
+        self.test_calls = 0
+        self.closed = False
+
+    async def test_loggedin(self, *a, **k):
+        self.test_calls += 1
+        return self._results.pop(0) if self._results else False
+
+    async def finalize_login(self, *a, **k):
+        pass
+
+    async def close(self):
+        self.closed = True
+
+    @property
+    def url(self):
+        return "amazon.co.uk"
+
+    session = property(lambda self: object())
+
+
+class _ProxyFakeProxy:
+    def __init__(self, login, access_url_str: str):
+        self._login = login
+        self._access_url_str = access_url_str
+
+    def access_url(self):
+        return self._access_url_str
+
+    def change_login(self, *a):
+        pass
+
+    async def start_proxy(self, host=""):
+        pass
+
+    async def stop_proxy(self):
+        pass
+
+
+def test_proxy_login_timeout_raises_AlexaSessionError(monkeypatch):
+    """When polling times out, proxy_login must raise with a clear message."""
+    fake_login = _ProxyFakeLogin([False] * 200)
+    fake_proxy = _ProxyFakeProxy(fake_login, "http://127.0.0.1:3001")
+
+    # Patch _import_alexapy so AlexaLogin() returns fake_login
+    def _import():
+        class _FakeAlexaLogin:
+            def __init__(self, *a, **k):
+                pass
+            def __new__(cls, *a, **k):
+                return fake_login
+        return _FakeAlexaLogin, None
+    monkeypatch.setattr(session, "_import_alexapy", _import)
+
+    # Patch alexapy.AlexaProxy at the session module level where it's imported
+    import types
+    fake_alexapy = types.ModuleType("alexapy")
+    fake_alexapy.AlexaProxy = lambda *a, **k: fake_proxy
+    # Replace sys.modules entry AND stash original for cleanup
+    import sys
+    _orig_alexapy = sys.modules.get("alexapy")
+    monkeypatch.setitem(sys.modules, "alexapy", fake_alexapy)
+    # monkeypatch cleanup handles sys.modules["alexapy"] restoration
+
+    with pytest.raises(session.AlexaSessionError, match="timed out"):
+        asyncio.run(session.proxy_login(
+            "you@example.com", timeout=0.01, poll_interval=0.001))
+
+
+def test_proxy_login_test_loggedin_exception_keeps_polling(monkeypatch):
+    """If test_loggedin raises, proxy_login must continue polling, not fail."""
+    call_count = [0]
+
+    class _RaiseOnceLogin:
+        def __init__(self):
+            self.closed = False
+
+        async def test_loggedin(self, *a, **k):
+            if call_count[0] == 0:
+                call_count[0] += 1
+                raise RuntimeError("transient network glitch")
+            return True  # succeeds on second call
+
+        async def finalize_login(self, *a, **k):
+            pass
+
+        async def close(self):
+            self.closed = True
+
+        @property
+        def url(self):
+            return "amazon.co.uk"
+
+        session = property(lambda self: object())
+
+    fake_login = _RaiseOnceLogin()
+    fake_proxy = _ProxyFakeProxy(fake_login, "http://127.0.0.1:3001")
+
+    async def mock_build_login(*a, **k):
+        return fake_login
+
+    # proxy_login calls _import_alexapy first, so we must mock it
+    def _mock_import_alexapy():
+        class _FakeAlexaLogin:
+            def __new__(cls, *a, **k):
+                return fake_login
+        return _FakeAlexaLogin, None
+    monkeypatch.setattr(session, "_import_alexapy", _mock_import_alexapy)
+    monkeypatch.setattr(session, "build_login", mock_build_login)
+    import sys
+    import types
+    fake_alexapy = types.ModuleType("alexapy")
+    fake_alexapy.AlexaProxy = lambda *a, **k: fake_proxy
+    monkeypatch.setitem(sys.modules, "alexapy", fake_alexapy)
+
+    asyncio.run(session.proxy_login(
+        "you@example.com", timeout=1.0, poll_interval=0.01))
+    assert call_count[0] == 1  # first raised, second succeeded
+
+def test__default_config_dir_no_home(monkeypatch):
+    from cli_anything.alexa.core.session import _default_config_dir, FALLBACK_CONFIG_DIR
+    monkeypatch.setenv("HOME", "")
+    res = _default_config_dir()
+    assert res == FALLBACK_CONFIG_DIR
+
