@@ -173,9 +173,17 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `devices rename --map <file>` | **Bulk** rename from `current name => new name` (or `endpointId => new name`) lines (`#` comments) |
 | `devices rename ... --speakable` | Auto-fix new names DACS would reject (hyphens→spaces, strip control chars) |
 | `devices duplicates` | Detect devices exposed twice (native + HA twin, or any shared display name) |
+| `devices state [<target>...] [--all]` | Read live smart-home state (power, brightness, colour, temperature…) |
+| `devices on\|off [<target>...] [--all]` | Turn appliances on / off (`--yes` to execute) |
+| `devices light <target> [--on\|--off] [--brightness N] [--color <name>] [--color-temperature <name>]` | Drive a light's power / brightness / colour (`--yes` to execute) |
 | `discover` | Trigger Alexa smart-home device discovery (`--yes` to execute) |
+| `guard status` | Read Alexa Guard's arm state (away vs home) |
+| `guard set away\|home` | Arm / disarm Alexa Guard (`--yes` to execute) |
 | `echos list` | List the physical Echo devices on the account |
-| `echos bluetooth` | Show the bluetooth devices paired to each Echo (name, MAC, connected) |
+| `echos bluetooth` | Show the bluetooth devices paired to each Echo, account-wide (name, MAC, connected) |
+| `echos pairings [<device>]` | Paired sinks for **one** Echo, with the `address` that `echos connect` takes |
+| `echos connect <name\|mac> [--device ...]` | Connect an already-paired bluetooth device to an Echo (`--yes` to execute) |
+| `echos disconnect [--device ...]` | Disconnect **every** bluetooth sink from an Echo (`--yes` to execute) |
 | `echos wake-words` | Show the configured wake word per Echo |
 | `echos dnd` | Read the current do-not-disturb state of every Echo |
 | `groups list` | List device-groups (rooms): name, id, member count/names, child-group count/names |
@@ -199,7 +207,17 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `media play-music <phrase> [--device ...] [--provider ...]` | Play music by search phrase from a provider (`--yes` to execute) |
 | `announce <text> [--device ...]` | Speak an announcement on all (or one) Echo (`--yes` to execute) |
 | `speak <text> [--device ...]` | Say text on one Echo via TTS — **no announcement chime** (`--yes` to execute) |
+| `push <text> [--title ...] [--device ...] [--dropin]` | Push a notification to the **Alexa app** — silent in the house (`--yes` to execute) |
 | `dnd <device> on\|off` | Toggle do-not-disturb on a device (`--yes` to execute) |
+| `run command "<utterance>" [--device ...]` | Run literal text as if spoken to Alexa — reaches everything (`--yes` to execute) |
+| `run sequence <name> [--device ...]` | Run a built-in behaviour (weather, joke, good-night…) (`--yes` to execute) |
+| `run sound <alias\|id> [--device ...]` | Play a soundbank sound (`--yes` to execute) |
+| `run skill <amzn1.ask.skill...> [--device ...]` | Launch a skill by id (`--yes` to execute) |
+| `run catalog [--kind sequences\|sounds]` | List the known sequences / sound aliases (no account needed) |
+| `activity history [--limit N] [--hours N] [--device ...] [--contains ...]` | Recent voice turns: what was said and what Alexa replied |
+| `activity records [--limit N]` | The legacy activity feed (carries per-activity ids + status) |
+| `activity last [--limit N]` | The last Echo that answered, and what it was asked |
+| `activity clear [--items N]` | Delete recent voice recordings — irreversible (`--yes` to execute) |
 | `repl` | Interactive shell (default when no subcommand) |
 
 ### Prune housekeeping
@@ -319,6 +337,71 @@ cli-anything-alexa discover --yes                                      # trigger
 - **`discover`** triggers a smart-home discovery sweep
   (`POST /api/phoenix/discovery`).
 
+### Smart-home state & control
+
+`devices state` reads live capability values over `/api/phoenix/state`, and
+`devices on/off/light` writes them back. Targets resolve exactly like `rename`
+(applianceId / endpoint id / display name, ambiguity aborts), and `--all` is
+available on the read and the on/off writes.
+
+```bash
+cli-anything-alexa devices state "Kitchen Lamp" --json
+cli-anything-alexa devices state --all --json
+cli-anything-alexa devices off "Lounge Plug" --yes
+cli-anything-alexa devices light "Kitchen Lamp" --on --brightness 40 --color soft_white --yes
+```
+
+`guard` reads and writes Alexa Guard's arm state:
+
+```bash
+cli-anything-alexa guard status
+cli-anything-alexa guard set away --yes
+```
+
+### Voice commands & behaviours — `run`
+
+`run command` sends **literal text through Alexa's own parser**, which makes it
+the single highest-leverage call on the account: anything Alexa understands by
+voice — including skills and devices this CLI has no typed command for — is
+reachable through it. `run sequence` / `run sound` / `run skill` trigger the
+built-in behaviours, the soundbank and a skill by id. Alexa answers *out loud*
+and the behaviours endpoint returns no payload, so read back what happened with
+`activity history`.
+
+```bash
+cli-anything-alexa run catalog                      # the known sequences + sounds
+cli-anything-alexa run command "turn off the kitchen lights" --yes
+cli-anything-alexa run sequence good-night --device "Bedroom Echo" --yes
+cli-anything-alexa run sound doorbell --yes
+cli-anything-alexa run skill amzn1.ask.skill.<uuid> --yes
+```
+
+Unknown *ids* are passed through (Amazon keeps adding behaviours and sounds), but
+an unknown friendly **name** is refused locally with the alternatives listed —
+the API answers an unknown sequence with a generic failure that tells you
+nothing. `--queue-delay` batches everything issued within that window into one
+behaviour node; omit it and alexapy's own per-call default (0 for text/skills,
+1.5 for sounds/sequences) applies.
+
+### Voice history — `activity`
+
+```bash
+cli-anything-alexa activity history --hours 2 --json            # transcript + Alexa's reply
+cli-anything-alexa activity history --device "Kitchen Echo" --contains lights
+cli-anything-alexa activity records --limit 50                  # legacy feed, has ids
+cli-anything-alexa activity last                                # who answered last
+cli-anything-alexa activity clear --items 20 --yes              # irreversible
+```
+
+`activity history` uses the privacy view
+(`/alexa-privacy/apd/rvh/customer-history-records`) because it is the only feed
+carrying **both halves** of a turn. `--hours` is a real query window, not a
+client-side filter. `DEVICE_ARBITRATION` rows — the wake-word races Amazon
+records when several Echos hear the same "Alexa" — are dropped unless you pass
+`--include-noise`. `activity clear` deletes real recordings; when Amazon refuses
+an entry (a 404: nothing to delete) the result reports the clear as **partial**
+rather than clean.
+
 ### Media & voice on Echo devices
 
 `media` drives the *physical* Echo speakers (see `echos list`), not smart-home
@@ -354,12 +437,42 @@ device instead of passing targets.
 cli-anything-alexa speak "the oven is done" --device "Kitchen Echo" --yes
 ```
 
-Read-only Echo state lives under `echos`:
+**`push` — the silent channel.** `push` sends the message to the **Alexa app**
+on your phone (`send_mobilepush`) rather than out of a speaker, which is what you
+want from a script that might run at 3am. `--dropin` uses
+`send_dropin_notification` instead, whose notification offers to drop in on the
+resolved Echo. Both ride the behaviours API, so they still resolve an Echo (the
+first online one by default) even though nothing plays on it.
 
 ```bash
-cli-anything-alexa echos bluetooth --json   # paired phones/laptops per Echo
-cli-anything-alexa echos wake-words         # ALEXA / ECHO / COMPUTER per device
-cli-anything-alexa echos dnd                # current DND state (the `dnd` command writes it)
+cli-anything-alexa push "the washing machine finished" --yes
+cli-anything-alexa push "check the nursery" --dropin --device "Nursery Echo" --yes
+```
+
+Echo state lives under `echos`:
+
+```bash
+cli-anything-alexa echos bluetooth --json     # paired phones/laptops, account-wide
+cli-anything-alexa echos pairings "Kitchen Echo"   # one Echo, with the addresses
+cli-anything-alexa echos wake-words           # ALEXA / ECHO / COMPUTER per device
+cli-anything-alexa echos dnd                  # current DND state (the `dnd` command writes it)
+```
+
+**Bluetooth: connect / disconnect, not pair.** `echos connect` calls
+`pair-sink`, which connects a sink that is **already paired** — the initial
+pairing handshake (putting the phone in pairing mode, confirming the code) is
+Alexa-app/voice-only. A target that isn't in `echos pairings` is refused locally
+with the list of what *is* paired, because Amazon answers `pair-sink` for an
+unknown address with a bare `200` and does nothing. The name or any spelling of
+the MAC resolves the pairing; the `address` string Amazon reported is what gets
+posted. `echos disconnect` is **all-or-nothing** — Amazon has no per-sink
+disconnect endpoint — so it drops every connected sink on that Echo.
+
+```bash
+cli-anything-alexa echos pairings "Kitchen Echo" --json
+cli-anything-alexa echos connect "Jon's Phone" --device "Kitchen Echo" --yes
+cli-anything-alexa echos connect aa-bb-cc-dd-ee-ff --yes    # any MAC spelling works
+cli-anything-alexa echos disconnect --device "Kitchen Echo" --yes
 ```
 
 > **Device records are adapted, not passed through.** alexapy's device-bound
@@ -430,11 +543,20 @@ pip install -e '.[test]'
 python3 -m pytest tests/ -v
 ```
 
-The unit tests cover the **pure logic** — appliance-id → entity parsing,
-whitelist filtering / prune planning, table formatting, notification payload
-builders, device-group GraphQL variables builders / name-normalization /
-lookup / entity→endpoint resolution, and proxy-URL formatting — with no
-`alexapy` dependency and no live account.
+The tests cover the **pure logic** — appliance-id → entity parsing, whitelist
+filtering / prune planning, table formatting, notification payload builders,
+device-group GraphQL variables builders / name-normalization / lookup /
+entity→endpoint resolution, smart-home capability-state decoding, sequence /
+sound / skill-id normalisation, activity-feed flattening, bluetooth address
+canonicalisation and proxy-URL formatting — plus the live wrappers against a fake
+`AlexaAPI` and every CLI command path (including the **dry-run-by-default**
+contract on all mutating commands). No `alexapy` traffic and no live account.
+
+```bash
+python3 -m pytest tests --cov=cli_anything --cov-report=term-missing
+```
+
+1108 tests, 88% statement/branch coverage; CI fails the build under 85%.
 
 ## License
 

@@ -19,6 +19,7 @@ import click
 
 from cli_anything.alexa.core import activity as activity_core
 from cli_anything.alexa.core import appliances as appliances_pure
+from cli_anything.alexa.core import bluetooth as bluetooth_core
 from cli_anything.alexa.core import control as control_core
 from cli_anything.alexa.core import devices as devices_core
 from cli_anything.alexa.core import devices_meta as devices_meta_core
@@ -1058,7 +1059,11 @@ def guard_set(ctx, state, yes):
 
 @cli.group("echos")
 def echos():
-    """Physical Echo devices (announce/dnd/routine targets)."""
+    """Physical Echo devices — state reads + bluetooth connect/disconnect.
+
+    These are the announce / speak / dnd / media / routine targets, distinct
+    from the smart-home appliances under `devices`.
+    """
 
 
 @echos.command("list")
@@ -1076,6 +1081,70 @@ def echos_bluetooth(ctx):
     """Show bluetooth devices paired to each Echo."""
     login = _login(ctx)
     emit(ctx, _run(ctx, devices_meta_core.fetch_bluetooth(login)))
+
+
+@echos.command("pairings")
+@click.argument("device", required=False)
+@click.pass_context
+def echos_pairings(ctx, device):
+    """Show what is paired to ONE Echo (default: first online), with addresses.
+
+    `echos bluetooth` covers the whole account; this is the per-speaker view
+    whose `address` column is what `echos connect` targets.
+    """
+    login = _login(ctx)
+    emit(ctx, _run(ctx, bluetooth_core.list_pairings(login, device)))
+
+
+@echos.command("connect")
+@click.argument("target")
+@click.option("--device", default=None, help="Echo accountName/serial (default: first online)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def echos_connect(ctx, target, device, yes):
+    """Connect an already-paired bluetooth device (name or MAC) to an Echo.
+
+    TARGET must already appear in `echos pairings` — the *initial* pairing
+    handshake is Alexa-app/voice-only, so it cannot be done here.
+    """
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "device": device or "first online",
+                "would_connect": target,
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(ctx, _run(ctx, bluetooth_core.connect(login, device, target)))
+
+
+@echos.command("disconnect")
+@click.option("--device", default=None, help="Echo accountName/serial (default: first online)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def echos_disconnect(ctx, device, yes):
+    """Disconnect EVERY bluetooth device from an Echo.
+
+    Amazon's endpoint is all-or-nothing — there is no per-sink disconnect — so
+    this drops every connected sink on the target Echo.
+    """
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "device": device or "first online",
+                "would_disconnect": "all",
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(ctx, _run(ctx, bluetooth_core.disconnect(login, device)))
 
 
 @echos.command("wake-words")
@@ -1753,6 +1822,53 @@ def speak_cmd(ctx, text, device, yes):
         emit(ctx, _run(ctx, control_core.speak(login, text, device)))
     except ValueError as exc:
         _abort(str(exc))
+
+
+@cli.command("push")
+@click.argument("text")
+@click.option(
+    "--title",
+    default=None,
+    help=f"Notification title (default: {control_core.DEFAULT_PUSH_TITLE!r})",
+)
+@click.option("--device", default=None, help="Echo to attribute it to (default: first online)")
+@click.option(
+    "--dropin",
+    is_flag=True,
+    default=False,
+    help="Send a drop-in notification (offers to drop in on the Echo) instead",
+)
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def push_cmd(ctx, text, title, device, dropin, yes):
+    """Push TEXT to the Alexa app on your phone — silent in the house.
+
+    `announce`/`speak` make a noise on the speakers; `push` does not, which
+    makes it the safe channel for a script running at 3am. `--dropin` sends the
+    drop-in variant, which offers to drop in on the resolved Echo.
+    """
+    try:
+        message, heading = control_core.normalize_push(text, title)
+    except ValueError as exc:
+        _abort(str(exc))
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "would_push": message,
+                "title": heading,
+                "kind": "dropin" if dropin else "mobilepush",
+                "device": device or "first online",
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(
+        ctx,
+        _run(ctx, control_core.push(login, message, title=heading, device=device, dropin=dropin)),
+    )
 
 
 @cli.command("dnd")

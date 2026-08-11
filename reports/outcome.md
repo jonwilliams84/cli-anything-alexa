@@ -1,143 +1,134 @@
-# Refine Outcome — Echo runtime control (media / voice / state)
+# Refine Outcome — Echo bluetooth + app push, and tests for the behaviour/history surfaces
 
 ## Summary
 
-Expanded the harness from **~12 of alexapy's 57 `AlexaAPI` methods** to ~27, by
-adding the entire **device-bound Echo runtime surface** (media transport, volume,
-shuffle/repeat, play-music, player state, TTS) plus three static state reads
-(bluetooth, wake words, DND status).
+Two things, one coherent pass over the **Echo device surface**:
 
-While inventorying that surface a **latent correctness bug** was found and fixed:
-every device-bound call already in the CLI (`announce`, `dnd`, `routines run`)
-would have raised `AttributeError` from inside alexapy on a live account.
+1. **Closed the test gap on the last pass's code.** `core/sequences.py` (the
+   `run` behaviour surface) and `core/activity.py` (voice history) shipped with
+   **no tests at all** — 19% and 11% covered — which had taken the repo *below*
+   its own CI gate (78% actual vs `--cov-fail-under=82`, i.e. `main` was red).
+   Both are now at **100%**, and writing those tests found **two real bugs**
+   (below).
+2. **Added the next capability set from that pass's "not covered" list:** Echo
+   **bluetooth writes** (`set_bluetooth` / `disconnect_bluetooth`) and **Alexa-app
+   push** (`send_mobilepush` / `send_dropin_notification`) — 4 new commands.
 
-Tests: **429 → 632** (+203). Coverage: **81% → 84%**; CI `--cov-fail-under`
-raised 79 → 82.
+Tests: **750 → 1108** (+358). Coverage: **78% → 88%**. CI `--cov-fail-under`
+raised 82 → **85**. `alexapy` `AlexaAPI` methods actually invoked: 35 → **39** of 58 public ones (+`set_bluetooth`, `disconnect_bluetooth`, `send_mobilepush`, `send_dropin_notification`).
 
-## 1. Correctness fix — `core/device_ref.py`
+## 1. Bugs found by the new tests (`core/activity.py`)
 
-`AlexaAPI.get_devices()` returns plain JSON **dicts**. Every alexapy *instance*
-method dereferences its target as **attributes** off `self._device`:
+| Bug | Symptom | Fix |
+| --- | --- | --- |
+| `activity_rows` assumed dict-or-list | `(payload or {}).get(...)` raised `AttributeError` on a **string** payload — exactly what an Alexa error body arrives as, and the docstring promised tolerance | explicit `isinstance` branches; anything else yields **no rows** |
+| `normalize_limit` truncated floats | `--limit 1.5` → silently asked Amazon for **1** record, while the string `"1.5"` already raised | a non-integral float is now refused with the same message |
 
-| attribute | read by |
-| --- | --- |
-| `device_serial_number` | `set_media`, `set_dnd_state`, `stop`, `process_targets`, bluetooth, `run_routine` |
-| `_device_type` | same |
-| `_device_family` | `process_targets` (WHA whole-home-audio fan-out) |
-| `_cluster_members` | `process_targets` |
-| `_locale` | `send_announcement`, `send_tts`, `run_routine` |
+Both are the "junk in the payload must not cost the other 19 rows" class this
+module documents; neither was reachable from a read-only live check.
 
-alexapy is written against Home Assistant's `AlexaClient` entity object, which
-has those attributes. The harness was passing the raw dict, so the first
-attribute access raises `AttributeError` — and alexapy's `_catch_all_exceptions`
-decorator only converts connection/login errors and `raise`s everything else, so
-it would have surfaced as a raw traceback rather than a friendly message.
+## 2. New: Echo bluetooth control — `core/bluetooth.py`
 
-This was invisible to the project's live validation because that run was
-**read-only** (`CLAUDE.md` "Verified": *"No mutations executed"*), and the bug
-only fires on a device-bound call.
+`echos bluetooth` could only *read* pairings. Two device-bound calls now act on
+them, with the pure layer (100% covered) doing the thinking:
 
-`DeviceRef` is a pure adapter performing that translation. It also refuses a
-record with no `serialNumber` — such a device cannot be addressed at all, so
-failing loudly beats sending `deviceSerialNumber: null` to Amazon. All three
-existing call sites now go through it.
+| Command | Call | Notes |
+| --- | --- | --- |
+| `echos pairings [<device>]` | `get_bluetooth` | per-**Echo** view (the account-wide `echos bluetooth` is unchanged), exposing the `address` the write needs |
+| `echos connect <name\|mac> [--device ...]` | `set_bluetooth` | dry-run + `--yes` |
+| `echos disconnect [--device ...]` | `disconnect_bluetooth` | dry-run + `--yes` |
 
-`tests/test_device_ref.py` pins the attribute list as an explicit **contract
-test**, so a future alexapy change fails a unit test instead of a live call.
+Three findings baked into the module and its docs:
 
-## 2. New domain — `core/media.py` + the `media` command group
+* **`pair-sink` connects, it does not pair.** The initial handshake (pairing
+  mode + code confirmation) is Alexa-app/voice-only. Worse, Amazon answers
+  `pair-sink` for an unknown address with a bare `200` and does nothing — a
+  silent no-op. So `connect` resolves the target against that Echo's own
+  `pairedDeviceList` first and refuses locally, **listing what is paired**.
+* **The address is Amazon's string, verbatim.** `normalize_mac` exists only so
+  `aa-bb-cc-dd-ee-ff`, `AABBCCDDEEFF` and `AA:BB:CC:DD:EE:FF` compare equal when
+  *finding* a pairing; what gets posted is the `address` the API reported (what
+  Home Assistant's `alexa_media` does too). Not every Alexa sink id is a plain
+  MAC, so a non-MAC target is still matched by name.
+* **Disconnect is all-or-nothing.** There is no per-sink endpoint, so the result
+  row says `disconnected: "all"` rather than implying a single target.
 
-| Command | alexapy |
-| --- | --- |
-| `media status [<device>]` | `get_state` |
-| `media play\|pause\|next\|previous\|forward\|rewind` | `play`/`pause`/… |
-| `media stop [--all]` | `stop(all_devices=)` |
-| `media volume --level 0-100` | `set_volume` |
-| `media shuffle\|repeat --state on\|off` | `shuffle`/`repeat` |
-| `media play-music <phrase> [--provider]` | `play_music` |
+Ambiguity follows the harness rule: two sinks sharing a friendly name → abort and
+list the addresses (same shape as `devices rename`).
 
-Design notes worth keeping:
+## 3. New: `push` — the silent notification channel
 
-* **Volume is a fraction, not a percentage.** alexapy multiplies by 100, so it
-  wants 0.0–1.0. The CLI takes the human 0–100 and converts once in
-  `normalize_volume`, which also rejects NaN/inf — those slip past a naive
-  `0 <= v <= 100` check. Validation runs *before* `_login`, so a bad number fails
-  identically with and without `--yes`.
-* **`player_row` is defensive by design.** An idle Echo returns `playerInfo: {}`
-  or a bare `{}`; every lookup degrades to `None` and the key set is constant so
-  the rendered table stays aligned across devices.
-* **`stop` is deliberately not in `TRANSPORT_COMMANDS`** — it goes through the
-  sequence API and takes `all_devices`, unlike the zero-arg `/api/np/command`
-  verbs. A test asserts that separation.
+`announce` chimes the house and `speak` talks on one speaker; neither is usable
+from a script at 3am. `push` (`control.push`) sends the message to the **Alexa
+app** instead:
 
-## 3. `speak` — `send_tts`
+```bash
+cli-anything-alexa push "the washing machine finished" --yes
+cli-anything-alexa push "check the nursery" --dropin --device "Nursery Echo" --yes
+```
 
-Sibling of `announce`, but distinct: `send_announcement` plays Alexa's chime and
-fans out to all devices; `send_tts` is silent-prefix and single-speaker. alexapy
-documents TTS `targets` as **non-functional** (Amazon ignores it), so `speak`
-binds `AlexaAPI` to the requested device instead of passing targets.
+`--dropin` swaps `send_mobilepush` for `send_dropin_notification` (whose
+notification offers to drop in on the resolved Echo). Both ride the behaviours
+API and are therefore still **device-bound**, so they resolve an Echo through
+`DeviceRef` even though nothing plays on it — the one non-obvious thing about
+them. The default title is ours (`cli-anything-alexa`), not alexapy's
+developer-facing `"AlexaAPI Message"`.
 
-## 4. Read-only state — `echos bluetooth` / `wake-words` / `dnd`
-
-Three static endpoints with inconsistent envelopes (alexapy pre-unwraps
-`wakeWords` but returns the full document for bluetooth and DND). `_unwrap`
-accepts either shape plus `None`. All rows join `serialNumber → accountName` so
-output is readable rather than a wall of serials. An Echo with nothing paired
-still gets a row — omitting it would look like the device was missed rather than
-empty.
-
-## 5. Tests (+203)
+## 4. Tests
 
 | File | Tests | Covers |
 | --- | --- | --- |
-| `tests/test_device_ref.py` | 25 | the alexapy attribute contract, field translation, locale fallback, WHA clusters, record isolation, and that all three call sites bind a `DeviceRef` |
-| `tests/test_media.py` | 67 | volume conversion incl. NaN/inf, provider normalisation, `player_row` on idle/partial/garbage payloads, device resolution, every transport verb, stop/`--all`, play-music arg order |
-| `tests/test_echo_state_reads.py` | 31 | both payload envelopes for all three reads, name joins, empty/non-dict entries, and `control.speak` |
-| `tests/test_cli_media_paths.py` | 80 | the dry-run contract across **every** new mutating command (parametrised, so a future command that forgets `--yes` fails), argument validation, execution dispatch, read-only paths |
+| `tests/test_sequences.py` | 82 | every normaliser (text / sequence alias / soundbank alias / skill id / queue delay incl. NaN-inf-negative), the catalogs, and all four live ops against a fake `AlexaAPI` — including **`queue_delay` omitted when unspecified** (alexapy's per-call default must survive) and validate-before-network |
+| `tests/test_activity.py` | 97 | tz-aware epoch-ms rendering, the query window (`--hours`), both feed flatteners incl. the JSON-encoded legacy `description`, noise/device/text filtering, partial-clear reporting, and every live wrapper's actual query parameters |
+| `tests/test_bluetooth.py` | 93 | MAC canonicalisation, per-Echo pairing extraction from both payload shapes, 4-tier target resolution, the not-paired message, connect/disconnect/list against a fake `AlexaAPI`, plus `control.normalize_push`/`push` |
+| `tests/test_cli_behavior_paths.py` | 56 | the `run` and `activity` CLI paths: dry-run-by-default on all four `run` verbs, validation *before* `_login` (identically with and without `--yes`), `--queue-delay` pass-through, `run catalog` needing no account, and `activity clear`'s irreversible guard |
+| `tests/test_cli_bluetooth_push_paths.py` | 30 | the new commands' dry-run contract, argument plumbing, and that `echos bluetooth` still behaves (refine adds, never removes) |
 
-Two behavioural contracts are asserted *generically* rather than per-command, so
-they cannot rot: every new mutating command previews without `--yes`, and none of
-them reaches a core coroutine in dry-run.
+Every assertion is on observable behaviour — exit code, JSON on stdout, which
+core coroutine was called with what — never on source text.
 
-`tests/test_cli_media_paths.py` uses a `_stub_run` helper that **closes** the
-coroutine handed to the patched `_run`, and `_stub_core` which substitutes a
-plain `MagicMock` (since `patch.object` auto-detects coroutine functions and
-installs an `AsyncMock`, whose un-awaited return value warns exactly like the
-real thing). Result: the new suites add zero `RuntimeWarning` noise.
+Module coverage after: `activity.py` 11% → **100%**, `sequences.py` 19% →
+**100%**, `control.py` 100%, `bluetooth.py` **100%**, `alexa_cli.py` 66% → **73%**.
 
-### Fixture correction
+## 5. Docs
 
-Three `tests/test_coverage_gaps.py` routine fixtures had device records with no
-`serialNumber`. Real `get_devices()` always returns one; `DeviceRef` correctly
-refuses to target an unaddressable device, so the fixtures were made realistic
-rather than the check weakened.
+The previous pass shipped `smarthome`/`guard`, `run` and `activity` **undocumented**
+— none of the four docs mentioned them. All four are now current:
 
-## 6. Docs
-
-`README.md`, the packaged `cli_anything/alexa/README.md`, `CLAUDE.md` (the SOP)
-and the packaged `skills/SKILL.md` all updated: new command tables, a "Media &
-voice on Echo devices" section, the `announce` vs `speak` distinction, and the
-`DeviceRef` gotcha written up alongside the existing GraphQL-array and DACS ones.
-
-`CLAUDE.md`'s **Verified** section now explicitly records that the device-bound
-surface is *not* live-validated — that gap is what let the `DeviceRef` bug
-survive, so it is documented as the next live check to run.
+* `README.md` — table rows for `devices state/on/off/light`, `guard`, `run *`,
+  `activity *`, `push`, `echos pairings/connect/disconnect`, plus new sections
+  "Smart-home state & control", "Voice commands & behaviours — `run`", "Voice
+  history — `activity`", the push-vs-announce-vs-speak distinction and the
+  bluetooth connect-≠-pair rule.
+* `cli_anything/alexa/README.md` — same commands, plus "Voice commands,
+  behaviours & history" and "Bluetooth on an Echo".
+* `CLAUDE.md` (SOP) — `smarthome.py` / `sequences.py` / `activity.py` /
+  `bluetooth.py` added to the Layout, and four new gotcha entries (run-command as
+  the escape hatch + the `queue_delay`-is-`None` rule, the two activity feeds and
+  their epoch-ms/partial-clear traps, connect-≠-pair + all-or-nothing disconnect,
+  push being silent yet device-bound). **Verified** now lists the per-surface
+  assumptions still to check against a live account.
+* `skills/SKILL.md` — the agent-facing command list covers all of the above.
 
 ## Gates
 
 | Gate | Result |
 | --- | --- |
-| `pytest tests` | 632 passed |
-| `--cov-fail-under=82` | 83.79% |
+| `pytest tests` | 1108 passed |
+| `--cov-fail-under=85` | 88% (was failing at 78% vs 82) |
 | `ruff check cli_anything/` | clean |
 | `ruff format --check cli_anything/` | clean |
 | `bandit -r cli_anything/ -ll` | 0 findings |
 
 ## Not covered (next refine pass)
 
-Alexa Guard (`get`/`set_guard_state`, `get_guard_details`), activity history
-(`get_customer_history_records`, `get_activities`, `clear_history`),
-`set_light_state`/`get_entity_state`, `run_skill`/`run_custom`/`send_sequence`,
-`set_background`, `send_mobilepush`/`send_dropin_notification`,
-`set_bluetooth`/`disconnect_bluetooth` (writes), `get_device_preferences`,
-`get_network_details`.
+`set_background` (Echo Show wallpaper), `get_device_preferences`,
+`get_wifi_details`, child profiles / child mode
+(`get_child_profiles`, `enable_child_mode`, `disable_child_mode`,
+`get_child_mode`), `find_wake_word`, `force_logout`, `ping` (a cheap
+connectivity probe that would make a good `auth status --ping`), and
+`get_devices_gql` (the GraphQL device list, potentially a richer `echos list`).
+
+Nothing in the harness has had a **mutation executed against a real account** —
+see CLAUDE.md's Verified section for the per-surface list of assumptions that
+only a live run can settle.

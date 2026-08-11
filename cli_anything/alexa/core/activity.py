@@ -98,9 +98,17 @@ def history_window(
 
 
 def normalize_limit(value: Any, default: int = DEFAULT_HISTORY_LIMIT) -> int:
-    """Validate a record count (pure). Must be a positive whole number."""
+    """Validate a record count (pure). Must be a positive whole number.
+
+    A non-integral *float* is refused rather than truncated: ``int(1.5)`` would
+    silently ask Amazon for 1 record while the string ``"1.5"`` already raises,
+    and a limit that quietly means something else than it says is worse than an
+    error the caller can read.
+    """
     if value is None or value == "":
         return default
+    if isinstance(value, float) and value != int(value):
+        raise ValueError(f"limit must be a whole number, got {value!r}")
     try:
         count = int(value)
     except (TypeError, ValueError):
@@ -169,9 +177,19 @@ def activity_rows(
 
     ``description`` is a JSON *string* here; an undecodable one degrades to the
     raw text instead of dropping the row.
+
+    The payload itself is either the bare list or the ``{"activities": [...]}``
+    envelope; anything else (alexapy hands back ``None`` on a failed request,
+    and an error body can arrive as a plain string) yields no rows instead of
+    raising.
     """
     names = _serial_to_name(devices)
-    items = payload if isinstance(payload, list) else (payload or {}).get("activities") or []
+    if isinstance(payload, list):
+        items: Any = payload
+    elif isinstance(payload, dict):
+        items = payload.get("activities") or []
+    else:
+        items = []
     rows: list[dict[str, Any]] = []
     for item in items:
         if not isinstance(item, dict):
