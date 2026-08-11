@@ -17,6 +17,7 @@ from pathlib import Path
 
 import click
 
+from cli_anything.alexa.core import activity as activity_core
 from cli_anything.alexa.core import appliances as appliances_pure
 from cli_anything.alexa.core import control as control_core
 from cli_anything.alexa.core import devices as devices_core
@@ -27,6 +28,7 @@ from cli_anything.alexa.core import media as media_core
 from cli_anything.alexa.core import notifications as notifications_core
 from cli_anything.alexa.core import project
 from cli_anything.alexa.core import routines as routines_core
+from cli_anything.alexa.core import sequences as sequences_core
 from cli_anything.alexa.core import session as session_core
 from cli_anything.alexa.core import smarthome as smarthome_core
 from cli_anything.alexa.core.formatting import render_table
@@ -756,7 +758,9 @@ def devices_off(ctx, targets, all_devices, yes):
 @click.argument("target")
 @click.option("--on/--off", "power", default=None, help="Power the light on or off")
 @click.option("--brightness", default=None, help="Brightness percentage, 0-100")
-@click.option("--color", default=None, help=f"Colour name ({', '.join(smarthome_core.COLOR_NAMES[:6])}…)")
+@click.option(
+    "--color", default=None, help=f"Colour name ({', '.join(smarthome_core.COLOR_NAMES[:6])}…)"
+)
 @click.option(
     "--color-temp",
     "color_temperature",
@@ -786,7 +790,9 @@ def devices_light(ctx, target, power, brightness, color, color_temperature, yes)
         _abort(str(exc))
     login = _login(ctx)
     records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
-    rec = _resolve_one_or_abort(ctx, records, endpoints_core.resolve_target(records, target), target)
+    rec = _resolve_one_or_abort(
+        ctx, records, endpoints_core.resolve_target(records, target), target
+    )
     if not yes:
         emit(
             ctx,
@@ -1772,6 +1778,256 @@ def dnd_cmd(ctx, device, state, yes):
         emit(ctx, _run(ctx, control_core.set_dnd(login, device, state == "on")))
     except ValueError as exc:
         _abort(str(exc))
+
+
+# ──────────────────────────────────────────────────────── run (behaviours)
+
+
+@cli.group("run")
+def run_group():
+    """Make an Echo do anything you could *say* to it.
+
+    `run command` sends literal text through Alexa's own parser, so it reaches
+    every skill and device on the account — including ones this CLI has no
+    typed command for. `run sequence`/`run sound`/`run skill` trigger the
+    built-in behaviours, the soundbank and a skill by id.
+
+    Alexa answers out loud; there is no response payload. Read back what
+    happened with `activity history`.
+    """
+
+
+def _queue_delay_or_abort(queue_delay):
+    """Validate --queue-delay before any network call (see `media volume`)."""
+    try:
+        return sequences_core.normalize_queue_delay(queue_delay)
+    except ValueError as exc:
+        _abort(str(exc))
+
+
+def _run_behavior(ctx, coro_factory, preview, queue_delay, yes):
+    """Shared dry-run/execute path for the four behaviour verbs.
+
+    Each one makes a speaker do something, so it obeys the harness-wide rule:
+    preview by default, act only on --yes. Values are normalised *before*
+    `_login` so bad input fails identically with and without --yes.
+    """
+    delay = _queue_delay_or_abort(queue_delay)
+    login = _login(ctx)
+    if not yes:
+        emit(ctx, {"dry_run": True, **preview, "hint": "re-run with --yes to execute"})
+        return
+    emit(ctx, _run(ctx, coro_factory(login, delay)))
+
+
+@run_group.command("catalog")
+@click.option(
+    "--kind",
+    type=click.Choice(["all", "sequences", "sounds"]),
+    default="all",
+    help="Show only sequences or only sounds",
+)
+@click.pass_context
+def run_catalog(ctx, kind):
+    """List the built-in sequences and sound aliases (no account needed)."""
+    data = sequences_core.catalog(kind)
+    if ctx.obj.get("as_json"):
+        emit(ctx, data)
+        return
+    for title, rows in data.items():
+        click.echo(f"{title}:")
+        click.echo(render_table(rows))
+
+
+@run_group.command("command")
+@click.argument("text")
+@click.option("--device", default=None, help="Echo accountName/serial (default: first online)")
+@click.option("--queue-delay", default=None, help="Seconds to batch queued commands (default: 0)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def run_command_cmd(ctx, text, device, queue_delay, yes):
+    """Run TEXT as if it had been spoken to Alexa.
+
+    e.g. `run command "turn off the kitchen lights" --yes`
+    """
+    try:
+        utterance = sequences_core.normalize_command_text(text)
+    except ValueError as exc:
+        _abort(str(exc))
+    _run_behavior(
+        ctx,
+        lambda login, delay: sequences_core.run_command(login, device, utterance, delay),
+        {"device": device or "first online", "command": utterance},
+        queue_delay,
+        yes,
+    )
+
+
+@run_group.command("sequence")
+@click.argument("name")
+@click.option("--device", default=None, help="Echo accountName/serial (default: first online)")
+@click.option("--queue-delay", default=None, help="Seconds to batch queued commands")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def run_sequence_cmd(ctx, name, device, queue_delay, yes):
+    """Run a built-in behaviour (weather, joke, good-night… — see `run catalog`)."""
+    try:
+        sequence = sequences_core.normalize_sequence(name)
+    except ValueError as exc:
+        _abort(str(exc))
+    _run_behavior(
+        ctx,
+        lambda login, delay: sequences_core.run_sequence(login, device, sequence, delay),
+        {"device": device or "first online", "sequence": sequence},
+        queue_delay,
+        yes,
+    )
+
+
+@run_group.command("sound")
+@click.argument("sound")
+@click.option("--device", default=None, help="Echo accountName/serial (default: first online)")
+@click.option("--queue-delay", default=None, help="Seconds to batch queued commands")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def run_sound_cmd(ctx, sound, device, queue_delay, yes):
+    """Play a soundbank sound (alias or raw id — see `run catalog --kind sounds`)."""
+    try:
+        sound_id = sequences_core.normalize_sound(sound)
+    except ValueError as exc:
+        _abort(str(exc))
+    _run_behavior(
+        ctx,
+        lambda login, delay: sequences_core.play_sound(login, device, sound_id, delay),
+        {"device": device or "first online", "sound": sound_id},
+        queue_delay,
+        yes,
+    )
+
+
+@run_group.command("skill")
+@click.argument("skill_id")
+@click.option("--device", default=None, help="Echo accountName/serial (default: first online)")
+@click.option("--queue-delay", default=None, help="Seconds to batch queued commands (default: 0)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def run_skill_cmd(ctx, skill_id, device, queue_delay, yes):
+    """Launch a skill by id (amzn1.ask.skill.<uuid>)."""
+    try:
+        skill = sequences_core.normalize_skill_id(skill_id)
+    except ValueError as exc:
+        _abort(str(exc))
+    _run_behavior(
+        ctx,
+        lambda login, delay: sequences_core.run_skill(login, device, skill, delay),
+        {"device": device or "first online", "skill": skill},
+        queue_delay,
+        yes,
+    )
+
+
+# ──────────────────────────────────────────────────────── activity
+
+
+@cli.group("activity")
+def activity():
+    """Voice history — what was said to Alexa and what she said back."""
+
+
+@activity.command("history")
+@click.option(
+    "--limit",
+    default=None,
+    help=f"Records to fetch (default {activity_core.DEFAULT_HISTORY_LIMIT})",
+)
+@click.option(
+    "--hours",
+    default=None,
+    help=f"How far back to look (default {activity_core.DEFAULT_HISTORY_HOURS})",
+)
+@click.option("--device", default=None, help="Only turns heard by this Echo")
+@click.option("--contains", default=None, help="Only turns whose text matches")
+@click.option(
+    "--include-noise",
+    is_flag=True,
+    default=False,
+    help="Keep DEVICE_ARBITRATION rows (multi-Echo wake-word races)",
+)
+@click.pass_context
+def activity_history(ctx, limit, hours, device, contains, include_noise):
+    """Show recent voice turns (transcript + Alexa's reply)."""
+    try:
+        count = activity_core.normalize_limit(limit)
+        span = hours if hours is not None else activity_core.DEFAULT_HISTORY_HOURS
+        activity_core.history_window(span)
+    except ValueError as exc:
+        _abort(str(exc))
+    login = _login(ctx)
+    emit(
+        ctx,
+        _run(
+            ctx,
+            activity_core.voice_history(
+                login,
+                limit=count,
+                hours=span,
+                device=device,
+                contains=contains,
+                include_noise=include_noise,
+            ),
+        ),
+    )
+
+
+@activity.command("records")
+@click.option("--limit", default=None, help="Activities to fetch")
+@click.pass_context
+def activity_records(ctx, limit):
+    """Show the legacy activity feed (carries per-activity ids and status)."""
+    try:
+        count = activity_core.normalize_limit(limit)
+    except ValueError as exc:
+        _abort(str(exc))
+    login = _login(ctx)
+    emit(ctx, _run(ctx, activity_core.activity_records(login, limit=count)))
+
+
+@activity.command("last")
+@click.option("--limit", default=None, help="How many records to search")
+@click.pass_context
+def activity_last(ctx, limit):
+    """Show the last Echo that answered, and what it was asked."""
+    try:
+        count = activity_core.normalize_limit(limit)
+    except ValueError as exc:
+        _abort(str(exc))
+    login = _login(ctx)
+    emit(ctx, _run(ctx, activity_core.last_command(login, limit=count)))
+
+
+@activity.command("clear")
+@click.option("--items", default=None, help="How many recent recordings to delete (default 50)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def activity_clear(ctx, items, yes):
+    """Delete recent voice recordings — irreversible."""
+    try:
+        count = activity_core.normalize_limit(items, default=50)
+    except ValueError as exc:
+        _abort(str(exc))
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "would_delete": count,
+                "irreversible": True,
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(ctx, _run(ctx, activity_core.clear_history(login, items=count)))
 
 
 # ──────────────────────────────────────────────────────── REPL

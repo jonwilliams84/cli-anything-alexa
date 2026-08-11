@@ -104,11 +104,12 @@ def normalize_brightness(value: float | int | str) -> int:
         raise ValueError(f"brightness must be a number between 0 and 100, got {value!r}")
     if not 0 <= number <= 100:
         raise ValueError(f"brightness must be between 0 and 100, got {value!r}")
-    return int(round(number))
+    # ``round`` of a float already returns an int (RUF046) — no cast needed.
+    return round(number)
 
 
 def _snake(name: str) -> str:
-    """"Sky Blue" / "sky-blue" → "sky_blue" (pure)."""
+    """ "Sky Blue" / "sky-blue" → "sky_blue" (pure)."""
     cleaned = (name or "").strip().lower().replace("-", "_").replace(" ", "_")
     while "__" in cleaned:
         cleaned = cleaned.replace("__", "_")
@@ -399,8 +400,7 @@ async def read_states(login, records: list[dict[str, Any]]) -> dict[str, Any]:
     skipped = [r.get("name") for r in records or [] if not r.get("entityId")]
     if not ids:
         raise ValueError(
-            "none of the selected devices has a phoenix entityId — "
-            "no state can be read for them"
+            "none of the selected devices has a phoenix entityId — no state can be read for them"
         )
     payload = await fetch_states(login, entity_ids=ids)
     return {
