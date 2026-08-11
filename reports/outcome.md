@@ -1,84 +1,143 @@
-# Test Coverage Improvement Outcome
+# Refine Outcome — Echo runtime control (media / voice / state)
 
 ## Summary
 
-Raised the repo's test coverage from 68% to 70.55% by adding 18 behavioural
-tests targeting the lowest-coverage modules containing real logic. The CI
-`--cov-fail-under` gate was raised from 68 to 70 (1 point below the achieved
-figure, providing a buffer against rounding/flakes).
+Expanded the harness from **~12 of alexapy's 57 `AlexaAPI` methods** to ~27, by
+adding the entire **device-bound Echo runtime surface** (media transport, volume,
+shuffle/repeat, play-music, player state, TTS) plus three static state reads
+(bluetooth, wake words, DND status).
 
-## What Was Done
+While inventorying that surface a **latent correctness bug** was found and fixed:
+every device-bound call already in the CLI (`announce`, `dnd`, `routines run`)
+would have raised `AttributeError` from inside alexapy on a live account.
 
-### 1. Identified Lowest-Coverage Modules
+Tests: **429 → 632** (+203). Coverage: **81% → 84%**; CI `--cov-fail-under`
+raised 79 → 82.
 
-Ran the repo's own coverage command (`python -m pytest tests --cov=cli_anything
---cov-report=term-missing`) and identified:
+## 1. Correctness fix — `core/device_ref.py`
 
-- `cli_anything/alexa/alexa_cli.py` — 26% coverage (lowest, contains real
-  formatting/resolution logic in `emit`, `_abort`, `_resolve_one_or_abort`)
-- `cli_anything/alexa/core/endpoints.py` — 85% coverage (uncovered error paths
-  in `apply_renames`, `resolve_by_entity` edge cases, `find_duplicates`)
+`AlexaAPI.get_devices()` returns plain JSON **dicts**. Every alexapy *instance*
+method dereferences its target as **attributes** off `self._device`:
 
-### 2. New Test File: `tests/test_cli_helpers.py` (18 tests)
+| attribute | read by |
+| --- | --- |
+| `device_serial_number` | `set_media`, `set_dnd_state`, `stop`, `process_targets`, bluetooth, `run_routine` |
+| `_device_type` | same |
+| `_device_family` | `process_targets` (WHA whole-home-audio fan-out) |
+| `_cluster_members` | `process_targets` |
+| `_locale` | `send_announcement`, `send_tts`, `run_routine` |
 
-All tests assert **behaviour** (stdout/stderr/exit codes/return values), not
-source text. No test asserts on line numbers, suppression comments, or
-hardcoded paths.
+alexapy is written against Home Assistant's `AlexaClient` entity object, which
+has those attributes. The harness was passing the raw dict, so the first
+attribute access raises `AttributeError` — and alexapy's `_catch_all_exceptions`
+decorator only converts connection/login errors and `raise`s everything else, so
+it would have surfaced as a raw traceback rather than a friendly message.
 
-**`emit()` — all output branches:**
-- `test_emit_json_serialises_and_sorts_keys` — JSON output with sorted keys
-- `test_emit_none_produces_no_output` — None produces empty output
-- `test_emit_string_echoes_directly` — string echoed verbatim
-- `test_emit_list_of_dicts_renders_table` — list of dicts renders as table
-- `test_emit_list_of_scalars_prints_each_on_own_line` — list of scalars, one per line
-- `test_emit_dict_with_nested_value_uses_json_for_nested` — nested dict JSON-dumped
-- `test_emit_dict_with_list_value_uses_json_for_list` — list value JSON-dumped
-- `test_emit_fallback_str_for_unknown_type` — fallback to str() for float
+This was invisible to the project's live validation because that run was
+**read-only** (`CLAUDE.md` "Verified": *"No mutations executed"*), and the bug
+only fires on a device-bound call.
 
-**`_abort()`:**
-- `test_abort_writes_error_prefix_and_exits_nonzero` — "error:" prefix + exit code 1
+`DeviceRef` is a pure adapter performing that translation. It also refuses a
+record with no `serialNumber` — such a device cannot be addressed at all, so
+failing loudly beats sending `deviceSerialNumber: null` to Amazon. All three
+existing call sites now go through it.
 
-**`_resolve_one_or_abort()` — zero/one/many match paths:**
-- `test_resolve_one_or_abort_returns_single_match` — single match returned
-- `test_resolve_one_or_abort_zero_matches_aborts` — zero matches → exit 1 + error message
-- `test_resolve_one_or_abort_multiple_matches_text_mode_lists_candidates` — ambiguous in text mode lists both candidates
-- `test_resolve_one_or_abort_multiple_matches_json_mode_emits_structured_error` — ambiguous in JSON mode emits structured error JSON
+`tests/test_device_ref.py` pins the attribute list as an explicit **contract
+test**, so a future alexapy change fails a unit test instead of a live call.
 
-**`endpoints.apply_renames` error paths:**
-- `test_apply_renames_missing_endpoint_id_records_error` — missing endpointId → ok=False
-- `test_apply_renames_empty_plan_returns_empty_list` — empty plan → empty list
+## 2. New domain — `core/media.py` + the `media` command group
 
-**`endpoints.resolve_by_entity` edge cases:**
-- `test_resolve_by_entity_empty_string_returns_empty` — empty entity_id → empty list
-- `test_resolve_by_entity_none_records_returns_empty` — None records → empty list
+| Command | alexapy |
+| --- | --- |
+| `media status [<device>]` | `get_state` |
+| `media play\|pause\|next\|previous\|forward\|rewind` | `play`/`pause`/… |
+| `media stop [--all]` | `stop(all_devices=)` |
+| `media volume --level 0-100` | `set_volume` |
+| `media shuffle\|repeat --state on\|off` | `shuffle`/`repeat` |
+| `media play-music <phrase> [--provider]` | `play_music` |
 
-**`endpoints.find_duplicates`:**
-- `test_find_duplicates_two_native_same_name_no_twin_flag` — two native devices same name → native_plus_ha=False
+Design notes worth keeping:
 
-### 3. CI Gate Raised
+* **Volume is a fraction, not a percentage.** alexapy multiplies by 100, so it
+  wants 0.0–1.0. The CLI takes the human 0–100 and converts once in
+  `normalize_volume`, which also rejects NaN/inf — those slip past a naive
+  `0 <= v <= 100` check. Validation runs *before* `_login`, so a bad number fails
+  identically with and without `--yes`.
+* **`player_row` is defensive by design.** An idle Echo returns `playerInfo: {}`
+  or a bare `{}`; every lookup degrades to `None` and the key set is constant so
+  the rendered table stays aligned across devices.
+* **`stop` is deliberately not in `TRANSPORT_COMMANDS`** — it goes through the
+  sequence API and takes `all_devices`, unlike the zero-arg `/api/np/command`
+  verbs. A test asserts that separation.
 
-In `.github/workflows/ci.yml`, `--cov-fail-under` raised from 68 to 70.
-Set 1 point below the achieved 70.55% to avoid red pipelines from rounding.
+## 3. `speak` — `send_tts`
 
-### 4. Housekeeping
+Sibling of `announce`, but distinct: `send_announcement` plays Alexa's chime and
+fans out to all devices; `send_tts` is silent-prefix and single-speaker. alexapy
+documents TTS `targets` as **non-functional** (Amazon ignores it), so `speak`
+binds `AlexaAPI` to the requested device instead of passing targets.
 
-- Removed `.coverage` binary artifact from git tracking
-- Added `.coverage` to `.gitignore`
+## 4. Read-only state — `echos bluetooth` / `wake-words` / `dnd`
 
-## Verification
+Three static endpoints with inconsistent envelopes (alexapy pre-unwraps
+`wakeWords` but returns the full document for bluetooth and DND). `_unwrap`
+accepts either shape plus `None`. All rows join `serialNumber → accountName` so
+output is readable rather than a wall of serials. An Echo with nothing paired
+still gets a row — omitting it would look like the device was missed rather than
+empty.
 
-```
-359 passed in 2.81s
-Required test coverage of 70% reached. Total coverage: 70.55%
-```
+## 5. Tests (+203)
 
-The verify command (`python -m pytest tests --cov=cli_anything --cov-report=term-missing
---cov-report=xml --cov-fail-under=70 -q --durations=10`) exits 0.
+| File | Tests | Covers |
+| --- | --- | --- |
+| `tests/test_device_ref.py` | 25 | the alexapy attribute contract, field translation, locale fallback, WHA clusters, record isolation, and that all three call sites bind a `DeviceRef` |
+| `tests/test_media.py` | 67 | volume conversion incl. NaN/inf, provider normalisation, `player_row` on idle/partial/garbage payloads, device resolution, every transport verb, stop/`--all`, play-music arg order |
+| `tests/test_echo_state_reads.py` | 31 | both payload envelopes for all three reads, name joins, empty/non-dict entries, and `control.speak` |
+| `tests/test_cli_media_paths.py` | 80 | the dry-run contract across **every** new mutating command (parametrised, so a future command that forgets `--yes` fails), argument validation, execution dispatch, read-only paths |
 
-## Coverage by Module (After)
+Two behavioural contracts are asserted *generically* rather than per-command, so
+they cannot rot: every new mutating command previews without `--yes`, and none of
+them reaches a core coroutine in dry-run.
 
-| Module | Before | After |
-|--------|--------|-------|
-| alexa_cli.py | 26% | 33% |
-| endpoints.py | 85% | 89% |
-| **TOTAL** | **68%** | **71%** |
+`tests/test_cli_media_paths.py` uses a `_stub_run` helper that **closes** the
+coroutine handed to the patched `_run`, and `_stub_core` which substitutes a
+plain `MagicMock` (since `patch.object` auto-detects coroutine functions and
+installs an `AsyncMock`, whose un-awaited return value warns exactly like the
+real thing). Result: the new suites add zero `RuntimeWarning` noise.
+
+### Fixture correction
+
+Three `tests/test_coverage_gaps.py` routine fixtures had device records with no
+`serialNumber`. Real `get_devices()` always returns one; `DeviceRef` correctly
+refuses to target an unaddressable device, so the fixtures were made realistic
+rather than the check weakened.
+
+## 6. Docs
+
+`README.md`, the packaged `cli_anything/alexa/README.md`, `CLAUDE.md` (the SOP)
+and the packaged `skills/SKILL.md` all updated: new command tables, a "Media &
+voice on Echo devices" section, the `announce` vs `speak` distinction, and the
+`DeviceRef` gotcha written up alongside the existing GraphQL-array and DACS ones.
+
+`CLAUDE.md`'s **Verified** section now explicitly records that the device-bound
+surface is *not* live-validated — that gap is what let the `DeviceRef` bug
+survive, so it is documented as the next live check to run.
+
+## Gates
+
+| Gate | Result |
+| --- | --- |
+| `pytest tests` | 632 passed |
+| `--cov-fail-under=82` | 83.79% |
+| `ruff check cli_anything/` | clean |
+| `ruff format --check cli_anything/` | clean |
+| `bandit -r cli_anything/ -ll` | 0 findings |
+
+## Not covered (next refine pass)
+
+Alexa Guard (`get`/`set_guard_state`, `get_guard_details`), activity history
+(`get_customer_history_records`, `get_activities`, `clear_history`),
+`set_light_state`/`get_entity_state`, `run_skill`/`run_custom`/`send_sequence`,
+`set_background`, `send_mobilepush`/`send_dropin_notification`,
+`set_bluetooth`/`disconnect_bluetooth` (writes), `get_device_preferences`,
+`get_network_details`.

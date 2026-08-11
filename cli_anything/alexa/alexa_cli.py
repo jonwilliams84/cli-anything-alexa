@@ -23,6 +23,7 @@ from cli_anything.alexa.core import devices as devices_core
 from cli_anything.alexa.core import devices_meta as devices_meta_core
 from cli_anything.alexa.core import endpoints as endpoints_core
 from cli_anything.alexa.core import groups as groups_core
+from cli_anything.alexa.core import media as media_core
 from cli_anything.alexa.core import notifications as notifications_core
 from cli_anything.alexa.core import project
 from cli_anything.alexa.core import routines as routines_core
@@ -821,6 +822,30 @@ def echos_list(ctx):
     emit(ctx, devices_meta_core.device_rows(raw))
 
 
+@echos.command("bluetooth")
+@click.pass_context
+def echos_bluetooth(ctx):
+    """Show bluetooth devices paired to each Echo."""
+    login = _login(ctx)
+    emit(ctx, _run(ctx, devices_meta_core.fetch_bluetooth(login)))
+
+
+@echos.command("wake-words")
+@click.pass_context
+def echos_wake_words(ctx):
+    """Show the configured wake word for each Echo."""
+    login = _login(ctx)
+    emit(ctx, _run(ctx, devices_meta_core.fetch_wake_words(login)))
+
+
+@echos.command("dnd")
+@click.pass_context
+def echos_dnd(ctx):
+    """Show the current Do-Not-Disturb state of each Echo (read-only)."""
+    login = _login(ctx)
+    emit(ctx, _run(ctx, devices_meta_core.fetch_dnd_states(login)))
+
+
 # ──────────────────────────────────────────────────────── groups
 
 
@@ -1192,6 +1217,239 @@ def notifications_delete(ctx, notification_id, yes):
     emit(ctx, _run(ctx, notifications_core.delete_notification(login, notification_id)))
 
 
+# ──────────────────────────────────────────────────────── media
+
+
+@cli.group()
+def media():
+    """Media transport + player state on physical Echo devices.
+
+    DEVICE is an Echo accountName or serialNumber (see `echos list`). Omit it
+    and the first online Echo is used, matching `announce`/`routines run`.
+    """
+
+
+def _media_action(ctx, device, action, yes):
+    """Shared dry-run/execute path for the zero-argument transport verbs.
+
+    Every transport verb is a mutation of what a speaker is doing, so it obeys
+    the harness-wide rule: preview by default, act only on --yes.
+    """
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "device": device or "first online",
+                "action": action,
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(ctx, _run(ctx, media_core.transport(login, device, action)))
+
+
+@media.command("status")
+@click.argument("device", required=False)
+@click.pass_context
+def media_status(ctx, device):
+    """Show what an Echo is currently playing."""
+    login = _login(ctx)
+    emit(ctx, _run(ctx, media_core.player_status(login, device)))
+
+
+@media.command("play")
+@click.argument("device", required=False)
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def media_play(ctx, device, yes):
+    """Resume playback."""
+    _media_action(ctx, device, "play", yes)
+
+
+@media.command("pause")
+@click.argument("device", required=False)
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def media_pause(ctx, device, yes):
+    """Pause playback."""
+    _media_action(ctx, device, "pause", yes)
+
+
+@media.command("next")
+@click.argument("device", required=False)
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def media_next(ctx, device, yes):
+    """Skip to the next track."""
+    _media_action(ctx, device, "next", yes)
+
+
+@media.command("previous")
+@click.argument("device", required=False)
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def media_previous(ctx, device, yes):
+    """Go back to the previous track."""
+    _media_action(ctx, device, "previous", yes)
+
+
+@media.command("forward")
+@click.argument("device", required=False)
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def media_forward(ctx, device, yes):
+    """Fast-forward the current track."""
+    _media_action(ctx, device, "forward", yes)
+
+
+@media.command("rewind")
+@click.argument("device", required=False)
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def media_rewind(ctx, device, yes):
+    """Rewind the current track."""
+    _media_action(ctx, device, "rewind", yes)
+
+
+@media.command("stop")
+@click.argument("device", required=False)
+@click.option(
+    "--all",
+    "all_devices",
+    is_flag=True,
+    default=False,
+    help="Stop playback on EVERY device instead of one",
+)
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def media_stop(ctx, device, all_devices, yes):
+    """Stop playback on one Echo (or all of them with --all)."""
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "device": "all" if all_devices else (device or "first online"),
+                "action": "stop",
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(ctx, _run(ctx, media_core.stop(login, device, all_devices=all_devices)))
+
+
+@media.command("volume")
+@click.argument("device", required=False)
+@click.option("--level", type=float, required=True, help="Volume percentage, 0-100")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def media_volume(ctx, device, level, yes):
+    """Set an Echo's volume (0-100)."""
+    # Validate before touching the network so a bad number fails fast and
+    # identically in dry-run and executed mode.
+    try:
+        media_core.normalize_volume(level)
+    except ValueError as exc:
+        _abort(str(exc))
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "device": device or "first online",
+                "volume": level,
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(ctx, _run(ctx, media_core.set_volume(login, device, level)))
+
+
+@media.command("shuffle")
+@click.argument("device", required=False)
+@click.option(
+    "--state", type=click.Choice(["on", "off"]), required=True, help="Turn shuffle on or off"
+)
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def media_shuffle(ctx, device, state, yes):
+    """Turn shuffle on or off."""
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "device": device or "first online",
+                "shuffle": state,
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(ctx, _run(ctx, media_core.set_shuffle(login, device, state == "on")))
+
+
+@media.command("repeat")
+@click.argument("device", required=False)
+@click.option(
+    "--state", type=click.Choice(["on", "off"]), required=True, help="Turn repeat on or off"
+)
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def media_repeat(ctx, device, state, yes):
+    """Turn repeat on or off."""
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "device": device or "first online",
+                "repeat": state,
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(ctx, _run(ctx, media_core.set_repeat(login, device, state == "on")))
+
+
+@media.command("play-music")
+@click.argument("search_phrase")
+@click.option("--device", default=None, help="Echo accountName/serial (default: first online)")
+@click.option(
+    "--provider",
+    default=media_core.DEFAULT_MUSIC_PROVIDER,
+    help=(
+        "Music provider id, e.g. "
+        + ", ".join(media_core.KNOWN_MUSIC_PROVIDERS)
+        + " (sent verbatim, so newer provider ids also work)"
+    ),
+)
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def media_play_music(ctx, search_phrase, device, provider, yes):
+    """Play music matching SEARCH_PHRASE from a provider."""
+    provider_id = media_core.normalize_provider(provider)
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "device": device or "first online",
+                "provider": provider_id,
+                "search": search_phrase,
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(ctx, _run(ctx, media_core.play_music(login, device, search_phrase, provider_id)))
+
+
 # ──────────────────────────────────────────────────────── announce / dnd
 
 
@@ -1216,6 +1474,35 @@ def announce_cmd(ctx, text, device, yes):
         return
     try:
         emit(ctx, _run(ctx, control_core.announce(login, text, device)))
+    except ValueError as exc:
+        _abort(str(exc))
+
+
+@cli.command("speak")
+@click.argument("text")
+@click.option("--device", default=None, help="Echo accountName/serial (default: first online)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def speak_cmd(ctx, text, device, yes):
+    """Speak TEXT on one Echo via TTS — no announcement chime.
+
+    `announce` fans out to every device and plays Alexa's announcement tone
+    first; `speak` is the plain say-something path on a single speaker.
+    """
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "would_speak": text,
+                "device": device or "first online",
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    try:
+        emit(ctx, _run(ctx, control_core.speak(login, text, device)))
     except ValueError as exc:
         _abort(str(exc))
 

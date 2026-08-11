@@ -1,6 +1,6 @@
 ---
 name: cli-anything-alexa
-description: Manage Amazon Alexa from the shell — smart-home appliances (list/prune/delete), groups, routines, alarms/timers/reminders, announce, and do-not-disturb — over the unofficial Alexa web API via alexapy. Logs in via a browser-proxy flow (no Home Assistant needed; captcha/2FA handled by Amazon's own pages) and caches a local cookie so there's no per-call MFA. Use when an agent needs to inspect or tidy what Alexa knows without the app.
+description: Manage Amazon Alexa from the shell — smart-home appliances (list/prune/delete), groups, routines, alarms/timers/reminders, Echo media playback, announce/speak, and do-not-disturb — over the unofficial Alexa web API via alexapy. Logs in via a browser-proxy flow (no Home Assistant needed; captcha/2FA handled by Amazon's own pages) and caches a local cookie so there's no per-call MFA. Use when an agent needs to inspect or tidy what Alexa knows without the app.
 ---
 
 # cli-anything-alexa
@@ -77,7 +77,10 @@ Every command takes `--json`.
   (flags native+HA twins). Reports only; you choose which to `devices delete`.
 - `discover` (`--yes`) — trigger a smart-home discovery sweep
   (`POST /api/phoenix/discovery`).
-- `echos list` — physical Echo devices.
+- `echos list` — physical Echo devices (the targets for announce/speak/media/dnd/routines).
+- `echos bluetooth` — bluetooth devices paired to each Echo (name, MAC, connected).
+- `echos wake-words` — the configured wake word per Echo.
+- `echos dnd` — **read** every Echo's do-not-disturb state (the `dnd` command writes it).
 - `groups list` — smart-home device-groups (rooms): name, id, member count/names,
   plus child-group count/names (nested groups).
 - `groups create <name> [--entity ha.x ...] [--endpoint amzn1... ...] [--child-group "<name|id>" ...]` (`--yes`).
@@ -102,8 +105,21 @@ Every command takes `--json`.
   its action), while the v2 read goes stale (can't verify). Edit routines in the
   Alexa app.
 - `notifications list` / `add-reminder` / `add-alarm` / `add-timer` / `delete` (`--yes`).
-- `announce <text> [--device ...]` (`--yes`) — TTS on all/one Echo.
-- `dnd <device> on|off` (`--yes`).
+- `media status [<device>]` — what an Echo is playing: state, title, artist,
+  album, provider, volume, progress. Read-only, no `--yes`.
+- `media play|pause|next|previous|forward|rewind [<device>]` (`--yes`) — transport.
+- `media stop [<device>] [--all]` (`--yes`) — stop one Echo, or the whole house.
+- `media volume [<device>] --level 0-100` (`--yes`) — **give a percentage**; the
+  CLI converts to the 0.0-1.0 fraction alexapy wants.
+- `media shuffle|repeat [<device>] --state on|off` (`--yes`).
+- `media play-music "<phrase>" [--device ...] [--provider AMAZON_MUSIC|SPOTIFY|TUNEIN|...]` (`--yes`).
+  **DEVICE is optional everywhere in `media` — omitted, it targets the first
+  ONLINE Echo**, same as `announce`/`routines run`.
+- `announce <text> [--device ...]` (`--yes`) — announcement **with Alexa's chime**,
+  fans out to all devices by default.
+- `speak <text> [--device ...]` (`--yes`) — plain TTS on ONE speaker, **no chime**.
+  Prefer this for a quiet notification; prefer `announce` for house-wide.
+- `dnd <device> on|off` (`--yes`) — write DND; `echos dnd` reads it back.
 
 ## Safety
 All mutating commands are **dry-run-by-default and require `--yes`**. Unofficial
