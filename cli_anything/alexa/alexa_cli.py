@@ -17,7 +17,9 @@ from pathlib import Path
 
 import click
 
+from cli_anything.alexa.core import activity as activity_core
 from cli_anything.alexa.core import appliances as appliances_pure
+from cli_anything.alexa.core import bluetooth as bluetooth_core
 from cli_anything.alexa.core import control as control_core
 from cli_anything.alexa.core import devices as devices_core
 from cli_anything.alexa.core import devices_meta as devices_meta_core
@@ -27,7 +29,9 @@ from cli_anything.alexa.core import media as media_core
 from cli_anything.alexa.core import notifications as notifications_core
 from cli_anything.alexa.core import project
 from cli_anything.alexa.core import routines as routines_core
+from cli_anything.alexa.core import sequences as sequences_core
 from cli_anything.alexa.core import session as session_core
+from cli_anything.alexa.core import smarthome as smarthome_core
 from cli_anything.alexa.core.formatting import render_table
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
@@ -643,6 +647,184 @@ def devices_duplicates(ctx):
         click.echo(render_table(d["endpoints"]))
 
 
+def _resolve_targets_or_abort(ctx, records, targets):
+    """Resolve every positional target to exactly one record (abort otherwise)."""
+    resolved = []
+    for target in targets:
+        matches = endpoints_core.resolve_target(records, target)
+        resolved.append(_resolve_one_or_abort(ctx, records, matches, target))
+    return resolved
+
+
+def _select_records(ctx, records, targets, all_devices):
+    """The record set a state/control command should act on, or abort."""
+    if all_devices and targets:
+        _abort("--all cannot be combined with explicit device targets")
+    if all_devices:
+        return list(records)
+    if not targets:
+        _abort("name at least one device, or pass --all")
+    return _resolve_targets_or_abort(ctx, records, targets)
+
+
+@devices.command("state")
+@click.argument("targets", nargs=-1)
+@click.option("--all", "all_devices", is_flag=True, default=False, help="Read every device")
+@click.pass_context
+def devices_state(ctx, targets, all_devices):
+    """Read live capability state (power/brightness/colour/temperature).
+
+    TARGET is anything `devices list` shows — display name, applianceId or
+    endpoint id — and may be repeated. Read-only, so no --yes.
+
+    \b
+    Devices Alexa could not reach come back under `errors` rather than silently
+    missing, and devices with no phoenix entityId are reported as `skipped`.
+    """
+    login = _login(ctx)
+    records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
+    selected = _select_records(ctx, records, targets, all_devices)
+    result = _run(ctx, smarthome_core.read_states(login, selected))
+    if ctx.obj.get("as_json"):
+        emit(ctx, result)
+        return
+    emit(ctx, result["states"])
+    for err in result["errors"]:
+        click.echo(f"error: {err.get('entityId')}: {err.get('code')}", err=True)
+    for name in result["skipped"]:
+        click.echo(f"warning: {name!r} has no phoenix entityId — state unavailable", err=True)
+
+
+def _power_command(ctx, targets, all_devices, on, yes):
+    """Shared dry-run/execute path for `devices on` / `devices off`."""
+    login = _login(ctx)
+    records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
+    selected = _select_records(ctx, records, targets, all_devices)
+    action = "turnOn" if on else "turnOff"
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "action": action,
+                "count": len(selected),
+                "devices": [r.get("name") for r in selected],
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    results = []
+    for rec in selected:
+        entity_id = _run(ctx, _as_coro(smarthome_core.entity_ref, rec))
+        results.append(
+            {
+                "name": rec.get("name"),
+                **_run(ctx, smarthome_core.set_power(login, entity_id, on)),
+            }
+        )
+    emit(ctx, results)
+
+
+async def _as_coro(fn, *args, **kwargs):
+    """Await-able wrapper so a pure validator can reuse ``_run``'s error mapping.
+
+    ``entity_ref`` raises ``ValueError`` with the caller-facing message the CLI
+    already knows how to print; routing it through ``_run`` keeps that in one
+    place instead of duplicating the try/except at each call site.
+    """
+    return fn(*args, **kwargs)
+
+
+@devices.command("on")
+@click.argument("targets", nargs=-1)
+@click.option("--all", "all_devices", is_flag=True, default=False, help="Every device (careful)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def devices_on(ctx, targets, all_devices, yes):
+    """Turn device(s) on (plugs, switches, lights)."""
+    _power_command(ctx, targets, all_devices, True, yes)
+
+
+@devices.command("off")
+@click.argument("targets", nargs=-1)
+@click.option("--all", "all_devices", is_flag=True, default=False, help="Every device (careful)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def devices_off(ctx, targets, all_devices, yes):
+    """Turn device(s) off (plugs, switches, lights)."""
+    _power_command(ctx, targets, all_devices, False, yes)
+
+
+@devices.command("light")
+@click.argument("target")
+@click.option("--on/--off", "power", default=None, help="Power the light on or off")
+@click.option("--brightness", default=None, help="Brightness percentage, 0-100")
+@click.option(
+    "--color", default=None, help=f"Colour name ({', '.join(smarthome_core.COLOR_NAMES[:6])}…)"
+)
+@click.option(
+    "--color-temp",
+    "color_temperature",
+    default=None,
+    help=f"Colour temperature ({', '.join(smarthome_core.COLOR_TEMPERATURE_NAMES)})",
+)
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def devices_light(ctx, target, power, brightness, color, color_temperature, yes):
+    """Set a light's power / brightness / colour.
+
+    \b
+    Brightness-only or colour-only changes also send `turnOn` — that is what
+    "set the brightness" means for a lamp that is off. --color and --color-temp
+    are mutually exclusive (Alexa would apply both, last one winning).
+    """
+    # Validate before touching the network so a bad value fails fast and
+    # identically in dry-run and executed mode.
+    try:
+        plan = smarthome_core.plan_light_change(
+            power=power,
+            brightness=brightness,
+            color=color,
+            color_temperature=color_temperature,
+        )
+    except ValueError as exc:
+        _abort(str(exc))
+    login = _login(ctx)
+    records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
+    rec = _resolve_one_or_abort(
+        ctx, records, endpoints_core.resolve_target(records, target), target
+    )
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "device": rec.get("name"),
+                "actions": plan["actions"],
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    entity_id = _run(ctx, _as_coro(smarthome_core.entity_ref, rec))
+    emit(
+        ctx,
+        {
+            "name": rec.get("name"),
+            **_run(
+                ctx,
+                smarthome_core.set_light_state(
+                    login,
+                    entity_id,
+                    power=power,
+                    brightness=brightness,
+                    color=color,
+                    color_temperature=color_temperature,
+                ),
+            ),
+        },
+    )
+
+
 @devices.command("prune")
 @click.option(
     "--whitelist",
@@ -805,12 +987,83 @@ def discover_cmd(ctx, yes):
     emit(ctx, _run(ctx, devices_core.trigger_discovery(login)))
 
 
+# ──────────────────────────────────────────────────────── guard
+
+
+@cli.group()
+def guard():
+    """Alexa Guard — read / set the home's away-vs-home arm state."""
+
+
+def _guard_or_abort(ctx, login):
+    """The Guard panel record, or a clean abort when the account has none."""
+    records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
+    panel = smarthome_core.find_guard(records)
+    if panel is None:
+        _abort(
+            "no Alexa Guard panel on this account — Guard is region-limited and "
+            "must be set up in the Alexa app first"
+        )
+    return panel
+
+
+@guard.command("status")
+@click.pass_context
+def guard_status(ctx):
+    """Show whether Guard is armed away or standing down (read-only)."""
+    login = _login(ctx)
+    panel = _guard_or_abort(ctx, login)
+    emit(
+        ctx,
+        _run(
+            ctx,
+            smarthome_core.fetch_guard_state(
+                login, panel.get("applianceId"), name=panel.get("name")
+            ),
+        ),
+    )
+
+
+@guard.command("set")
+@click.argument("state", type=click.Choice(["away", "home"]))
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def guard_set(ctx, state, yes):
+    """Arm Guard (`away`) or stand it down (`home`).
+
+    There is no separate "disarmed" state — `home` (ARMED_STAY) *is* how Guard
+    is stood down.
+    """
+    login = _login(ctx)
+    panel = _guard_or_abort(ctx, login)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "name": panel.get("name"),
+                "would_set": smarthome_core.normalize_guard_state(state),
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    entity_id = _run(ctx, _as_coro(smarthome_core.entity_ref, panel))
+    emit(
+        ctx,
+        _run(ctx, smarthome_core.set_guard_state(login, entity_id, state, name=panel.get("name"))),
+    )
+
+
 # ──────────────────────────────────────────────────────── echo devices
 
 
 @cli.group("echos")
 def echos():
-    """Physical Echo devices (announce/dnd/routine targets)."""
+    """Physical Echo devices — state reads + bluetooth connect/disconnect.
+
+    These are the announce / speak / dnd / media / routine targets, distinct
+    from the smart-home appliances under `devices`.
+    """
 
 
 @echos.command("list")
@@ -828,6 +1081,70 @@ def echos_bluetooth(ctx):
     """Show bluetooth devices paired to each Echo."""
     login = _login(ctx)
     emit(ctx, _run(ctx, devices_meta_core.fetch_bluetooth(login)))
+
+
+@echos.command("pairings")
+@click.argument("device", required=False)
+@click.pass_context
+def echos_pairings(ctx, device):
+    """Show what is paired to ONE Echo (default: first online), with addresses.
+
+    `echos bluetooth` covers the whole account; this is the per-speaker view
+    whose `address` column is what `echos connect` targets.
+    """
+    login = _login(ctx)
+    emit(ctx, _run(ctx, bluetooth_core.list_pairings(login, device)))
+
+
+@echos.command("connect")
+@click.argument("target")
+@click.option("--device", default=None, help="Echo accountName/serial (default: first online)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def echos_connect(ctx, target, device, yes):
+    """Connect an already-paired bluetooth device (name or MAC) to an Echo.
+
+    TARGET must already appear in `echos pairings` — the *initial* pairing
+    handshake is Alexa-app/voice-only, so it cannot be done here.
+    """
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "device": device or "first online",
+                "would_connect": target,
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(ctx, _run(ctx, bluetooth_core.connect(login, device, target)))
+
+
+@echos.command("disconnect")
+@click.option("--device", default=None, help="Echo accountName/serial (default: first online)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def echos_disconnect(ctx, device, yes):
+    """Disconnect EVERY bluetooth device from an Echo.
+
+    Amazon's endpoint is all-or-nothing — there is no per-sink disconnect — so
+    this drops every connected sink on the target Echo.
+    """
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "device": device or "first online",
+                "would_disconnect": "all",
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(ctx, _run(ctx, bluetooth_core.disconnect(login, device)))
 
 
 @echos.command("wake-words")
@@ -1507,6 +1824,53 @@ def speak_cmd(ctx, text, device, yes):
         _abort(str(exc))
 
 
+@cli.command("push")
+@click.argument("text")
+@click.option(
+    "--title",
+    default=None,
+    help=f"Notification title (default: {control_core.DEFAULT_PUSH_TITLE!r})",
+)
+@click.option("--device", default=None, help="Echo to attribute it to (default: first online)")
+@click.option(
+    "--dropin",
+    is_flag=True,
+    default=False,
+    help="Send a drop-in notification (offers to drop in on the Echo) instead",
+)
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def push_cmd(ctx, text, title, device, dropin, yes):
+    """Push TEXT to the Alexa app on your phone — silent in the house.
+
+    `announce`/`speak` make a noise on the speakers; `push` does not, which
+    makes it the safe channel for a script running at 3am. `--dropin` sends the
+    drop-in variant, which offers to drop in on the resolved Echo.
+    """
+    try:
+        message, heading = control_core.normalize_push(text, title)
+    except ValueError as exc:
+        _abort(str(exc))
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "would_push": message,
+                "title": heading,
+                "kind": "dropin" if dropin else "mobilepush",
+                "device": device or "first online",
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(
+        ctx,
+        _run(ctx, control_core.push(login, message, title=heading, device=device, dropin=dropin)),
+    )
+
+
 @cli.command("dnd")
 @click.argument("device")
 @click.argument("state", type=click.Choice(["on", "off"]))
@@ -1530,6 +1894,256 @@ def dnd_cmd(ctx, device, state, yes):
         emit(ctx, _run(ctx, control_core.set_dnd(login, device, state == "on")))
     except ValueError as exc:
         _abort(str(exc))
+
+
+# ──────────────────────────────────────────────────────── run (behaviours)
+
+
+@cli.group("run")
+def run_group():
+    """Make an Echo do anything you could *say* to it.
+
+    `run command` sends literal text through Alexa's own parser, so it reaches
+    every skill and device on the account — including ones this CLI has no
+    typed command for. `run sequence`/`run sound`/`run skill` trigger the
+    built-in behaviours, the soundbank and a skill by id.
+
+    Alexa answers out loud; there is no response payload. Read back what
+    happened with `activity history`.
+    """
+
+
+def _queue_delay_or_abort(queue_delay):
+    """Validate --queue-delay before any network call (see `media volume`)."""
+    try:
+        return sequences_core.normalize_queue_delay(queue_delay)
+    except ValueError as exc:
+        _abort(str(exc))
+
+
+def _run_behavior(ctx, coro_factory, preview, queue_delay, yes):
+    """Shared dry-run/execute path for the four behaviour verbs.
+
+    Each one makes a speaker do something, so it obeys the harness-wide rule:
+    preview by default, act only on --yes. Values are normalised *before*
+    `_login` so bad input fails identically with and without --yes.
+    """
+    delay = _queue_delay_or_abort(queue_delay)
+    login = _login(ctx)
+    if not yes:
+        emit(ctx, {"dry_run": True, **preview, "hint": "re-run with --yes to execute"})
+        return
+    emit(ctx, _run(ctx, coro_factory(login, delay)))
+
+
+@run_group.command("catalog")
+@click.option(
+    "--kind",
+    type=click.Choice(["all", "sequences", "sounds"]),
+    default="all",
+    help="Show only sequences or only sounds",
+)
+@click.pass_context
+def run_catalog(ctx, kind):
+    """List the built-in sequences and sound aliases (no account needed)."""
+    data = sequences_core.catalog(kind)
+    if ctx.obj.get("as_json"):
+        emit(ctx, data)
+        return
+    for title, rows in data.items():
+        click.echo(f"{title}:")
+        click.echo(render_table(rows))
+
+
+@run_group.command("command")
+@click.argument("text")
+@click.option("--device", default=None, help="Echo accountName/serial (default: first online)")
+@click.option("--queue-delay", default=None, help="Seconds to batch queued commands (default: 0)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def run_command_cmd(ctx, text, device, queue_delay, yes):
+    """Run TEXT as if it had been spoken to Alexa.
+
+    e.g. `run command "turn off the kitchen lights" --yes`
+    """
+    try:
+        utterance = sequences_core.normalize_command_text(text)
+    except ValueError as exc:
+        _abort(str(exc))
+    _run_behavior(
+        ctx,
+        lambda login, delay: sequences_core.run_command(login, device, utterance, delay),
+        {"device": device or "first online", "command": utterance},
+        queue_delay,
+        yes,
+    )
+
+
+@run_group.command("sequence")
+@click.argument("name")
+@click.option("--device", default=None, help="Echo accountName/serial (default: first online)")
+@click.option("--queue-delay", default=None, help="Seconds to batch queued commands")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def run_sequence_cmd(ctx, name, device, queue_delay, yes):
+    """Run a built-in behaviour (weather, joke, good-night… — see `run catalog`)."""
+    try:
+        sequence = sequences_core.normalize_sequence(name)
+    except ValueError as exc:
+        _abort(str(exc))
+    _run_behavior(
+        ctx,
+        lambda login, delay: sequences_core.run_sequence(login, device, sequence, delay),
+        {"device": device or "first online", "sequence": sequence},
+        queue_delay,
+        yes,
+    )
+
+
+@run_group.command("sound")
+@click.argument("sound")
+@click.option("--device", default=None, help="Echo accountName/serial (default: first online)")
+@click.option("--queue-delay", default=None, help="Seconds to batch queued commands")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def run_sound_cmd(ctx, sound, device, queue_delay, yes):
+    """Play a soundbank sound (alias or raw id — see `run catalog --kind sounds`)."""
+    try:
+        sound_id = sequences_core.normalize_sound(sound)
+    except ValueError as exc:
+        _abort(str(exc))
+    _run_behavior(
+        ctx,
+        lambda login, delay: sequences_core.play_sound(login, device, sound_id, delay),
+        {"device": device or "first online", "sound": sound_id},
+        queue_delay,
+        yes,
+    )
+
+
+@run_group.command("skill")
+@click.argument("skill_id")
+@click.option("--device", default=None, help="Echo accountName/serial (default: first online)")
+@click.option("--queue-delay", default=None, help="Seconds to batch queued commands (default: 0)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def run_skill_cmd(ctx, skill_id, device, queue_delay, yes):
+    """Launch a skill by id (amzn1.ask.skill.<uuid>)."""
+    try:
+        skill = sequences_core.normalize_skill_id(skill_id)
+    except ValueError as exc:
+        _abort(str(exc))
+    _run_behavior(
+        ctx,
+        lambda login, delay: sequences_core.run_skill(login, device, skill, delay),
+        {"device": device or "first online", "skill": skill},
+        queue_delay,
+        yes,
+    )
+
+
+# ──────────────────────────────────────────────────────── activity
+
+
+@cli.group("activity")
+def activity():
+    """Voice history — what was said to Alexa and what she said back."""
+
+
+@activity.command("history")
+@click.option(
+    "--limit",
+    default=None,
+    help=f"Records to fetch (default {activity_core.DEFAULT_HISTORY_LIMIT})",
+)
+@click.option(
+    "--hours",
+    default=None,
+    help=f"How far back to look (default {activity_core.DEFAULT_HISTORY_HOURS})",
+)
+@click.option("--device", default=None, help="Only turns heard by this Echo")
+@click.option("--contains", default=None, help="Only turns whose text matches")
+@click.option(
+    "--include-noise",
+    is_flag=True,
+    default=False,
+    help="Keep DEVICE_ARBITRATION rows (multi-Echo wake-word races)",
+)
+@click.pass_context
+def activity_history(ctx, limit, hours, device, contains, include_noise):
+    """Show recent voice turns (transcript + Alexa's reply)."""
+    try:
+        count = activity_core.normalize_limit(limit)
+        span = hours if hours is not None else activity_core.DEFAULT_HISTORY_HOURS
+        activity_core.history_window(span)
+    except ValueError as exc:
+        _abort(str(exc))
+    login = _login(ctx)
+    emit(
+        ctx,
+        _run(
+            ctx,
+            activity_core.voice_history(
+                login,
+                limit=count,
+                hours=span,
+                device=device,
+                contains=contains,
+                include_noise=include_noise,
+            ),
+        ),
+    )
+
+
+@activity.command("records")
+@click.option("--limit", default=None, help="Activities to fetch")
+@click.pass_context
+def activity_records(ctx, limit):
+    """Show the legacy activity feed (carries per-activity ids and status)."""
+    try:
+        count = activity_core.normalize_limit(limit)
+    except ValueError as exc:
+        _abort(str(exc))
+    login = _login(ctx)
+    emit(ctx, _run(ctx, activity_core.activity_records(login, limit=count)))
+
+
+@activity.command("last")
+@click.option("--limit", default=None, help="How many records to search")
+@click.pass_context
+def activity_last(ctx, limit):
+    """Show the last Echo that answered, and what it was asked."""
+    try:
+        count = activity_core.normalize_limit(limit)
+    except ValueError as exc:
+        _abort(str(exc))
+    login = _login(ctx)
+    emit(ctx, _run(ctx, activity_core.last_command(login, limit=count)))
+
+
+@activity.command("clear")
+@click.option("--items", default=None, help="How many recent recordings to delete (default 50)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def activity_clear(ctx, items, yes):
+    """Delete recent voice recordings — irreversible."""
+    try:
+        count = activity_core.normalize_limit(items, default=50)
+    except ValueError as exc:
+        _abort(str(exc))
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "would_delete": count,
+                "irreversible": True,
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(ctx, _run(ctx, activity_core.clear_history(login, items=count)))
 
 
 # ──────────────────────────────────────────────────────── REPL

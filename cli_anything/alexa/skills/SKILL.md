@@ -77,8 +77,26 @@ Every command takes `--json`.
   (flags native+HA twins). Reports only; you choose which to `devices delete`.
 - `discover` (`--yes`) — trigger a smart-home discovery sweep
   (`POST /api/phoenix/discovery`).
+- `devices state [<target>...] [--all]` — **read** live smart-home state (power,
+  brightness, colour, colour temperature…) over `/api/phoenix/state`. Targets
+  resolve like `rename`. Read-only, no `--yes`.
+- `devices on|off [<target>...] [--all]` (`--yes`) — power appliances.
+- `devices light <target> [--on|--off] [--brightness 0-100] [--color <name>] [--color-temperature <name>]` (`--yes`) —
+  colour names are a **closed snake_case vocabulary** (Alexa rejects anything
+  else with a generic error, so the CLI validates locally and lists the palette).
+- `guard status` / `guard set away|home` (`--yes`) — Alexa Guard arm state.
 - `echos list` — physical Echo devices (the targets for announce/speak/media/dnd/routines).
-- `echos bluetooth` — bluetooth devices paired to each Echo (name, MAC, connected).
+- `echos bluetooth` — bluetooth devices paired to each Echo, account-wide (name, MAC, connected).
+- `echos pairings [<device>]` — paired sinks for ONE Echo (default: first online),
+  including the `address` string `echos connect` needs.
+- `echos connect <name|mac> [--device ...]` (`--yes`) — connect an **already
+  paired** sink (`pair-sink`). **It does not pair**: the initial handshake is
+  Alexa-app/voice-only. A target not in `echos pairings` is refused locally with
+  the paired list, because Amazon answers an unknown address with a bare `200`
+  and does nothing. Any MAC spelling matches; the address Amazon reported is what
+  is posted. An ambiguous friendly name aborts and lists the addresses.
+- `echos disconnect [--device ...]` (`--yes`) — **all-or-nothing**: Amazon has no
+  per-sink disconnect, so every connected sink on that Echo is dropped.
 - `echos wake-words` — the configured wake word per Echo.
 - `echos dnd` — **read** every Echo's do-not-disturb state (the `dnd` command writes it).
 - `groups list` — smart-home device-groups (rooms): name, id, member count/names,
@@ -119,7 +137,38 @@ Every command takes `--json`.
   fans out to all devices by default.
 - `speak <text> [--device ...]` (`--yes`) — plain TTS on ONE speaker, **no chime**.
   Prefer this for a quiet notification; prefer `announce` for house-wide.
+- `push <text> [--title ...] [--device ...] [--dropin]` (`--yes`) — notification
+  to the **Alexa app**, **silent on the speakers** — the right channel for a
+  script running at 3am. `--dropin` sends the drop-in variant (offers to drop in
+  on the resolved Echo). Still device-bound (it rides the behaviours API), so an
+  Echo is resolved even though nothing plays on it.
 - `dnd <device> on|off` (`--yes`) — write DND; `echos dnd` reads it back.
+- `run command "<utterance>" [--device ...] [--queue-delay N]` (`--yes`) — run
+  literal text **through Alexa's own parser**. Highest-leverage call on the
+  account: anything Alexa understands by voice — skills, devices with no typed
+  command here — is reachable. Alexa answers OUT LOUD and there is **no response
+  payload**; read back what happened with `activity history`.
+- `run sequence <name|Alexa.*.Play> [--device ...]` (`--yes`) — built-in behaviour
+  (weather / traffic / flash-briefing / good-morning / good-night / joke / story /
+  calendar-…). `run sound <alias|soundbank id>` (`--yes`) — Alexa soundbank.
+  `run skill amzn1.ask.skill.<uuid>` (`--yes`). `run catalog [--kind ...]` lists
+  the sequences + sound aliases and needs **no account**.
+  **Unknown ids pass through, unknown friendly names are refused locally** (the
+  API answers an unknown sequence with a generic failure that says nothing).
+  `--queue-delay` batches everything issued in that window into ONE behaviour
+  node; omit it and alexapy's per-call default (0 text/skill, 1.5 sound/sequence)
+  applies.
+- `activity history [--limit N] [--hours N] [--device ...] [--contains ...] [--include-noise]` —
+  recent voice turns: **transcript + Alexa's reply**, from the privacy view
+  (`customer-history-records`) — the only feed carrying both halves. `--hours` is
+  a real query window. `DEVICE_ARBITRATION` rows (multi-Echo wake-word races) are
+  dropped unless `--include-noise`. Read-only.
+- `activity records [--limit N]` — the legacy `/api/activities` feed; keeps the
+  per-activity **ids** and status the privacy view drops.
+- `activity last [--limit N]` — the last Echo that answered and what it was asked.
+- `activity clear [--items N]` (`--yes`) — **irreversible** deletion of recent
+  voice recordings. When Amazon refuses an entry (404, nothing to delete) the
+  result reports the clear as **partial**, never as clean.
 
 ## Safety
 All mutating commands are **dry-run-by-default and require `--yes`**. Unofficial

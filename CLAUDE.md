@@ -22,12 +22,16 @@ is a **browser-proxy login** that needs no Home Assistant.
   - `media.py` — Echo transport (`play`/`pause`/`next`/`previous`/`forward`/`rewind`/`stop`), volume, shuffle/repeat, `play_music`, and the `get_state` player read. Pure volume/provider/player-row helpers unit-tested.
   - `notifications.py` — alarms/timers/reminders: list + pure payload builders + POST/PUT/DELETE.
   - `routines.py` — behaviors list (with trigger utterance + best-effort `action_targets` summary) + trigger (device-bound `run_routine`). **Routine EDITS are not API-supported — Alexa-app-only** (see note below).
-  - `control.py` — announce (`send_announcement`, chime + fan-out) + **speak** (`send_tts`, no chime, one speaker) + dnd.
+  - `control.py` — announce (`send_announcement`, chime + fan-out) + **speak** (`send_tts`, no chime, one speaker) + **push** (`send_mobilepush` / `send_dropin_notification` — lands in the Alexa APP, silent on the speakers) + dnd. Pure `normalize_push` unit-tested.
+  - `smarthome.py` — smart-home **state reads + actuation** over `/api/phoenix/state`: `get_entity_state` (read) and `set_light_state` (the *generic* control call — a plug is a light with no brightness) + Guard (`static_set_guard_state`). Pure capability-state decoding / colour+brightness validation unit-tested.
+  - `sequences.py` — the **behaviour** surface (`POST /api/behaviors/preview`): `run_command` (`run_custom` — literal text through Alexa's own parser), `run_sequence` (`Alexa.*.Play`), `run_skill`, `play_sound`, plus the sequence/sound catalogs. Pure normalisers unit-tested.
+  - `activity.py` — voice **history**: privacy records (`get_customer_history_records`, the only feed with BOTH halves of a turn), legacy `/api/activities` (ids + status), `get_last_device_serial`, and `clear_history` (irreversible). Pure window/limit/row/filter logic unit-tested.
+  - `bluetooth.py` — Echo **bluetooth writes**: `set_bluetooth` (connect an already-paired sink) + `disconnect_bluetooth` (all sinks). Pure MAC canonicalisation / per-Echo pairing extraction / target resolution unit-tested.
   - `groups.py` — device-groups (rooms) over **GraphQL** `/nexus/v1/graphql`: list/create/add/remove/set/delete, **including nested child groups** (`--child-group`, the rollup pattern). Pure variables-builders (member + `childDeviceGroupIds`) + name-normalize/lookup + entity→endpoint + child-group name→id resolution are unit-tested; network goes via `AlexaAPI._static_request`.
   - `project.py` — local profile (`~/.config/cli-anything-alexa/config.json`).
 - `cli_anything/alexa/utils/repl_skin.py` — shared cli-anything REPL skin.
 - `cli_anything/alexa/skills/SKILL.md` — packaged agent skill manifest.
-- `tests/` — pytest, **pure logic only** (no alexapy / no live account).
+- `tests/` — pytest: pure logic, the async wrappers against a fake `AlexaAPI`, and every CLI command path (no alexapy traffic / no live account).
 
 ## Build / test / run
 ```bash
@@ -102,7 +106,45 @@ cli-anything-alexa devices list --json
 - **Routine EDITS are not the only Alexa-app-only surface** — see the routines
   note below; media/transport, by contrast, is fully API-driven.
 - **Mutations are dry-run-by-default + require `--yes`** (prune, delete, run,
-  notifications add/delete, announce, dnd). Mirror this when adding commands.
+  notifications add/delete, announce, speak, push, dnd, devices on/off/light,
+  guard set, media *, run *, echos connect/disconnect, activity clear). Mirror
+  this when adding commands, and **normalise/validate BEFORE `_login`** so bad
+  input fails identically with and without `--yes`.
+- **`run command` is the escape hatch.** `AlexaAPI.run_custom` sends literal text
+  through Alexa's own parser, so anything Alexa understands by voice is reachable
+  without a typed command. It answers OUT LOUD and returns **no payload** — the
+  intended pairing is `run command … --yes` then `activity history`. In
+  `sequences.py`: unknown *ids* (`Alexa.*`, raw soundbank ids) pass through
+  because Amazon keeps adding them; unknown friendly **names** are refused
+  locally with the alternatives, because the API answers an unknown sequence with
+  a generic failure. `normalize_queue_delay` returns **`None`** for "unspecified"
+  and the wrappers then OMIT the argument — alexapy's default differs per call
+  (0 for text/skill, 1.5 for sound/sequence) and flattening it would change
+  behaviour.
+- **Activity: two feeds, on purpose.** `activity history` uses the privacy view
+  (`/alexa-privacy/apd/rvh/customer-history-records`) because it is the only one
+  returning the **transcript of both halves** of a turn; `activity records` keeps
+  the legacy `/api/activities` feed for its per-activity **ids** (the delete
+  source) and status. Timestamps are epoch **ms** rendered as tz-aware UTC (a
+  naive `fromtimestamp` would re-read them in the host's zone). `--hours` is a
+  server-side query **window**, `--device`/`--contains` are client-side filters.
+  `clear_history` returning `False` means Amazon **refused at least one entry**
+  (404, nothing to delete) — report the clear as partial, never as clean.
+- **Bluetooth: connect ≠ pair, and disconnect is all-or-nothing.**
+  `set_bluetooth(mac)` (`pair-sink`) only *connects* a sink that is **already
+  paired**; the pairing handshake is Alexa-app/voice-only. Amazon answers
+  `pair-sink` for an unknown address with a bare `200` and does nothing, so
+  `bluetooth.connect` resolves the target against the Echo's own
+  `pairedDeviceList` and refuses locally (listing what *is* paired) rather than
+  posting into the void. **The `address` string Amazon reported is what gets
+  posted** — `normalize_mac` exists only so `aa-bb-…`/`AABB…`/`AA:BB:…` compare
+  equal when *finding* the pairing. `disconnect_bluetooth()` drops **every**
+  connected sink (no per-sink endpoint), so the row says `all`.
+- **`push` is the silent channel.** `send_mobilepush` /
+  `send_dropin_notification` land in the Alexa **app**, not on a speaker — the
+  right default for scripted/overnight notifications, where `announce`/`speak`
+  would wake the house. Both are still *device-bound* (they ride `send_sequence`),
+  so they resolve an Echo through `DeviceRef` like everything else.
 - **applianceId → entity:** HA appliances encode the entity as `..._<domain>#<object_id>`.
   `appliances.parse_entity_id` splits domain at the last `_` before `#`; object_id
   (after `#`) may contain underscores. Only `manufacturerName=="Home Assistant"` is HA-sourced.
@@ -195,9 +237,22 @@ incl. native+HA twins (`Patio Light 1/5`), `device_rows` filters (70 native-only
 rename/delete/discover/group-writes are built but user-gated (`--yes`).
 
 **Not live-validated (2026-08-11):** the device-bound surface (announce / speak /
-dnd / routines run / all of `media`) has never had a mutation executed against a
-real account. That is precisely how the raw-dict-vs-`DeviceRef` bug survived: it
-is invisible to a read-only check and only fires on the first real device-bound
-call. The adapter is covered by unit tests asserting alexapy's attribute
-contract, but the next person with an account should run one `media pause --yes`
-to close the loop.
+push / dnd / routines run / all of `media` / all of `run` / `echos
+connect`-`disconnect`) has never had a mutation executed against a real account,
+and neither have the smart-home writes (`devices on/off/light`, `guard set`) or
+`activity clear`. That is precisely how the raw-dict-vs-`DeviceRef` bug survived:
+it is invisible to a read-only check and only fires on the first real
+device-bound call. The adapter is covered by unit tests asserting alexapy's
+attribute contract, but the next person with an account should run one `media
+pause --yes` to close the loop, and ideally `run command "what's the time" --yes`
+followed by `activity history` (which validates the behaviour surface *and* the
+history read in one pass).
+
+**Assumptions worth checking live, per surface** (each is inferred from alexapy's
+implementation + Amazon's documented shapes, not observed):
+- `echos connect` — that `pair-sink` needs the `pairedDeviceList[].address`
+  string verbatim, and that a not-yet-paired address really is a silent no-op.
+- `push` — that `send_mobilepush` reaches the app with no speaker output at all,
+  and how Amazon renders a custom `title`.
+- `activity clear` — that a partial refusal surfaces as alexapy returning
+  `False` (rather than raising) on the 404 path.

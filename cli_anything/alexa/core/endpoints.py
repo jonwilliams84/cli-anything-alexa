@@ -11,6 +11,11 @@ ids a device carries:
                                         ``_<domain>#<object_id>`` decodes back to
                                         the HA entity (see ``appliances.parse_entity_id``).
     * ``friendlyNameObject.value.text`` = the current **display name**.
+    * ``legacyAppliance.entityId``     = the phoenix **entityId** — a FOURTH id,
+                                        used only by the ``/api/phoenix/state``
+                                        read/control surface (``core/smarthome.py``).
+                                        Selected here so there is still exactly
+                                        one device query.
 
 ``manufacturerName == "Home Assistant"`` marks an HA-sourced device; anything
 else (e.g. ``"Belkin International Inc."`` for Tasmota-Wemo plugs) is native and
@@ -45,8 +50,8 @@ from cli_anything.alexa.core.groups import normalize_name
 ENDPOINTS_QUERY = (
     "query{ endpoints(endpointsQueryParams:{paginationParams:"
     "{disablePagination:true}}){ items{ id legacyAppliance{ applianceId "
-    "manufacturerName friendlyName } friendlyNameObject{ value{ text } } "
-    "enablement } } }"
+    "entityId applianceTypes manufacturerName friendlyName } "
+    "friendlyNameObject{ value{ text } } enablement } } }"
 )
 
 _RENAME_MUTATION = (
@@ -73,9 +78,17 @@ def endpoint_record(item: dict[str, Any]) -> dict[str, Any]:
     ) or legacy.get("friendlyName")
     ha_sourced = manufacturer == HA_MANUFACTURER
     entity_id = parse_entity_id(appliance_id) if ha_sourced else None
+    appliance_types = legacy.get("applianceTypes")
+    if isinstance(appliance_types, str):
+        appliance_types = [appliance_types]
     return {
         "endpointId": item.get("id"),
         "applianceId": appliance_id,
+        # `entityId` is the phoenix state/control id — a FOURTH id, distinct from
+        # the endpoint id, the applianceId and the HA `entity_id` below. Only the
+        # state API (`core/smarthome.py`) uses it.
+        "entityId": legacy.get("entityId") or "",
+        "applianceTypes": list(appliance_types or []),
         "name": display,
         "manufacturer": manufacturer,
         "ha_sourced": ha_sourced,
