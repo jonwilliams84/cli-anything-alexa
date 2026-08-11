@@ -175,6 +175,9 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `devices duplicates` | Detect devices exposed twice (native + HA twin, or any shared display name) |
 | `discover` | Trigger Alexa smart-home device discovery (`--yes` to execute) |
 | `echos list` | List the physical Echo devices on the account |
+| `echos bluetooth` | Show the bluetooth devices paired to each Echo (name, MAC, connected) |
+| `echos wake-words` | Show the configured wake word per Echo |
+| `echos dnd` | Read the current do-not-disturb state of every Echo |
 | `groups list` | List device-groups (rooms): name, id, member count/names, child-group count/names |
 | `groups create <name> [--entity ... \| --endpoint ... \| --child-group ...]` | Create a device-group with members and/or nested child groups (`--yes`) |
 | `groups add <group> [--entity ... \| --endpoint ... \| --device ... \| --child-group ...]` | Add members / child groups to a group by name/id (`--yes`) |
@@ -188,7 +191,14 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `notifications add-alarm --device ... [--in N \| --at MS]` | Create an alarm (`--yes` to execute) |
 | `notifications add-timer --device ... --duration N` | Create a timer (`--yes` to execute) |
 | `notifications delete <id>` | Delete a notification (`--yes` to execute) |
+| `media status [<device>]` | Show what an Echo is playing (state, title, artist, album, provider, volume) |
+| `media play\|pause\|next\|previous\|forward\|rewind [<device>]` | Transport control on an Echo (`--yes` to execute) |
+| `media stop [<device>] [--all]` | Stop playback on one Echo, or every device with `--all` (`--yes`) |
+| `media volume [<device>] --level 0-100` | Set an Echo's volume (`--yes` to execute) |
+| `media shuffle\|repeat [<device>] --state on\|off` | Toggle shuffle / repeat (`--yes` to execute) |
+| `media play-music <phrase> [--device ...] [--provider ...]` | Play music by search phrase from a provider (`--yes` to execute) |
 | `announce <text> [--device ...]` | Speak an announcement on all (or one) Echo (`--yes` to execute) |
+| `speak <text> [--device ...]` | Say text on one Echo via TTS — **no announcement chime** (`--yes` to execute) |
 | `dnd <device> on\|off` | Toggle do-not-disturb on a device (`--yes` to execute) |
 | `repl` | Interactive shell (default when no subcommand) |
 
@@ -308,6 +318,57 @@ cli-anything-alexa discover --yes                                      # trigger
   (those need removing at source).
 - **`discover`** triggers a smart-home discovery sweep
   (`POST /api/phoenix/discovery`).
+
+### Media & voice on Echo devices
+
+`media` drives the *physical* Echo speakers (see `echos list`), not smart-home
+appliances. `DEVICE` is an accountName or serialNumber; **omit it and the first
+online Echo is used**, matching how `announce` and `routines run` pick a runner.
+
+```bash
+# what is the kitchen Echo doing right now?
+cli-anything-alexa media status "Kitchen Echo" --json
+
+# transport control (dry-run by default, like every other mutation)
+cli-anything-alexa media pause "Kitchen Echo"          # preview
+cli-anything-alexa media pause "Kitchen Echo" --yes    # execute
+cli-anything-alexa media next --yes                    # first online Echo
+
+# volume is a human 0-100 here (alexapy wants 0.0-1.0 — the CLI converts)
+cli-anything-alexa media volume "Kitchen Echo" --level 35 --yes
+
+cli-anything-alexa media shuffle "Kitchen Echo" --state on --yes
+cli-anything-alexa media play-music "miles davis" --provider SPOTIFY --yes
+
+# stop everything in the house
+cli-anything-alexa media stop --all --yes
+```
+
+**`announce` vs `speak`.** `announce` (`send_announcement`) plays Alexa's
+announcement tone and can fan out to every device. `speak` (`send_tts`) is the
+plain say-something path on a **single** speaker with no chime — alexapy
+documents TTS `targets` as non-functional, so the CLI binds to the requested
+device instead of passing targets.
+
+```bash
+cli-anything-alexa speak "the oven is done" --device "Kitchen Echo" --yes
+```
+
+Read-only Echo state lives under `echos`:
+
+```bash
+cli-anything-alexa echos bluetooth --json   # paired phones/laptops per Echo
+cli-anything-alexa echos wake-words         # ALEXA / ECHO / COMPUTER per device
+cli-anything-alexa echos dnd                # current DND state (the `dnd` command writes it)
+```
+
+> **Device records are adapted, not passed through.** alexapy's device-bound
+> methods read `device_serial_number` / `_device_type` / `_device_family` /
+> `_locale` as **attributes** off the object handed to `AlexaAPI(device, login)`,
+> but `get_devices()` returns plain dicts. `core/device_ref.py` translates one
+> into the other; passing the raw dict raises `AttributeError` from inside
+> alexapy (its `_catch_all_exceptions` decorator re-raises anything that isn't a
+> connection/login error). Every device-bound call site goes through `DeviceRef`.
 
 ### Routines
 

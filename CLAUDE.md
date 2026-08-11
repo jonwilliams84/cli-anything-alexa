@@ -17,10 +17,12 @@ is a **browser-proxy login** that needs no Home Assistant.
   - `session.py` — `alexapy.AlexaLogin` wrapper: **proxy browser login** (`proxy_login`, the primary `auth login` path — starts `AlexaProxy`, prints the access URL, polls `test_loggedin`, `finalize_login` → cookie + chmod 0600, always `stop_proxy`), scripted login (`fresh_login`, headless/CI fallback, TOTP via `set_totp`), cookie import, load/validate, csrf header, `proxy_access_url` (pure). `alexapy` imported lazily so the CLI loads without it.
   - `devices.py` — appliance list + raw `DELETE /api/phoenix/appliance/<id>` + raw `POST /api/phoenix/discovery` (discover).
   - `endpoints.py` — **canonical `endpoints` GraphQL query** (id + applianceId + manufacturer + display name + enablement) and all the pure resolution it powers: target resolution (applianceId→endpoint-id→exact-name→normalized-name, ambiguity-aware), entity/name resolvers, duplicate detection, `device_rows` filtering, `setEndpointFriendlyName` (rename) variables builder, **bulk/pattern rename planning** (`parse_sed`/`apply_sed`/`plan_pattern_renames`, `parse_rename_map`/`plan_map_renames`, `apply_renames`), **DACS speakable-name validation** (`speakable_name`/`is_speakable`/`speakable_warning`/`is_dacs_error`), and the **native-delete warning + re-sync verify** predicates (`native_delete_warning`, `reappeared_after_delete`). Network via `_static_request`; pure logic unit-tested.
-  - `devices_meta.py` — physical Echo devices (announce/dnd/routine targets).
+  - `device_ref.py` — **pure** adapter: raw `get_devices()` dict → the *attribute* surface alexapy's device-bound methods read off `self._device`. Unit-tested against the alexapy contract.
+  - `devices_meta.py` — physical Echo devices (announce/dnd/media/routine targets) + the static state reads: bluetooth pairings, wake words, DND status (pure row builders + thin fetchers).
+  - `media.py` — Echo transport (`play`/`pause`/`next`/`previous`/`forward`/`rewind`/`stop`), volume, shuffle/repeat, `play_music`, and the `get_state` player read. Pure volume/provider/player-row helpers unit-tested.
   - `notifications.py` — alarms/timers/reminders: list + pure payload builders + POST/PUT/DELETE.
   - `routines.py` — behaviors list (with trigger utterance + best-effort `action_targets` summary) + trigger (device-bound `run_routine`). **Routine EDITS are not API-supported — Alexa-app-only** (see note below).
-  - `control.py` — announce + dnd.
+  - `control.py` — announce (`send_announcement`, chime + fan-out) + **speak** (`send_tts`, no chime, one speaker) + dnd.
   - `groups.py` — device-groups (rooms) over **GraphQL** `/nexus/v1/graphql`: list/create/add/remove/set/delete, **including nested child groups** (`--child-group`, the rollup pattern). Pure variables-builders (member + `childDeviceGroupIds`) + name-normalize/lookup + entity→endpoint + child-group name→id resolution are unit-tested; network goes via `AlexaAPI._static_request`.
   - `project.py` — local profile (`~/.config/cli-anything-alexa/config.json`).
 - `cli_anything/alexa/utils/repl_skin.py` — shared cli-anything REPL skin.
@@ -75,6 +77,30 @@ cli-anything-alexa devices list --json
   ≤3.13** raises `CookieError: Invalid attribute 'partitioned'`. So 3.14 is
   required ONLY for `import-pickle` from a 3.14 source. CLI imports/tests run on
   any 3.10+.
+- **Device-bound calls MUST go through `DeviceRef` — never hand alexapy the raw
+  dict.** `AlexaAPI.get_devices()` returns plain JSON dicts, but every *instance*
+  method dereferences its target as **attributes**: `self._device.device_serial_number`,
+  `._device_type` (set_media/set_dnd_state/stop/bluetooth), `._device_family` +
+  `._cluster_members` (`process_targets`, WHA fan-out), `._locale`
+  (send_announcement/send_tts/run_routine). alexapy is written against Home
+  Assistant's `AlexaClient` entity object, which has them. Passing the dict raises
+  `AttributeError` **from inside alexapy** — and its `_catch_all_exceptions`
+  decorator only converts connection/login errors and `raise`s everything else, so
+  it surfaces as a raw traceback, not a friendly message. `core/device_ref.py`
+  does the translation (and refuses a record with no `serialNumber`, which cannot
+  be addressed at all). `tests/test_device_ref.py` pins the attribute list, so a
+  future alexapy change fails a unit test instead of a live call.
+- **Volume is a fraction, not a percentage.** alexapy's `set_volume` multiplies by
+  100, so it wants **0.0–1.0**. The CLI takes the human 0–100 and converts once in
+  `media.normalize_volume` (which also rejects NaN/inf — they slip past a naive
+  range check). Validate in the command *before* `_login` so a bad number fails
+  identically with and without `--yes`.
+- **`announce` vs `speak`.** `send_announcement` plays Alexa's announcement tone
+  and honours `targets` (fan-out to all devices). `send_tts` does not chime, and
+  alexapy documents its `targets` as **non-functional** — Amazon ignores it — so
+  `speak` binds `AlexaAPI` to the requested device rather than passing targets.
+- **Routine EDITS are not the only Alexa-app-only surface** — see the routines
+  note below; media/transport, by contrast, is fully API-driven.
 - **Mutations are dry-run-by-default + require `--yes`** (prune, delete, run,
   notifications add/delete, announce, dnd). Mirror this when adding commands.
 - **applianceId → entity:** HA appliances encode the entity as `..._<domain>#<object_id>`.
@@ -167,3 +193,11 @@ Live read-only validation (2026-06-15, amazon.co.uk account, HA cookie reused):
 incl. native+HA twins (`Patio Light 1/5`), `device_rows` filters (70 native-only,
 13 Tuya), `enablement` consistently ENABLED. **No mutations executed** —
 rename/delete/discover/group-writes are built but user-gated (`--yes`).
+
+**Not live-validated (2026-08-11):** the device-bound surface (announce / speak /
+dnd / routines run / all of `media`) has never had a mutation executed against a
+real account. That is precisely how the raw-dict-vs-`DeviceRef` bug survived: it
+is invisible to a read-only check and only fires on the first real device-bound
+call. The adapter is covered by unit tests asserting alexapy's attribute
+contract, but the next person with an account should run one `media pause --yes`
+to close the loop.

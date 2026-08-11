@@ -104,6 +104,9 @@ Every command supports a global `--json` flag for machine-readable output.
 | `devices duplicates` | Detect devices exposed twice (native + HA twin, or any shared display name) |
 | `discover` | Trigger Alexa smart-home device discovery (`--yes` to execute) |
 | `echos list` | List the physical Echo devices on the account |
+| `echos bluetooth` | Bluetooth devices paired to each Echo (name, MAC, connected) |
+| `echos wake-words` | Configured wake word per Echo |
+| `echos dnd` | Read the current do-not-disturb state of every Echo |
 | `groups list` | List device-groups (rooms): name, id, member count/names, child-group count/names |
 | `groups create <name> [--entity ... \| --endpoint ... \| --child-group ...]` | Create a device-group with members and/or nested child groups (`--yes`) |
 | `groups add <group> [--entity ... \| --endpoint ... \| --device ... \| --child-group ...]` | Add members / child groups to a group by name/id (`--yes`) |
@@ -117,9 +120,35 @@ Every command supports a global `--json` flag for machine-readable output.
 | `notifications add-alarm --device ... [--in N \| --at MS]` | Create an alarm (`--yes` to execute) |
 | `notifications add-timer --device ... --duration N` | Create a timer (`--yes` to execute) |
 | `notifications delete <id>` | Delete a notification (`--yes` to execute) |
+| `media status [<device>]` | What an Echo is playing (state, title, artist, album, provider, volume) |
+| `media play\|pause\|next\|previous\|forward\|rewind [<device>]` | Transport control on an Echo (`--yes` to execute) |
+| `media stop [<device>] [--all]` | Stop playback on one Echo, or every device with `--all` (`--yes`) |
+| `media volume [<device>] --level 0-100` | Set an Echo's volume (`--yes` to execute) |
+| `media shuffle\|repeat [<device>] --state on\|off` | Toggle shuffle / repeat (`--yes` to execute) |
+| `media play-music <phrase> [--device ...] [--provider ...]` | Play music by search phrase from a provider (`--yes` to execute) |
 | `announce <text> [--device ...]` | Speak an announcement on all (or one) Echo (`--yes` to execute) |
+| `speak <text> [--device ...]` | Say text on one Echo via TTS — no announcement chime (`--yes` to execute) |
 | `dnd <device> on\|off` | Toggle do-not-disturb on a device (`--yes` to execute) |
 | `repl` | Interactive shell (default when no subcommand) |
+
+### Media & voice on Echo devices
+
+```bash
+cli-anything-alexa media status "Kitchen Echo" --json
+cli-anything-alexa media pause "Kitchen Echo" --yes
+cli-anything-alexa media volume "Kitchen Echo" --level 35 --yes   # 0-100, converted to alexapy's 0.0-1.0
+cli-anything-alexa media play-music "miles davis" --provider SPOTIFY --yes
+cli-anything-alexa media stop --all --yes
+cli-anything-alexa speak "the oven is done" --device "Kitchen Echo" --yes
+cli-anything-alexa echos bluetooth --json
+```
+
+`DEVICE` is an Echo accountName or serialNumber; omit it and the first **online**
+Echo is used. `announce` plays the announcement chime and can hit every device;
+`speak` is plain TTS on one speaker. Device records are adapted through
+`core/device_ref.py` — alexapy reads `device_serial_number`/`_device_type` as
+*attributes*, while `get_devices()` returns dicts, so the raw dict would raise
+`AttributeError` from inside alexapy.
 
 ### Prune housekeeping
 
@@ -223,6 +252,8 @@ python3 -m pytest tests/ -v
 
 The unit tests cover the **pure logic** — appliance-id → entity parsing,
 whitelist filtering / prune planning, table formatting, the notification
-payload builders, and the device-group GraphQL variables builders /
-name-normalization / lookup / entity→endpoint resolution — with no `alexapy`
-dependency and no live account.
+payload builders, the device-group GraphQL variables builders /
+name-normalization / lookup / entity→endpoint resolution, the `DeviceRef`
+adapter contract, and the media volume/provider/player-state helpers — plus the
+async layers and CLI command paths against fakes. No `alexapy` dependency and no
+live account.

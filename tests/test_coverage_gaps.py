@@ -184,8 +184,8 @@ def test_run_routine_picks_online_device_and_triggers():
         }
     ]
     devices = [
-        {"accountName": "Offline Echo", "online": False},
-        {"accountName": "Kitchen Echo", "online": True},
+        {"serialNumber": "SN-OFF", "accountName": "Offline Echo", "online": False},
+        {"serialNumber": "SN-KITCHEN", "accountName": "Kitchen Echo", "online": True},
     ]
     mock_api_instance = MagicMock()
     mock_api_instance.run_routine = AsyncMock()
@@ -210,7 +210,7 @@ def test_run_routine_falls_back_to_offline_device():
             "triggers": [{"payload": {"utterance": "run r"}}],
         }
     ]
-    devices = [{"accountName": "Only Echo", "online": False}]
+    devices = [{"serialNumber": "SN-ONLY", "accountName": "Only Echo", "online": False}]
     mock_api_instance = MagicMock()
     mock_api_instance.run_routine = AsyncMock()
 
@@ -226,7 +226,7 @@ def test_run_routine_falls_back_to_name_when_no_utterance():
     automations = [
         {"automationId": "a1", "name": "Named Routine", "status": "ON", "triggers": []},
     ]
-    devices = [{"accountName": "Echo", "online": True}]
+    devices = [{"serialNumber": "SN-ECHO", "accountName": "Echo", "online": True}]
     mock_api_instance = MagicMock()
     mock_api_instance.run_routine = AsyncMock()
 

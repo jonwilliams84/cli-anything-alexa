@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from cli_anything.alexa.core.device_ref import to_device_ref
+
 
 def _node_summary(node: dict[str, Any]) -> str | None:
     """Summarize one action node from a routine sequence (pure, best-effort)."""
@@ -139,7 +141,7 @@ async def run_routine(login, name_or_id: str) -> dict[str, Any]:
 
     rows = routine_rows([routine])
     utterance = rows[0].get("utterance") or rows[0].get("name")
-    api = AlexaAPI(runner, login)
+    api = AlexaAPI(to_device_ref(runner), login)
     await api.run_routine(utterance)
     return {
         "triggered": routine.get("name"),
