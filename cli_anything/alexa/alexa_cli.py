@@ -28,6 +28,7 @@ from cli_anything.alexa.core import notifications as notifications_core
 from cli_anything.alexa.core import project
 from cli_anything.alexa.core import routines as routines_core
 from cli_anything.alexa.core import session as session_core
+from cli_anything.alexa.core import smarthome as smarthome_core
 from cli_anything.alexa.core.formatting import render_table
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
@@ -643,6 +644,180 @@ def devices_duplicates(ctx):
         click.echo(render_table(d["endpoints"]))
 
 
+def _resolve_targets_or_abort(ctx, records, targets):
+    """Resolve every positional target to exactly one record (abort otherwise)."""
+    resolved = []
+    for target in targets:
+        matches = endpoints_core.resolve_target(records, target)
+        resolved.append(_resolve_one_or_abort(ctx, records, matches, target))
+    return resolved
+
+
+def _select_records(ctx, records, targets, all_devices):
+    """The record set a state/control command should act on, or abort."""
+    if all_devices and targets:
+        _abort("--all cannot be combined with explicit device targets")
+    if all_devices:
+        return list(records)
+    if not targets:
+        _abort("name at least one device, or pass --all")
+    return _resolve_targets_or_abort(ctx, records, targets)
+
+
+@devices.command("state")
+@click.argument("targets", nargs=-1)
+@click.option("--all", "all_devices", is_flag=True, default=False, help="Read every device")
+@click.pass_context
+def devices_state(ctx, targets, all_devices):
+    """Read live capability state (power/brightness/colour/temperature).
+
+    TARGET is anything `devices list` shows — display name, applianceId or
+    endpoint id — and may be repeated. Read-only, so no --yes.
+
+    \b
+    Devices Alexa could not reach come back under `errors` rather than silently
+    missing, and devices with no phoenix entityId are reported as `skipped`.
+    """
+    login = _login(ctx)
+    records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
+    selected = _select_records(ctx, records, targets, all_devices)
+    result = _run(ctx, smarthome_core.read_states(login, selected))
+    if ctx.obj.get("as_json"):
+        emit(ctx, result)
+        return
+    emit(ctx, result["states"])
+    for err in result["errors"]:
+        click.echo(f"error: {err.get('entityId')}: {err.get('code')}", err=True)
+    for name in result["skipped"]:
+        click.echo(f"warning: {name!r} has no phoenix entityId — state unavailable", err=True)
+
+
+def _power_command(ctx, targets, all_devices, on, yes):
+    """Shared dry-run/execute path for `devices on` / `devices off`."""
+    login = _login(ctx)
+    records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
+    selected = _select_records(ctx, records, targets, all_devices)
+    action = "turnOn" if on else "turnOff"
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "action": action,
+                "count": len(selected),
+                "devices": [r.get("name") for r in selected],
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    results = []
+    for rec in selected:
+        entity_id = _run(ctx, _as_coro(smarthome_core.entity_ref, rec))
+        results.append(
+            {
+                "name": rec.get("name"),
+                **_run(ctx, smarthome_core.set_power(login, entity_id, on)),
+            }
+        )
+    emit(ctx, results)
+
+
+async def _as_coro(fn, *args, **kwargs):
+    """Await-able wrapper so a pure validator can reuse ``_run``'s error mapping.
+
+    ``entity_ref`` raises ``ValueError`` with the caller-facing message the CLI
+    already knows how to print; routing it through ``_run`` keeps that in one
+    place instead of duplicating the try/except at each call site.
+    """
+    return fn(*args, **kwargs)
+
+
+@devices.command("on")
+@click.argument("targets", nargs=-1)
+@click.option("--all", "all_devices", is_flag=True, default=False, help="Every device (careful)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def devices_on(ctx, targets, all_devices, yes):
+    """Turn device(s) on (plugs, switches, lights)."""
+    _power_command(ctx, targets, all_devices, True, yes)
+
+
+@devices.command("off")
+@click.argument("targets", nargs=-1)
+@click.option("--all", "all_devices", is_flag=True, default=False, help="Every device (careful)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def devices_off(ctx, targets, all_devices, yes):
+    """Turn device(s) off (plugs, switches, lights)."""
+    _power_command(ctx, targets, all_devices, False, yes)
+
+
+@devices.command("light")
+@click.argument("target")
+@click.option("--on/--off", "power", default=None, help="Power the light on or off")
+@click.option("--brightness", default=None, help="Brightness percentage, 0-100")
+@click.option("--color", default=None, help=f"Colour name ({', '.join(smarthome_core.COLOR_NAMES[:6])}…)")
+@click.option(
+    "--color-temp",
+    "color_temperature",
+    default=None,
+    help=f"Colour temperature ({', '.join(smarthome_core.COLOR_TEMPERATURE_NAMES)})",
+)
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def devices_light(ctx, target, power, brightness, color, color_temperature, yes):
+    """Set a light's power / brightness / colour.
+
+    \b
+    Brightness-only or colour-only changes also send `turnOn` — that is what
+    "set the brightness" means for a lamp that is off. --color and --color-temp
+    are mutually exclusive (Alexa would apply both, last one winning).
+    """
+    # Validate before touching the network so a bad value fails fast and
+    # identically in dry-run and executed mode.
+    try:
+        plan = smarthome_core.plan_light_change(
+            power=power,
+            brightness=brightness,
+            color=color,
+            color_temperature=color_temperature,
+        )
+    except ValueError as exc:
+        _abort(str(exc))
+    login = _login(ctx)
+    records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
+    rec = _resolve_one_or_abort(ctx, records, endpoints_core.resolve_target(records, target), target)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "device": rec.get("name"),
+                "actions": plan["actions"],
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    entity_id = _run(ctx, _as_coro(smarthome_core.entity_ref, rec))
+    emit(
+        ctx,
+        {
+            "name": rec.get("name"),
+            **_run(
+                ctx,
+                smarthome_core.set_light_state(
+                    login,
+                    entity_id,
+                    power=power,
+                    brightness=brightness,
+                    color=color,
+                    color_temperature=color_temperature,
+                ),
+            ),
+        },
+    )
+
+
 @devices.command("prune")
 @click.option(
     "--whitelist",
@@ -803,6 +978,73 @@ def discover_cmd(ctx, yes):
         )
         return
     emit(ctx, _run(ctx, devices_core.trigger_discovery(login)))
+
+
+# ──────────────────────────────────────────────────────── guard
+
+
+@cli.group()
+def guard():
+    """Alexa Guard — read / set the home's away-vs-home arm state."""
+
+
+def _guard_or_abort(ctx, login):
+    """The Guard panel record, or a clean abort when the account has none."""
+    records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
+    panel = smarthome_core.find_guard(records)
+    if panel is None:
+        _abort(
+            "no Alexa Guard panel on this account — Guard is region-limited and "
+            "must be set up in the Alexa app first"
+        )
+    return panel
+
+
+@guard.command("status")
+@click.pass_context
+def guard_status(ctx):
+    """Show whether Guard is armed away or standing down (read-only)."""
+    login = _login(ctx)
+    panel = _guard_or_abort(ctx, login)
+    emit(
+        ctx,
+        _run(
+            ctx,
+            smarthome_core.fetch_guard_state(
+                login, panel.get("applianceId"), name=panel.get("name")
+            ),
+        ),
+    )
+
+
+@guard.command("set")
+@click.argument("state", type=click.Choice(["away", "home"]))
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def guard_set(ctx, state, yes):
+    """Arm Guard (`away`) or stand it down (`home`).
+
+    There is no separate "disarmed" state — `home` (ARMED_STAY) *is* how Guard
+    is stood down.
+    """
+    login = _login(ctx)
+    panel = _guard_or_abort(ctx, login)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "name": panel.get("name"),
+                "would_set": smarthome_core.normalize_guard_state(state),
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    entity_id = _run(ctx, _as_coro(smarthome_core.entity_ref, panel))
+    emit(
+        ctx,
+        _run(ctx, smarthome_core.set_guard_state(login, entity_id, state, name=panel.get("name"))),
+    )
 
 
 # ──────────────────────────────────────────────────────── echo devices

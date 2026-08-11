@@ -205,3 +205,46 @@ def test_build_rename_variables():
                         "friendlyName": "New Name"}}
     # survives JSON serialization unchanged
     assert json.loads(json.dumps(v)) == v
+
+
+# ── entityId / applianceTypes (phoenix state addressing) ────────────────
+
+def test_canonical_query_selects_the_phoenix_state_fields():
+    """One device query must carry entityId + applianceTypes for `devices state`."""
+    assert "entityId" in endpoints.ENDPOINTS_QUERY
+    assert "applianceTypes" in endpoints.ENDPOINTS_QUERY
+
+
+def test_endpoint_record_surfaces_entity_id_and_appliance_types():
+    raw = {
+        "id": "amzn1.alexa.endpoint.lamp",
+        "legacyAppliance": {
+            "applianceId": "SKILL_blob_light#kitchen_lamp",
+            "entityId": "entity-lamp",
+            "applianceTypes": ["LIGHT"],
+            "manufacturerName": "Home Assistant",
+            "friendlyName": "Kitchen Lamp",
+        },
+        "friendlyNameObject": {"value": {"text": "Kitchen Lamp"}},
+        "enablement": "ENABLED",
+    }
+    r = endpoints.endpoint_record(raw)
+    assert r["entityId"] == "entity-lamp"
+    assert r["applianceTypes"] == ["LIGHT"]
+    # the HA entity id is a DIFFERENT id and must be unaffected
+    assert r["entity_id"] == "light.kitchen_lamp"
+
+
+def test_endpoint_record_normalises_missing_state_fields():
+    """An account/appliance that reports neither field stays addressable-safe."""
+    r = endpoints.endpoint_record(_RAW[0])
+    assert r["entityId"] == ""
+    assert r["applianceTypes"] == []
+
+
+def test_endpoint_record_wraps_a_bare_string_appliance_type():
+    raw = {
+        "id": "e",
+        "legacyAppliance": {"applianceId": "A", "applianceTypes": "LIGHT", "manufacturerName": "X"},
+    }
+    assert endpoints.endpoint_record(raw)["applianceTypes"] == ["LIGHT"]
