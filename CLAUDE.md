@@ -27,6 +27,7 @@ is a **browser-proxy login** that needs no Home Assistant.
   - `sequences.py` — the **behaviour** surface (`POST /api/behaviors/preview`): `run_command` (`run_custom` — literal text through Alexa's own parser), `run_sequence` (`Alexa.*.Play`), `run_skill`, `play_sound`, plus the sequence/sound catalogs. Pure normalisers unit-tested.
   - `activity.py` — voice **history**: privacy records (`get_customer_history_records`, the only feed with BOTH halves of a turn), legacy `/api/activities` (ids + status), `get_last_device_serial`, and `clear_history` (irreversible). Pure window/limit/row/filter logic unit-tested.
   - `bluetooth.py` — Echo **bluetooth writes**: `set_bluetooth` (connect an already-paired sink) + `disconnect_bluetooth` (all sinks). Pure MAC canonicalisation / per-Echo pairing extraction / target resolution unit-tested.
+  - `kids.py` — **Amazon Kids / child mode**: household child profiles (`get_child_profiles`), per-Echo state (`get_child_mode` + `get_device_child`) and the assign/unassign writes (`enable_child_mode`/`disable_child_mode`). Pure profile flattening / child resolution / status rows unit-tested. **Every write re-reads and reports `ok` from the verify**, because the writes return `None` either way (see the note below).
   - `groups.py` — device-groups (rooms) over **GraphQL** `/nexus/v1/graphql`: list/create/add/remove/set/delete, **including nested child groups** (`--child-group`, the rollup pattern). Pure variables-builders (member + `childDeviceGroupIds`) + name-normalize/lookup + entity→endpoint + child-group name→id resolution are unit-tested; network goes via `AlexaAPI._static_request`.
   - `project.py` — local profile (`~/.config/cli-anything-alexa/config.json`).
 - `cli_anything/alexa/utils/repl_skin.py` — shared cli-anything REPL skin.
@@ -220,6 +221,22 @@ cli-anything-alexa devices list --json
   surfaces it as `enabled`; `connections`/`endpointReports` nested shapes were NOT
   consistently available on the live account, so a true online/reachability column
   was omitted rather than ship a flaky one.
+- **Amazon Kids writes report NOTHING — so `kids.py` verifies.** `enable_child_mode`
+  / `disable_child_mode` are declared `-> None` and wrapped in alexapy's
+  `_catch_all_exceptions`, so a rejected request and a successful one are
+  indistinguishable at the call site. The assign is also the ONE mutating call in
+  this harness that does **not** use `session.csrf_header`: it rides the localized
+  **parent-dashboard** host (`parents.amazon.co.uk`, `eltern.amazon.de` — alexapy's
+  `_parent_dashboard_subdomain`) and authenticates with `ft-panda-csrf-token`
+  echoed into `x-amzn-csrf`, seeded by GETting the onboarding page first. If that
+  cookie is absent alexapy logs at **debug** and posts anyway, so a rejected assign
+  is silent. Both writes therefore call `read_state` afterwards and set `ok` from
+  what Amazon actually holds — mirror this for any future write whose API returns
+  no result. Related: `get_child_mode` returns **`None` for "could not read"**,
+  which `status_row` keeps as `None`; collapsing it into `False` would report an
+  unreadable speaker as "kids mode off". `kids enable`/`disable` also deliberately
+  REQUIRE an explicit device (no first-online default like `media`/`echos`) because
+  kids mode changes what the speaker will do.
 - **Routine EDITS are not API-supported — Alexa-app-only.** Amazon hard-refuses:
   `updateAutomation` → "not supported for automation type: ROUTINE";
   `batchUpdateAutomations` needs an opaque scripted-source blob the read API won't
@@ -256,3 +273,8 @@ implementation + Amazon's documented shapes, not observed):
   and how Amazon renders a custom `title`.
 - `activity clear` — that a partial refusal surfaces as alexapy returning
   `False` (rather than raising) on the 404 path.
+- `kids enable` — that the `ft-panda-csrf-token` bootstrap actually succeeds on a
+  real account, and that `get_child_mode` flips to `True` promptly after the
+  assign (the verify read is immediate; if Amazon is eventually-consistent here,
+  a first-read `ok: false` may be a false negative needing a retry/backoff).
+  `kids profiles` is the safe read to try first — it needs no child at all.

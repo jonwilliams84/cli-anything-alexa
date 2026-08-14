@@ -99,6 +99,20 @@ Every command takes `--json`.
   per-sink disconnect, so every connected sink on that Echo is dropped.
 - `echos wake-words` — the configured wake word per Echo.
 - `echos dnd` — **read** every Echo's do-not-disturb state (the `dnd` command writes it).
+- `kids profiles` — Amazon Kids child profiles in the household (name, age, `directedId`).
+- `kids status [<device>]` — Amazon Kids state per Echo; no argument = every Echo
+  (two requests each), a name/serial = just that one. A **blank/null `kids`** means
+  the state could not be read — that is NOT the same as `off`.
+- `kids enable <device> --child <name|directedId>` (`--yes`) — assign an Echo to a
+  child profile, turning Amazon Kids on. The target Echo is **required** (no
+  first-online default) because kids mode changes what the speaker will do.
+- `kids disable <device>` (`--yes`) — unassign the Echo, turning Amazon Kids off.
+  Both writes **verify by re-reading**: alexapy returns `None` whether the call
+  worked or was rejected, and the assign uses the parent-dashboard host's own
+  `ft-panda-csrf-token` (missing → logged at debug only, so a rejection is
+  silent). Trust the `ok` field, which comes from the re-read. An unknown child is
+  refused locally with the known profiles; siblings sharing a first name abort
+  with their `directedId`s.
 - `groups list` — smart-home device-groups (rooms): name, id, member count/names,
   plus child-group count/names (nested groups).
 - `groups create <name> [--entity ha.x ...] [--endpoint amzn1... ...] [--child-group "<name|id>" ...]` (`--yes`).
