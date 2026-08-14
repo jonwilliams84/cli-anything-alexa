@@ -186,6 +186,10 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `echos disconnect [--device ...]` | Disconnect **every** bluetooth sink from an Echo (`--yes` to execute) |
 | `echos wake-words` | Show the configured wake word per Echo |
 | `echos dnd` | Read the current do-not-disturb state of every Echo |
+| `kids profiles` | List the Amazon Kids child profiles in the household (name, age, directedId) |
+| `kids status [<device>]` | Amazon Kids state per Echo — every Echo, or one named speaker |
+| `kids enable <device> --child <name\|id>` | Turn Amazon Kids ON for an Echo by assigning it to a child profile (`--yes` to execute) |
+| `kids disable <device>` | Turn Amazon Kids OFF for an Echo, unassigning it (`--yes` to execute) |
 | `groups list` | List device-groups (rooms): name, id, member count/names, child-group count/names |
 | `groups create <name> [--entity ... \| --endpoint ... \| --child-group ...]` | Create a device-group with members and/or nested child groups (`--yes`) |
 | `groups add <group> [--entity ... \| --endpoint ... \| --device ... \| --child-group ...]` | Add members / child groups to a group by name/id (`--yes`) |
@@ -482,6 +486,37 @@ cli-anything-alexa echos disconnect --device "Kitchen Echo" --yes
 > into the other; passing the raw dict raises `AttributeError` from inside
 > alexapy (its `_catch_all_exceptions` decorator re-raises anything that isn't a
 > connection/login error). Every device-bound call site goes through `DeviceRef`.
+
+### Amazon Kids (child mode)
+
+`kids` reads the household's child profiles and turns Amazon Kids on/off per
+Echo by assigning the speaker to a child. Because that changes what the speaker
+will *do* (kid-safe content, restricted purchasing/calling), `enable`/`disable`
+require an explicit target Echo rather than defaulting to the first online one.
+
+```bash
+cli-anything-alexa kids profiles --json          # name, age, directedId
+cli-anything-alexa kids status                   # every Echo
+cli-anything-alexa kids status "Playroom Echo"   # just one
+cli-anything-alexa kids enable "Playroom Echo" --child Alice --yes
+cli-anything-alexa kids disable "Playroom Echo" --yes
+```
+
+**These writes report nothing, so the CLI verifies.**
+`enable_child_mode`/`disable_child_mode` are declared `-> None` and wrapped in
+alexapy's `_catch_all_exceptions`, so a rejected request and a successful one
+look identical at the call site. Worse, the assign rides a *different* host (the
+localized parent dashboard, `parents.amazon.co.uk` / `eltern.amazon.de`) with a
+*different* csrf token (`ft-panda-csrf-token` echoed into `x-amzn-csrf`), and
+alexapy only logs at **debug** if that token is missing — so a rejected assign is
+silent. Every write here therefore re-reads the device state afterwards and
+reports `ok` from what Amazon actually holds. An unknown child name is refused
+locally with the known profiles, and siblings sharing a first name abort with
+their `directedId`s.
+
+> **"Unknown" is not "off".** `get_child_mode` returns `None` when the state
+> could not be read, which is a different answer from `False`. `kids status`
+> leaves the column blank in that case rather than reporting kids mode as off.
 
 ### Routines
 

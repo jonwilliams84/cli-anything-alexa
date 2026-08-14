@@ -25,6 +25,7 @@ from cli_anything.alexa.core import devices as devices_core
 from cli_anything.alexa.core import devices_meta as devices_meta_core
 from cli_anything.alexa.core import endpoints as endpoints_core
 from cli_anything.alexa.core import groups as groups_core
+from cli_anything.alexa.core import kids as kids_core
 from cli_anything.alexa.core import media as media_core
 from cli_anything.alexa.core import notifications as notifications_core
 from cli_anything.alexa.core import project
@@ -1161,6 +1162,91 @@ def echos_dnd(ctx):
     """Show the current Do-Not-Disturb state of each Echo (read-only)."""
     login = _login(ctx)
     emit(ctx, _run(ctx, devices_meta_core.fetch_dnd_states(login)))
+
+
+# ──────────────────────────────────────────────────────── amazon kids
+
+
+@cli.group("kids")
+def kids():
+    """Amazon Kids (child mode) — household profiles + per-Echo assignment.
+
+    Turning Amazon Kids ON changes what a speaker will do (kid-safe content,
+    restricted purchasing/calling), so `enable`/`disable` name their target
+    Echo explicitly rather than defaulting to the first online one.
+    """
+
+
+@kids.command("profiles")
+@click.pass_context
+def kids_profiles(ctx):
+    """List the child profiles in the Amazon household."""
+    login = _login(ctx)
+    emit(ctx, _run(ctx, kids_core.fetch_profiles(login)))
+
+
+@kids.command("status")
+@click.argument("device", required=False)
+@click.pass_context
+def kids_status(ctx, device):
+    """Show Amazon Kids state per Echo (default: every Echo).
+
+    `kids` is blank when Amazon Kids state could not be read for that speaker —
+    that is not the same answer as "off".
+    """
+    login = _login(ctx)
+    if device:
+        emit(ctx, _run(ctx, kids_core.device_status(login, device)))
+        return
+    emit(ctx, _run(ctx, kids_core.status_all(login)))
+
+
+@kids.command("enable")
+@click.argument("device")
+@click.option("--child", required=True, help="Child profile name or directedId")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def kids_enable(ctx, device, child, yes):
+    """Turn Amazon Kids ON for DEVICE by assigning it to a child profile.
+
+    The assign is verified by re-reading the device's state afterwards — Amazon
+    reports nothing on the write itself, so `ok` reflects the state actually
+    held rather than "the request did not raise".
+    """
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "device": device,
+                "would_enable_kids_for": child,
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(ctx, _run(ctx, kids_core.enable(login, device, child)))
+
+
+@kids.command("disable")
+@click.argument("device")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def kids_disable(ctx, device, yes):
+    """Turn Amazon Kids OFF for DEVICE (unassign it from any child profile)."""
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "device": device,
+                "would_disable_kids": True,
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(ctx, _run(ctx, kids_core.disable(login, device)))
 
 
 # ──────────────────────────────────────────────────────── groups

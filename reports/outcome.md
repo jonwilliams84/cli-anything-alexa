@@ -1,134 +1,131 @@
-# Refine Outcome — Echo bluetooth + app push, and tests for the behaviour/history surfaces
+# Refine Outcome — Amazon Kids (child mode)
 
 ## Summary
 
-Two things, one coherent pass over the **Echo device surface**:
+One coherent pass over the **parental-controls surface**, which was the top item
+on the previous pass's "not covered" list: all five of alexapy's Amazon Kids
+calls were unwrapped, so the harness could neither see nor change whether an
+Echo was in kids mode.
 
-1. **Closed the test gap on the last pass's code.** `core/sequences.py` (the
-   `run` behaviour surface) and `core/activity.py` (voice history) shipped with
-   **no tests at all** — 19% and 11% covered — which had taken the repo *below*
-   its own CI gate (78% actual vs `--cov-fail-under=82`, i.e. `main` was red).
-   Both are now at **100%**, and writing those tests found **two real bugs**
-   (below).
-2. **Added the next capability set from that pass's "not covered" list:** Echo
-   **bluetooth writes** (`set_bluetooth` / `disconnect_bluetooth`) and **Alexa-app
-   push** (`send_mobilepush` / `send_dropin_notification`) — 4 new commands.
+New module `core/kids.py` + a `kids` command group (4 commands) wrap the lot:
 
-Tests: **750 → 1108** (+358). Coverage: **78% → 88%**. CI `--cov-fail-under`
-raised 82 → **85**. `alexapy` `AlexaAPI` methods actually invoked: 35 → **39** of 58 public ones (+`set_bluetooth`, `disconnect_bluetooth`, `send_mobilepush`, `send_dropin_notification`).
-
-## 1. Bugs found by the new tests (`core/activity.py`)
-
-| Bug | Symptom | Fix |
+| Command | alexapy call(s) | Notes |
 | --- | --- | --- |
-| `activity_rows` assumed dict-or-list | `(payload or {}).get(...)` raised `AttributeError` on a **string** payload — exactly what an Alexa error body arrives as, and the docstring promised tolerance | explicit `isinstance` branches; anything else yields **no rows** |
-| `normalize_limit` truncated floats | `--limit 1.5` → silently asked Amazon for **1** record, while the string `"1.5"` already raised | a non-integral float is now refused with the same message |
+| `kids profiles` | `get_child_profiles` | household child profiles — name, age, `directedId` |
+| `kids status [<device>]` | `get_child_mode` + `get_device_child` | no argument = every Echo; a name/serial = one |
+| `kids enable <device> --child <name\|id>` | `enable_child_mode` | dry-run + `--yes`, **verified** |
+| `kids disable <device>` | `disable_child_mode` | dry-run + `--yes`, **verified** |
 
-Both are the "junk in the payload must not cost the other 19 rows" class this
-module documents; neither was reachable from a read-only live check.
+Tests: **1108 → 1187** (+79). Coverage: **88% → 89%**, `core/kids.py` at
+**100%**. CI `--cov-fail-under` raised 85 → **86**. `alexapy` `AlexaAPI` methods
+actually invoked: 39 → **44** of 58 public ones (+`get_child_profiles`,
+`get_child_mode`, `get_device_child`, `enable_child_mode`, `disable_child_mode`).
 
-## 2. New: Echo bluetooth control — `core/bluetooth.py`
+## 1. The finding that shaped the module: a kids write reports NOTHING
 
-`echos bluetooth` could only *read* pairings. Two device-bound calls now act on
-them, with the pure layer (100% covered) doing the thinking:
+`enable_child_mode` and `disable_child_mode` are declared `-> None` **and**
+wrapped in alexapy's `_catch_all_exceptions`, which converts a failed request
+into a quiet `None` return. Success and rejection are therefore identical at the
+call site — "it didn't raise" carries no information.
 
-| Command | Call | Notes |
-| --- | --- | --- |
-| `echos pairings [<device>]` | `get_bluetooth` | per-**Echo** view (the account-wide `echos bluetooth` is unchanged), exposing the `address` the write needs |
-| `echos connect <name\|mac> [--device ...]` | `set_bluetooth` | dry-run + `--yes` |
-| `echos disconnect [--device ...]` | `disconnect_bluetooth` | dry-run + `--yes` |
+It is worse than a plain missing return value, because the assign is the **one
+mutating call in this harness that does not use `session.csrf_header`**:
 
-Three findings baked into the module and its docs:
+* it rides the *localized parent-dashboard host* (`parents.amazon.co.uk`,
+  `eltern.amazon.de` — alexapy's `_parent_dashboard_subdomain`), not the web host;
+* it authenticates with `ft-panda-csrf-token` echoed into `x-amzn-csrf`, seeded
+  by GETting the onboarding page first;
+* and if that cookie is absent alexapy logs at **debug** and posts anyway.
 
-* **`pair-sink` connects, it does not pair.** The initial handshake (pairing
-  mode + code confirmation) is Alexa-app/voice-only. Worse, Amazon answers
-  `pair-sink` for an unknown address with a bare `200` and does nothing — a
-  silent no-op. So `connect` resolves the target against that Echo's own
-  `pairedDeviceList` first and refuses locally, **listing what is paired**.
-* **The address is Amazon's string, verbatim.** `normalize_mac` exists only so
-  `aa-bb-cc-dd-ee-ff`, `AABBCCDDEEFF` and `AA:BB:CC:DD:EE:FF` compare equal when
-  *finding* a pairing; what gets posted is the `address` the API reported (what
-  Home Assistant's `alexa_media` does too). Not every Alexa sink id is a plain
-  MAC, so a non-MAC target is still matched by name.
-* **Disconnect is all-or-nothing.** There is no per-sink endpoint, so the result
-  row says `disconnected: "all"` rather than implying a single target.
+So the most likely failure mode — a missing dashboard csrf — is completely
+silent. Both writes therefore call `read_state` afterwards and report `ok` from
+the state Amazon **actually holds**, not from the absence of an exception. This
+is the same "verify, don't assume" rule `devices delete --verify` follows for
+native re-sync, and it is now written into CLAUDE.md as the pattern for any
+future write whose API returns no result.
 
-Ambiguity follows the harness rule: two sinks sharing a friendly name → abort and
-list the addresses (same shape as `devices rename`).
+## 2. "Unknown" is not "off"
 
-## 3. New: `push` — the silent notification channel
+`get_child_mode` returns `None` when the state could not be read (unsupported
+device, changed payload) — a different answer from `False`. `status_row` keeps
+`None` as `None`, so `kids status` leaves the column blank rather than reporting
+an unreadable speaker as "kids mode is off". `disable` likewise sets
+`ok = (enabled is False)`, so an unreadable verify never reads as success. Three
+tests pin this distinction specifically.
 
-`announce` chimes the house and `speak` talks on one speaker; neither is usable
-from a script at 3am. `push` (`control.push`) sends the message to the **Alexa
-app** instead:
+## 3. Safety decisions
 
-```bash
-cli-anything-alexa push "the washing machine finished" --yes
-cli-anything-alexa push "check the nursery" --dropin --device "Nursery Echo" --yes
-```
-
-`--dropin` swaps `send_mobilepush` for `send_dropin_notification` (whose
-notification offers to drop in on the resolved Echo). Both ride the behaviours
-API and are therefore still **device-bound**, so they resolve an Echo through
-`DeviceRef` even though nothing plays on it — the one non-obvious thing about
-them. The default title is ours (`cli-anything-alexa`), not alexapy's
-developer-facing `"AlexaAPI Message"`.
+* **`enable`/`disable` require an explicit device.** Every other device-bound
+  command in the harness (`media`, `echos connect`, `push`) defaults to the first
+  online Echo. Kids mode changes what a speaker *will do* — kid-safe content,
+  restricted purchasing and calling — so silently applying it to whichever
+  speaker happened to answer first is the wrong default. The target is a required
+  argument; a CLI test asserts both commands refuse without one.
+* **An unknown child is refused locally**, listing the known profiles. Amazon
+  rejects an unknown `childDirectedId` without a message reaching the caller, so
+  the alternative is a silent no-op — the same trap `echos connect` has with
+  unpaired addresses.
+* **Ambiguity aborts**, following the harness rule: siblings really can share a
+  first name, so >1 match lists the `directedId`s to pick from. The exact-name
+  tier resolves `Sam` vs `sam` first, so only a genuine collision aborts.
+* **Dry-run by default + `--yes`**, with the target and pending action echoed
+  verbatim in the preview.
 
 ## 4. Tests
 
 | File | Tests | Covers |
 | --- | --- | --- |
-| `tests/test_sequences.py` | 82 | every normaliser (text / sequence alias / soundbank alias / skill id / queue delay incl. NaN-inf-negative), the catalogs, and all four live ops against a fake `AlexaAPI` — including **`queue_delay` omitted when unspecified** (alexapy's per-call default must survive) and validate-before-network |
-| `tests/test_activity.py` | 97 | tz-aware epoch-ms rendering, the query window (`--hours`), both feed flatteners incl. the JSON-encoded legacy `description`, noise/device/text filtering, partial-clear reporting, and every live wrapper's actual query parameters |
-| `tests/test_bluetooth.py` | 93 | MAC canonicalisation, per-Echo pairing extraction from both payload shapes, 4-tier target resolution, the not-paired message, connect/disconnect/list against a fake `AlexaAPI`, plus `control.normalize_push`/`push` |
-| `tests/test_cli_behavior_paths.py` | 56 | the `run` and `activity` CLI paths: dry-run-by-default on all four `run` verbs, validation *before* `_login` (identically with and without `--yes`), `--queue-delay` pass-through, `run catalog` needing no account, and `activity clear`'s irreversible guard |
-| `tests/test_cli_bluetooth_push_paths.py` | 30 | the new commands' dry-run contract, argument plumbing, and that `echos bluetooth` still behaves (refine adds, never removes) |
+| `tests/test_kids.py` | 53 | the pure layer (profile flattening incl. dropping adults from a raw household payload and keeping role-less pre-filtered rows, name normalisation, 3-tier child resolution + precedence, the not-found message, status rows from both a raw record and a `DeviceRef`) and every live wrapper against a fake `AlexaAPI` — that `enable` posts the **resolved `directedId`**, that both writes **re-read to verify**, that a failed/unreadable verify reports `ok: false`, and that every refusal path never writes |
+| `tests/test_cli_kids_paths.py` | 26 | the `kids` CLI paths: the dry-run contract on both mutations (preview, no network without `--yes`, `--yes` reaches the core function with the right arguments), that the target Echo is **named, never implicit**, that `enable` refuses a missing device/child, `status` routing (no arg → `status_all`, arg → `device_status`), null-not-off in the JSON, and that the group is reachable with help on every subcommand |
 
 Every assertion is on observable behaviour — exit code, JSON on stdout, which
-core coroutine was called with what — never on source text.
+core coroutine was called with what — never on source text. Two of the tests I
+first wrote were themselves wrong (they treated `Sam`/`sam` as ambiguous when the
+exact-name tier correctly disambiguates); the fixtures were corrected rather than
+the resolver loosened, and the precedence is now pinned by its own test.
 
-Module coverage after: `activity.py` 11% → **100%**, `sequences.py` 19% →
-**100%**, `control.py` 100%, `bluetooth.py` **100%**, `alexa_cli.py` 66% → **73%**.
+Module coverage after: `core/kids.py` **100%** (statements *and* branches),
+`alexa_cli.py` 73% → **74%**.
 
 ## 5. Docs
 
-The previous pass shipped `smarthome`/`guard`, `run` and `activity` **undocumented**
-— none of the four docs mentioned them. All four are now current:
-
-* `README.md` — table rows for `devices state/on/off/light`, `guard`, `run *`,
-  `activity *`, `push`, `echos pairings/connect/disconnect`, plus new sections
-  "Smart-home state & control", "Voice commands & behaviours — `run`", "Voice
-  history — `activity`", the push-vs-announce-vs-speak distinction and the
-  bluetooth connect-≠-pair rule.
-* `cli_anything/alexa/README.md` — same commands, plus "Voice commands,
-  behaviours & history" and "Bluetooth on an Echo".
-* `CLAUDE.md` (SOP) — `smarthome.py` / `sequences.py` / `activity.py` /
-  `bluetooth.py` added to the Layout, and four new gotcha entries (run-command as
-  the escape hatch + the `queue_delay`-is-`None` rule, the two activity feeds and
-  their epoch-ms/partial-clear traps, connect-≠-pair + all-or-nothing disconnect,
-  push being silent yet device-bound). **Verified** now lists the per-surface
-  assumptions still to check against a live account.
-* `skills/SKILL.md` — the agent-facing command list covers all of the above.
+* `README.md` — 4 table rows plus an "Amazon Kids (child mode)" section covering
+  the verify rule, the parent-dashboard host/token, and the unknown-≠-off trap.
+* `cli_anything/alexa/README.md` — same rows plus a matching section.
+* `CLAUDE.md` (SOP) — `kids.py` added to the Layout, a new gotcha entry for the
+  reports-nothing/verify rule + the non-standard csrf path + the required
+  explicit device, and a new entry in **Verified → assumptions worth checking
+  live** (does the `ft-panda-csrf-token` bootstrap really succeed, and is
+  `get_child_mode` immediately consistent after an assign, or does the verify
+  need a retry).
+* `skills/SKILL.md` — the agent-facing command list, flagging that `ok` comes
+  from the re-read and that a blank `kids` means unreadable.
 
 ## Gates
 
 | Gate | Result |
 | --- | --- |
-| `pytest tests` | 1108 passed |
-| `--cov-fail-under=85` | 88% (was failing at 78% vs 82) |
+| `pytest tests` | **1187 passed**, 0 failed |
+| `--cov-fail-under=86` | **89%** (raised from 85) |
 | `ruff check cli_anything/` | clean |
 | `ruff format --check cli_anything/` | clean |
 | `bandit -r cli_anything/ -ll` | 0 findings |
 
+No regressions: all 1108 pre-existing tests still pass, and no command was
+changed or removed.
+
 ## Not covered (next refine pass)
 
-`set_background` (Echo Show wallpaper), `get_device_preferences`,
-`get_wifi_details`, child profiles / child mode
-(`get_child_profiles`, `enable_child_mode`, `disable_child_mode`,
-`get_child_mode`), `find_wake_word`, `force_logout`, `ping` (a cheap
-connectivity probe that would make a good `auth status --ping`), and
-`get_devices_gql` (the GraphQL device list, potentially a richer `echos list`).
+* **Diagnostics reads**, the natural next cluster: `get_authentication` (a
+  `auth whoami` — customer id/name/email + Prime-music entitlement), `ping` (a
+  cheap probe, would make a good `auth status --ping`), `get_device_preferences`
+  and the device-bound `get_wifi_details`.
+* `get_devices_gql` — the GraphQL device list, potentially a richer `echos list`.
+* `set_background` (Echo Show wallpaper), `set_notifications` (editing an
+  existing alarm/timer/reminder rather than add/delete).
+* `find_wake_word` / `force_logout` — duplicate or no-op, deliberately skipped.
 
-Nothing in the harness has had a **mutation executed against a real account** —
-see CLAUDE.md's Verified section for the per-surface list of assumptions that
-only a live run can settle.
+Still true, and now the single biggest gap in confidence: **nothing in the
+harness has had a mutation executed against a real account.** The kids surface
+adds two more to that list — see CLAUDE.md's Verified section, where
+`kids profiles` is flagged as the safe read to try first.

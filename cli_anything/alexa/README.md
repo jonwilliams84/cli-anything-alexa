@@ -117,6 +117,10 @@ Every command supports a global `--json` flag for machine-readable output.
 | `echos disconnect [--device ...]` | Disconnect **every** bluetooth sink from an Echo (`--yes` to execute) |
 | `echos wake-words` | Configured wake word per Echo |
 | `echos dnd` | Read the current do-not-disturb state of every Echo |
+| `kids profiles` | List the Amazon Kids child profiles in the household (name, age, directedId) |
+| `kids status [<device>]` | Amazon Kids state per Echo — every Echo, or one named speaker |
+| `kids enable <device> --child <name\|id>` | Turn Amazon Kids ON for an Echo by assigning it to a child (`--yes` to execute) |
+| `kids disable <device>` | Turn Amazon Kids OFF for an Echo (unassign it) (`--yes` to execute) |
 | `groups list` | List device-groups (rooms): name, id, member count/names, child-group count/names |
 | `groups create <name> [--entity ... \| --endpoint ... \| --child-group ...]` | Create a device-group with members and/or nested child groups (`--yes`) |
 | `groups add <group> [--entity ... \| --endpoint ... \| --device ... \| --child-group ...]` | Add members / child groups to a group by name/id (`--yes`) |
@@ -212,6 +216,35 @@ cli-anything-alexa echos pairings "Kitchen Echo" --json
 cli-anything-alexa echos connect "Jon's Phone" --device "Kitchen Echo" --yes
 cli-anything-alexa echos disconnect --device "Kitchen Echo" --yes
 ```
+
+### Amazon Kids (child mode)
+
+`kids` assigns an Echo to a child profile, which puts the speaker into Amazon
+Kids mode (kid-safe content, restricted purchasing/calling). Because that
+changes what a speaker will *do*, `enable`/`disable` name their target Echo
+explicitly instead of defaulting to the first online one.
+
+**A kids write reports nothing**, so these commands verify. alexapy's
+`enable_child_mode`/`disable_child_mode` return `None` whether they succeeded or
+were rejected, and the assign rides the parent-dashboard host with its own
+`ft-panda-csrf-token` (a missing token is only logged at debug, so a rejected
+assign is silent). Every write therefore re-reads the device's state afterwards
+and reports `ok` from what Amazon *actually holds*, not from "nothing raised".
+
+In `kids status`, an empty `kids` column means the state could not be read for
+that speaker — which is **not** the same answer as `off`.
+
+```bash
+cli-anything-alexa kids profiles --json          # name, age, directedId
+cli-anything-alexa kids status                   # every Echo
+cli-anything-alexa kids status "Playroom Echo"   # just one
+cli-anything-alexa kids enable "Playroom Echo" --child Alice --yes
+cli-anything-alexa kids disable "Playroom Echo" --yes
+```
+
+An unknown child name is refused locally with the known profiles (Amazon rejects
+an unknown `childDirectedId` without a message reaching the caller), and two
+siblings sharing a first name abort with their `directedId`s to pick from.
 
 ### Prune housekeeping
 
