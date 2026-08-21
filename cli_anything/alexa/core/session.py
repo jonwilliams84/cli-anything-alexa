@@ -671,3 +671,29 @@ def base_url(url: str = "amazon.co.uk") -> str:
     """
     url = validate_region(url)
     return f"https://alexa.{url}"
+
+
+def account_row(payload: Any) -> dict[str, Any]:
+    """Flatten ``/api/users/me`` into an identity row (pure).
+
+    ``authenticated`` is reported as ``False`` — not ``None`` — when the call
+    came back empty, because alexapy only builds that dict from a parsed
+    response body: no body means the account endpoint did not answer as a
+    logged-in user, which is a real answer.  ``auth status`` (``test_loggedin``)
+    checks the *cookie*; this checks that the cookie still buys an account.
+    """
+    data = payload if isinstance(payload, dict) else {}
+    return {
+        "authenticated": bool(data.get("authenticated")) if data else False,
+        "email": data.get("customerEmail"),
+        "customerId": data.get("customerId"),
+        "name": data.get("customerName"),
+        "primeMusic": data.get("canAccessPrimeMusicContent"),
+    }
+
+
+async def account_info(login) -> dict[str, Any]:
+    """Who the saved cookie is actually logged in as (``/api/users/me``)."""
+    from alexapy import AlexaAPI
+
+    return account_row(await AlexaAPI.get_authentication(login))

@@ -1,131 +1,155 @@
-# Refine Outcome — Amazon Kids (child mode)
+# Refine Outcome — notification EDITS + account/device introspection
 
 ## Summary
 
-One coherent pass over the **parental-controls surface**, which was the top item
-on the previous pass's "not covered" list: all five of alexapy's Amazon Kids
-calls were unwrapped, so the harness could neither see nor change whether an
-Echo was in kids mode.
+One coherent pass over the two clusters the previous pass flagged as "not
+covered": **editing an existing alarm/timer/reminder** (`set_notifications`,
+the only write in `/api/notifications` the harness never used) and the
+**diagnostics reads** (`get_authentication`, `get_device_preferences`,
+`get_wifi_details`). They landed together on purpose — a reminder's schedule is
+expressed in the owning Echo's *timezone*, which is exactly what
+`get_device_preferences` returns, so the edit surface needs the read.
 
-New module `core/kids.py` + a `kids` command group (4 commands) wrap the lot:
+Nine new commands, no command changed or removed:
 
 | Command | alexapy call(s) | Notes |
 | --- | --- | --- |
-| `kids profiles` | `get_child_profiles` | household child profiles — name, age, `directedId` |
-| `kids status [<device>]` | `get_child_mode` + `get_device_child` | no argument = every Echo; a name/serial = one |
-| `kids enable <device> --child <name\|id>` | `enable_child_mode` | dry-run + `--yes`, **verified** |
-| `kids disable <device>` | `disable_child_mode` | dry-run + `--yes`, **verified** |
+| `notifications show <id\|label>` | `get_notifications` | display row + the **raw record** an edit is built from |
+| `notifications pause\|resume <id\|label>` | `set_notifications` | `status: OFF`/`ON`; dry-run + `--yes`, **verified** |
+| `notifications reschedule <id\|label> --in N\|--at MS` | `set_notifications` (+ `get_device_preferences`) | moves `alarmTime` **and** the local wall-clock fields; dry-run + `--yes`, **verified** |
+| `notifications snooze <id\|label> [--minutes N]` | `set_notifications` (+ `get_device_preferences`) | default 9 min (Amazon's own); dry-run + `--yes`, **verified** |
+| `auth whoami` | `get_authentication` | customer id / name / email / Prime Music; exits non-zero when the cookie no longer buys an account |
+| `echos preferences [<device>]` | `get_device_preferences` | `timeZoneId`, locale, temperature/distance units, postal code |
+| `echos wifi [<device>]` | `get_wifi_details` | device-bound, so it goes through `DeviceRef` |
 
-Tests: **1108 → 1187** (+79). Coverage: **88% → 89%**, `core/kids.py` at
-**100%**. CI `--cov-fail-under` raised 85 → **86**. `alexapy` `AlexaAPI` methods
-actually invoked: 39 → **44** of 58 public ones (+`get_child_profiles`,
-`get_child_mode`, `get_device_child`, `enable_child_mode`, `disable_child_mode`).
+Tests: **1187 → 1329** (+142). Coverage: **89% → 90%**, `core/notifications.py`
+at **100%** (statements *and* branches), `core/devices_meta.py` 97% → **98%**.
+CI `--cov-fail-under` raised 86 → **87**. Public `alexapy` `AlexaAPI` methods
+referenced by the harness: **48 → 52 of 58** (+`set_notifications`,
+`get_authentication`, `get_device_preferences`, `get_wifi_details`).
 
-## 1. The finding that shaped the module: a kids write reports NOTHING
+## 1. The finding that shaped the module: an edit is a whole-record PUT
 
-`enable_child_mode` and `disable_child_mode` are declared `-> None` **and**
-wrapped in alexapy's `_catch_all_exceptions`, which converts a failed request
-into a quiet `None` return. Success and rejection are therefore identical at the
-call site — "it didn't raise" carries no information.
+`/api/notifications` does not patch — it **replaces** the notification with the
+body it is given, and accepts a short body silently. Building a "minimal" edit
+payload (`{id, status}`) therefore looks like it worked while quietly dropping
+the record's recurrence rule and owning device. Every builder in
+`notifications.py` starts from a **copy of the record Amazon returned**, which
+is also why `fetch_notifications` (raw) exists alongside the pre-existing
+`list_notifications` (display rows): the rows are lossy and must never be an
+edit source. `notifications show` exposes the raw record for the same reason.
 
-It is worse than a plain missing return value, because the assign is the **one
-mutating call in this harness that does not use `session.csrf_header`**:
+## 2. A reminder fires off LOCAL wall-clock fields, not just `alarmTime`
 
-* it rides the *localized parent-dashboard host* (`parents.amazon.co.uk`,
-  `eltern.amazon.de` — alexapy's `_parent_dashboard_subdomain`), not the web host;
-* it authenticates with `ft-panda-csrf-token` echoed into `x-amzn-csrf`, seeded
-  by GETting the onboarding page first;
-* and if that cookie is absent alexapy logs at **debug** and posts anyway.
+A reminder/alarm record carries `alarmTime` (epoch ms) *and*
+`originalDate`/`originalTime` — the date and time-of-day, **in the owning
+Echo's timezone**, that the app displays and the schedule is rebuilt from.
+Moving `alarmTime` alone leaves those stale.
 
-So the most likely failure mode — a missing dashboard csrf — is completely
-silent. Both writes therefore call `read_state` afterwards and report `ok` from
-the state Amazon **actually holds**, not from the absence of an exception. This
-is the same "verify, don't assume" rule `devices delete --verify` follows for
-native re-sync, and it is now written into CLAUDE.md as the pattern for any
-future write whose API returns no result.
+`build_reschedule` therefore recomputes them from the new instant using that
+Echo's own `timeZoneId` (read via the newly wrapped `get_device_preferences`),
+and:
 
-## 2. "Unknown" is not "off"
+* rewrites them **only when the record already had them** — adding them to a
+  record Amazon sent without them would invent a schedule shape;
+* falls back to **UTC and says so** (`tz: UTC` in the output) when the
+  preferences read fails or the zone is unknown to the host, rather than
+  silently writing the wrong local time;
+* never lets a preferences failure block the edit (it is enrichment, not a gate).
 
-`get_child_mode` returns `None` when the state could not be read (unsupported
-device, changed payload) — a different answer from `False`. `status_row` keeps
-`None` as `None`, so `kids status` leaves the column blank rather than reporting
-an unreadable speaker as "kids mode is off". `disable` likewise sets
-`ok = (enabled is False)`, so an unreadable verify never reads as success. Three
-tests pin this distinction specifically.
+**Timers are excluded.** A timer counts down via `remainingTime` from the moment
+it was set and has no `alarmTime` to move, so `reschedule`/`snooze` refuse it
+locally — before any write — and say "delete it and create a new one".
 
-## 3. Safety decisions
+## 3. The PUT cannot report success, so the writes verify
 
-* **`enable`/`disable` require an explicit device.** Every other device-bound
-  command in the harness (`media`, `echos connect`, `push`) defaults to the first
-  online Echo. Kids mode changes what a speaker *will do* — kid-safe content,
-  restricted purchasing and calling — so silently applying it to whichever
-  speaker happened to answer first is the wrong default. The target is a required
-  argument; a CLI test asserts both commands refuse without one.
-* **An unknown child is refused locally**, listing the known profiles. Amazon
-  rejects an unknown `childDirectedId` without a message reaching the caller, so
-  the alternative is a silent no-op — the same trap `echos connect` has with
-  unpaired addresses.
-* **Ambiguity aborts**, following the harness rule: siblings really can share a
-  first name, so >1 match lists the `directedId`s to pick from. The exact-name
-  tier resolves `Sam` vs `sam` first, so only a genuine collision aborts.
-* **Dry-run by default + `--yes`**, with the target and pending action echoed
-  verbatim in the preview.
+`AlexaAPI.set_notifications` is wrapped in alexapy's `_catch_all_exceptions`: a
+rejected request and an accepted one both come back empty. Following the rule
+`kids enable` and `devices delete --verify` already established, `apply_update`
+re-reads the notification list afterwards and sets `ok` from what Amazon
+actually holds.
 
-## 4. Tests
+The refinement over `kids`: `/api/notifications` is **rate-limited** and alexapy
+returns `None` when throttled, so a verify read can fail for reasons that have
+nothing to do with the edit. `ok` is therefore three-valued — `True`, `False`,
+or **`None` with a note** when the record could not be re-read. Collapsing that
+into `False` would report a successful edit as a failure whenever Amazon
+throttled.
+
+## 4. Safety decisions
+
+* **Plan, then apply the same plan.** `plan_update` does all resolution and
+  validation and returns the payload *plus* a readable `change` diff; the
+  dry-run prints that diff and `--yes` applies that exact plan. So an unknown
+  target, an ambiguous label or a timer-reschedule fails **identically with and
+  without `--yes`**, and the thing reviewed is the thing executed.
+* **The dry-run shows the diff, not the record.** A 30-key whole-record payload
+  is unreviewable; `field: from -> to` is. The payload/`before` keys are
+  stripped from the preview (a test pins this).
+* **Ambiguity aborts.** Two alarms can honestly share the label "Wake up", so
+  >1 match lists the ids to pick from — the harness rule, and the id tier
+  resolves first so only a genuine collision aborts.
+* **A no-op edit is reported, never written.** Pausing an already-paused alarm
+  has an empty diff: the CLI says so and does not PUT.
+* **`auth whoami` exits non-zero** on `authenticated: false`, so it is usable as
+  a scripted liveness check that is sharper than `auth status` (cookie valid) —
+  the two answers can genuinely differ when a rotated HA cookie goes stale.
+
+## 5. Tests
 
 | File | Tests | Covers |
 | --- | --- | --- |
-| `tests/test_kids.py` | 53 | the pure layer (profile flattening incl. dropping adults from a raw household payload and keeping role-less pre-filtered rows, name normalisation, 3-tier child resolution + precedence, the not-found message, status rows from both a raw record and a `DeviceRef`) and every live wrapper against a fake `AlexaAPI` — that `enable` posts the **resolved `directedId`**, that both writes **re-read to verify**, that a failed/unreadable verify reports `ok: false`, and that every refusal path never writes |
-| `tests/test_cli_kids_paths.py` | 26 | the `kids` CLI paths: the dry-run contract on both mutations (preview, no network without `--yes`, `--yes` reaches the core function with the right arguments), that the target Echo is **named, never implicit**, that `enable` refuses a missing device/child, `status` routing (no arg → `status_all`, arg → `device_status`), null-not-off in the JSON, and that the group is reachable with help on every subcommand |
+| `tests/test_notifications_edit.py` | 75 | the pure layer (id/label extraction, status synonyms, 3-tier resolution + ambiguity + the "known:" message, local wall-clock computation incl. BST and unknown-zone fallback, the whole-record builders incl. not mutating the source and not inventing local fields, timer refusals, snooze arithmetic from the alarm-time vs from now, the diff, tz-aware rendering) and every live wrapper against a fake `AlexaAPI` — plan-without-writing, the timezone lookup and its fallbacks, and the verify reporting `True` / `False` / `None`-when-unreadable |
+| `tests/test_cli_notifications_edit_paths.py` | 45 | the CLI paths: the dry-run contract on all four edits (preview the diff, no apply without `--yes`, `--yes` applies the *same* plan object), that each edit asks for exactly one kind of change, `--in`/`--at` exclusivity refused **before** `_login`, the no-op path, target-required parsing, plus `notifications show`, `auth whoami` (incl. the non-zero exit) and `echos preferences`/`wifi` |
+| `tests/test_device_reads_account.py` | 22 | the new pure row builders (preferences incl. both wake-word-confirmation spellings and the bare-list shape, `device_timezone`, the wifi envelope unwrap and all-`None` empty payload, `account_row`) and the wrappers — including that `echos wifi` binds `AlexaAPI` to a **`DeviceRef`**, not a raw dict |
 
 Every assertion is on observable behaviour — exit code, JSON on stdout, which
-core coroutine was called with what — never on source text. Two of the tests I
-first wrote were themselves wrong (they treated `Sam`/`sam` as ambiguous when the
-exact-name tier correctly disambiguates); the fixtures were corrected rather than
-the resolver loosened, and the precedence is now pinned by its own test.
+core coroutine was called with what — never on source text.
 
-Module coverage after: `core/kids.py` **100%** (statements *and* branches),
-`alexa_cli.py` 73% → **74%**.
+## 6. Docs
 
-## 5. Docs
-
-* `README.md` — 4 table rows plus an "Amazon Kids (child mode)" section covering
-  the verify rule, the parent-dashboard host/token, and the unknown-≠-off trap.
-* `cli_anything/alexa/README.md` — same rows plus a matching section.
-* `CLAUDE.md` (SOP) — `kids.py` added to the Layout, a new gotcha entry for the
-  reports-nothing/verify rule + the non-standard csrf path + the required
-  explicit device, and a new entry in **Verified → assumptions worth checking
-  live** (does the `ft-panda-csrf-token` bootstrap really succeed, and is
-  `get_child_mode` immediately consistent after an assign, or does the verify
-  need a retry).
-* `skills/SKILL.md` — the agent-facing command list, flagging that `ok` comes
-  from the re-read and that a blank `kids` means unreadable.
+* `README.md` — 8 table rows, an "Alarms, timers & reminders" section (whole-
+  record PUT, local wall-clock fields, pause ≠ delete, the timer refusal, the
+  three-valued `ok`) and an "Account & device introspection" section; test/
+  coverage counts refreshed.
+* `cli_anything/alexa/README.md` — the matching rows.
+* `CLAUDE.md` (SOP) — `notifications.py` / `devices_meta.py` / `session.py`
+  Layout entries extended, a new gotcha entry for the whole-record-PUT +
+  local-fields + throttled-verify rules and the `auth status` vs `auth whoami`
+  distinction, and a new entry under **Verified → assumptions worth checking
+  live**.
+* `skills/SKILL.md` — the agent-facing command list, flagging the whole-record
+  rule, the timer refusal and `ok: null` ≠ failure.
 
 ## Gates
 
 | Gate | Result |
 | --- | --- |
-| `pytest tests` | **1187 passed**, 0 failed |
-| `--cov-fail-under=86` | **89%** (raised from 85) |
+| `pytest tests` | **1329 passed**, 0 failed |
+| `--cov-fail-under=87` | **90%** (raised from 86) |
 | `ruff check cli_anything/` | clean |
 | `ruff format --check cli_anything/` | clean |
 | `bandit -r cli_anything/ -ll` | 0 findings |
 
-No regressions: all 1108 pre-existing tests still pass, and no command was
-changed or removed.
+No regressions: all 1187 pre-existing tests still pass.
 
 ## Not covered (next refine pass)
 
-* **Diagnostics reads**, the natural next cluster: `get_authentication` (a
-  `auth whoami` — customer id/name/email + Prime-music entitlement), `ping` (a
-  cheap probe, would make a good `auth status --ping`), `get_device_preferences`
-  and the device-bound `get_wifi_details`.
-* `get_devices_gql` — the GraphQL device list, potentially a richer `echos list`.
-* `set_background` (Echo Show wallpaper), `set_notifications` (editing an
-  existing alarm/timer/reminder rather than add/delete).
-* `find_wake_word` / `force_logout` — duplicate or no-op, deliberately skipped.
+* `get_devices_gql` — the GraphQL device list; the canonical `endpoints` query
+  in `endpoints.py` already covers the smart-home graph, so the only gain would
+  be a richer `echos list`.
+* `set_background` (Echo Show wallpaper) — device-bound and niche, but the last
+  unwrapped *write*.
+* `ping` — a cheap liveness probe; would fit as `auth status --ping` now that
+  `auth whoami` exists.
+* `find_wake_word` / `force_logout` / `update_login` — subsumed by
+  `echos wake-words` / not a real API call (`force_logout` just raises) /
+  internal to alexapy's own session handling. Deliberately skipped.
 
-Still true, and now the single biggest gap in confidence: **nothing in the
-harness has had a mutation executed against a real account.** The kids surface
-adds two more to that list — see CLAUDE.md's Verified section, where
-`kids profiles` is flagged as the safe read to try first.
+That leaves 6 of alexapy's 58 public `AlexaAPI` methods unreferenced, 3 of them
+deliberately.
+
+Still true, and still the single biggest gap in confidence: **nothing in the
+harness has had a mutation executed against a real account.** The notification
+edits add four more to that list — see CLAUDE.md's Verified section, where
+`notifications show` is flagged as the safe read to try first.

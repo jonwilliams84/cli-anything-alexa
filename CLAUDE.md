@@ -14,13 +14,13 @@ is a **browser-proxy login** that needs no Home Assistant.
 - `cli_anything/alexa/core/` — one module per surface:
   - `appliances.py` — **pure** logic: applianceId→entity parsing, whitelist load, prune planning. No deps. Unit-tested.
   - `formatting.py` — **pure** table/cell rendering. Unit-tested.
-  - `session.py` — `alexapy.AlexaLogin` wrapper: **proxy browser login** (`proxy_login`, the primary `auth login` path — starts `AlexaProxy`, prints the access URL, polls `test_loggedin`, `finalize_login` → cookie + chmod 0600, always `stop_proxy`), scripted login (`fresh_login`, headless/CI fallback, TOTP via `set_totp`), cookie import, load/validate, csrf header, `proxy_access_url` (pure). `alexapy` imported lazily so the CLI loads without it.
+  - `session.py` — `alexapy.AlexaLogin` wrapper: **proxy browser login** (`proxy_login`, the primary `auth login` path — starts `AlexaProxy`, prints the access URL, polls `test_loggedin`, `finalize_login` → cookie + chmod 0600, always `stop_proxy`), scripted login (`fresh_login`, headless/CI fallback, TOTP via `set_totp`), cookie import, load/validate, csrf header, `proxy_access_url` (pure), **`account_info`/`account_row`** (`/api/users/me` — who the cookie is logged in as, behind `auth whoami`). `alexapy` imported lazily so the CLI loads without it.
   - `devices.py` — appliance list + raw `DELETE /api/phoenix/appliance/<id>` + raw `POST /api/phoenix/discovery` (discover).
   - `endpoints.py` — **canonical `endpoints` GraphQL query** (id + applianceId + manufacturer + display name + enablement) and all the pure resolution it powers: target resolution (applianceId→endpoint-id→exact-name→normalized-name, ambiguity-aware), entity/name resolvers, duplicate detection, `device_rows` filtering, `setEndpointFriendlyName` (rename) variables builder, **bulk/pattern rename planning** (`parse_sed`/`apply_sed`/`plan_pattern_renames`, `parse_rename_map`/`plan_map_renames`, `apply_renames`), **DACS speakable-name validation** (`speakable_name`/`is_speakable`/`speakable_warning`/`is_dacs_error`), and the **native-delete warning + re-sync verify** predicates (`native_delete_warning`, `reappeared_after_delete`). Network via `_static_request`; pure logic unit-tested.
   - `device_ref.py` — **pure** adapter: raw `get_devices()` dict → the *attribute* surface alexapy's device-bound methods read off `self._device`. Unit-tested against the alexapy contract.
-  - `devices_meta.py` — physical Echo devices (announce/dnd/media/routine targets) + the static state reads: bluetooth pairings, wake words, DND status (pure row builders + thin fetchers).
+  - `devices_meta.py` — physical Echo devices (announce/dnd/media/routine targets) + the static state reads: bluetooth pairings, wake words, DND status, **device preferences** (`timeZoneId`/locale/units — the timezone a notification edit needs) and **per-Echo wifi details** (pure row builders + thin fetchers).
   - `media.py` — Echo transport (`play`/`pause`/`next`/`previous`/`forward`/`rewind`/`stop`), volume, shuffle/repeat, `play_music`, and the `get_state` player read. Pure volume/provider/player-row helpers unit-tested.
-  - `notifications.py` — alarms/timers/reminders: list + pure payload builders + POST/PUT/DELETE.
+  - `notifications.py` — alarms/timers/reminders: list + pure payload builders + POST/PUT/DELETE, **plus the edit surface** (`pause`/`resume`/`reschedule`/`snooze`): pure resolution by id-or-label, whole-record PUT builders, local wall-clock (`originalDate`/`originalTime`) recomputation in the Echo's own timezone, the `plan_update` → `apply_update` split (dry-run prints the `change` diff, `--yes` applies that same plan) and the re-read verify. Pure half unit-tested.
   - `routines.py` — behaviors list (with trigger utterance + best-effort `action_targets` summary) + trigger (device-bound `run_routine`). **Routine EDITS are not API-supported — Alexa-app-only** (see note below).
   - `control.py` — announce (`send_announcement`, chime + fan-out) + **speak** (`send_tts`, no chime, one speaker) + **push** (`send_mobilepush` / `send_dropin_notification` — lands in the Alexa APP, silent on the speakers) + dnd. Pure `normalize_push` unit-tested.
   - `smarthome.py` — smart-home **state reads + actuation** over `/api/phoenix/state`: `get_entity_state` (read) and `set_light_state` (the *generic* control call — a plug is a light with no brightness) + Guard (`static_set_guard_state`). Pure capability-state decoding / colour+brightness validation unit-tested.
@@ -237,6 +237,31 @@ cli-anything-alexa devices list --json
   unreadable speaker as "kids mode off". `kids enable`/`disable` also deliberately
   REQUIRE an explicit device (no first-online default like `media`/`echos`) because
   kids mode changes what the speaker will do.
+- **A notification EDIT is a whole-record PUT, and reminders fire off LOCAL
+  fields.** `/api/notifications` (alexapy `set_notifications`) *replaces* the
+  notification with the body it is given — a hand-rolled minimal body is
+  accepted silently and drops what it omitted (recurrence, owning device), so
+  every builder in `notifications.py` starts from a **copy of the record Amazon
+  returned** (`fetch_notifications`, raw — `list_notifications` returns display
+  rows and is NOT an edit source). A record also carries
+  `originalDate`/`originalTime`: the date + time-of-day **in the owning Echo's
+  timezone** that the app renders and the schedule is rebuilt from, so
+  `build_reschedule` rewrites them (only when the record already had them —
+  never invent them) using `timeZoneId` from `/api/device-preferences`, falling
+  back to a visibly-reported `tz: UTC` if that read fails. **Timers are
+  excluded** from reschedule/snooze (no `alarmTime`; they count down via
+  `remainingTime`) and refused locally, before any write. `plan_update` does all
+  resolution/validation and returns the payload + a readable `change` diff so
+  the dry-run and the `--yes` execution are the SAME plan; `apply_update`
+  re-reads afterwards and sets `ok` from what Amazon holds, with **`ok: None`
+  when the verify read was throttled** (`/api/notifications` rate-limits and
+  alexapy answers `None`) — "could not check" is never reported as failure.
+  Snooze measures from the alarm's own time when it is still ahead and from now
+  once it has fired, defaulting to Amazon's own 9 minutes.
+- **`auth status` checks the cookie; `auth whoami` checks the account.**
+  `test_loggedin` can still pass while `/api/users/me` no longer returns an
+  identity (the sharper signal that a rotated HA cookie went stale), so
+  `whoami` exits non-zero on `authenticated: false`.
 - **Routine EDITS are not API-supported — Alexa-app-only.** Amazon hard-refuses:
   `updateAutomation` → "not supported for automation type: ROUTINE";
   `batchUpdateAutomations` needs an opaque scripted-source blob the read API won't
@@ -273,6 +298,12 @@ implementation + Amazon's documented shapes, not observed):
   and how Amazon renders a custom `title`.
 - `activity clear` — that a partial refusal surfaces as alexapy returning
   `False` (rather than raising) on the 404 path.
+- `notifications pause/resume/reschedule/snooze` — that Amazon accepts the
+  round-tripped record verbatim (it should: it is Amazon's own body with one
+  field changed), that a rescheduled **reminder** really honours the rewritten
+  `originalDate`/`originalTime`, and that the verify re-read is not so
+  aggressively cached (`?cached=true`) that a correct edit reports `ok: false`.
+  `notifications show` is the safe read to try first.
 - `kids enable` — that the `ft-panda-csrf-token` bootstrap actually succeeds on a
   real account, and that `get_child_mode` flips to `True` promptly after the
   assign (the verify read is immediate; if Amazon is eventually-consistent here,

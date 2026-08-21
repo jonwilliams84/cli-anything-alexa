@@ -99,6 +99,14 @@ Every command takes `--json`.
   per-sink disconnect, so every connected sink on that Echo is dropped.
 - `echos wake-words` — the configured wake word per Echo.
 - `echos dnd` — **read** every Echo's do-not-disturb state (the `dnd` command writes it).
+- `echos preferences [<device>]` — per-Echo `timeZoneId` / locale / temperature +
+  distance units / postal code. The timezone here is the clock a notification
+  reschedule/snooze writes an alarm's local wall-clock fields in.
+- `echos wifi [<device>]` — one Echo's wifi details (SSID, signal, security,
+  MAC/IP); default target is the first online Echo, like the rest of `echos`.
+- `auth whoami` — who the saved cookie is actually logged in as (customer id,
+  name, email, Prime Music). `auth status` validates the **cookie**; `whoami`
+  validates that it still buys an **account**, and exits non-zero if not.
 - `kids profiles` — Amazon Kids child profiles in the household (name, age, `directedId`).
 - `kids status [<device>]` — Amazon Kids state per Echo; no argument = every Echo
   (two requests each), a name/serial = just that one. A **blank/null `kids`** means
@@ -136,7 +144,21 @@ Every command takes `--json`.
   *does* mutate a `ROUTINE` and a malformed attempt partially applies (can strip
   its action), while the v2 read goes stale (can't verify). Edit routines in the
   Alexa app.
-- `notifications list` / `add-reminder` / `add-alarm` / `add-timer` / `delete` (`--yes`).
+- `notifications list` / `show <id|label>` / `add-reminder` / `add-alarm` /
+  `add-timer` / `delete` (`--yes`).
+- `notifications pause|resume <id|label>` (`--yes`) — `status: OFF`/`ON`; a
+  paused alarm keeps its schedule, unlike a delete.
+- `notifications reschedule <id|label> --in N|--at MS` and
+  `notifications snooze <id|label> [--minutes N]` (`--yes`, default 9 min).
+  **An edit is a whole-record PUT**, built from the record Amazon returned — a
+  minimal hand-rolled body is accepted silently and drops recurrence/device.
+  A reminder also fires off `originalDate`/`originalTime` (local wall clock, in
+  the Echo's own `timeZoneId` from `echos preferences`), so those move with
+  `alarmTime`; the reported `tz` says which clock was used. **Timers cannot be
+  rescheduled or snoozed** (no `alarmTime` — delete and recreate). The PUT
+  cannot report success, so every edit re-reads and sets `ok` from what Amazon
+  holds; `ok: null` means the verify read was throttled, NOT that it failed.
+  Targets resolve by id or label, and an ambiguous label aborts with the ids.
 - `media status [<device>]` — what an Echo is playing: state, title, artist,
   album, provider, volume, progress. Read-only, no `--yes`.
 - `media play|pause|next|previous|forward|rewind [<device>]` (`--yes`) — transport.

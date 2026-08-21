@@ -164,6 +164,7 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `auth login` | **Guided browser login** (default). `--password`/`--otp-secret` for scripted/CI. |
 | `auth import-pickle <path>` | Copy an existing alexapy cookie (e.g. HA's) into the local config dir (snapshot — goes stale if HA keeps rotating it; prefer `--cookie-dir`) |
 | `auth status` | Validate the saved cookie (`test_loggedin`) |
+| `auth whoami` | Show WHO the cookie is logged in as (`/api/users/me`: customer id, name, email, Prime Music) — exits non-zero if it no longer buys an account |
 | `config show` / `config save` | Show / persist the connection profile (email + region) |
 | `devices list [--ha-only \| --native-only] [--manufacturer <substr>]` | List smart-home devices with manufacturer + native-vs-HA `source` marker (each HA device shows its mapped entity id) |
 | `devices prune --whitelist <file>` | Delete HA-sourced appliances whose entity isn't whitelisted (dry-run default; `--no-dry-run --yes` to execute) |
@@ -186,6 +187,8 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `echos disconnect [--device ...]` | Disconnect **every** bluetooth sink from an Echo (`--yes` to execute) |
 | `echos wake-words` | Show the configured wake word per Echo |
 | `echos dnd` | Read the current do-not-disturb state of every Echo |
+| `echos preferences [<device>]` | Per-Echo preferences: **timezone**, locale, temperature/distance units, postal code |
+| `echos wifi [<device>]` | One Echo's wifi details (SSID, signal, security, MAC/IP) |
 | `kids profiles` | List the Amazon Kids child profiles in the household (name, age, directedId) |
 | `kids status [<device>]` | Amazon Kids state per Echo — every Echo, or one named speaker |
 | `kids enable <device> --child <name\|id>` | Turn Amazon Kids ON for an Echo by assigning it to a child profile (`--yes` to execute) |
@@ -202,6 +205,11 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `notifications add-reminder <label> --device ... [--in N \| --at MS]` | Create a reminder (`--yes` to execute) |
 | `notifications add-alarm --device ... [--in N \| --at MS]` | Create an alarm (`--yes` to execute) |
 | `notifications add-timer --device ... --duration N` | Create a timer (`--yes` to execute) |
+| `notifications show <id\|label>` | Show one notification (row + the raw record an edit is built from) |
+| `notifications pause <id\|label>` | Pause an alarm/reminder (status `OFF`) without deleting it (`--yes` to execute) |
+| `notifications resume <id\|label>` | Re-enable a paused alarm/reminder (`--yes` to execute) |
+| `notifications reschedule <id\|label> --in N \| --at MS` | Move an alarm/reminder to a new time (`--yes` to execute) |
+| `notifications snooze <id\|label> [--minutes N]` | Push an alarm/reminder further out — default 9 min, Amazon's own snooze (`--yes`) |
 | `notifications delete <id>` | Delete a notification (`--yes` to execute) |
 | `media status [<device>]` | Show what an Echo is playing (state, title, artist, album, provider, volume) |
 | `media play\|pause\|next\|previous\|forward\|rewind [<device>]` | Transport control on an Echo (`--yes` to execute) |
@@ -534,6 +542,72 @@ parsed from `/api/behaviors/v2/automations`.
 > you can't even trust it to verify. This CLI therefore **list**s and
 > **trigger**s routines but does not edit them.
 
+### Alarms, timers & reminders
+
+`notifications` lists, creates, **edits** and deletes the `/api/notifications`
+surface. An edit targets a notification by **id or label** and is planned
+before it is written: the dry-run prints the exact `field: from -> to` diff, and
+`--yes` applies that same plan.
+
+```bash
+cli-anything-alexa notifications list --json
+cli-anything-alexa notifications show "Wake up"          # row + the raw record
+cli-anything-alexa notifications pause "Wake up"         # preview the diff
+cli-anything-alexa notifications pause "Wake up" --yes   # status ON -> OFF
+cli-anything-alexa notifications resume "Wake up" --yes
+cli-anything-alexa notifications snooze "Wake up" --minutes 15 --yes
+cli-anything-alexa notifications reschedule "Wake up" --in 3600 --yes
+cli-anything-alexa notifications delete <id> --yes
+```
+
+**An edit is a whole-record PUT, not a patch.** `/api/notifications` *replaces*
+the notification with the body it is given, so every edit starts from the record
+Amazon returned and changes one or two fields. A hand-rolled minimal body is
+accepted silently and quietly drops what it omitted (recurrence, the owning
+device) — which is why `notifications show` exposes the raw record.
+
+**A reminder fires off its LOCAL wall-clock fields.** Alongside `alarmTime`
+(epoch ms), a record carries `originalDate`/`originalTime` — the date and
+time-of-day *in the owning Echo's timezone* that the app shows and the schedule
+is rebuilt from. Moving `alarmTime` alone leaves those stale, so
+`reschedule`/`snooze` rewrite them using that Echo's own `timeZoneId` from
+`echos preferences`; the `tz` field in the output says which clock was used, and
+falls back to `UTC` (visibly) when the preference can't be read.
+
+**Pause ≠ delete, and a paused alarm keeps its schedule.** `pause` sets
+`status: OFF`, leaving the alarm (and its recurrence) in the list; `resume` puts
+it back. `snooze` defaults to Amazon's own **9 minutes** and measures from the
+alarm's time when that is still ahead, or from *now* when it has already fired.
+
+> **Timers cannot be rescheduled or snoozed.** A timer counts down via
+> `remainingTime` from the moment it was set and has no `alarmTime` to move, so
+> the CLI refuses locally (before any write) and tells you to delete and
+> recreate it.
+
+> **The PUT can't tell you it worked, so the CLI re-reads.** `set_notifications`
+> is wrapped in alexapy's `_catch_all_exceptions`: a rejected request and an
+> accepted one both come back empty. Every edit therefore re-reads the
+> notification afterwards and reports `ok` from what Amazon actually holds —
+> and `ok: null` (with a note) when Amazon throttled the verify read, because
+> "could not check" is not "did not work".
+
+Ambiguity is refused, never guessed: two alarms sharing the label *"Wake up"*
+abort with both ids so you can pick one, the same rule `devices rename` follows.
+
+### Account & device introspection
+
+```bash
+cli-anything-alexa auth whoami --json      # customer id / name / email / Prime Music
+cli-anything-alexa echos preferences       # timezone + locale + units per Echo
+cli-anything-alexa echos wifi "Kitchen Echo"
+```
+
+`auth status` checks the **cookie**; `auth whoami` checks that the cookie still
+buys an **account** (`/api/users/me`) and exits non-zero when it doesn't — the
+sharper signal when a rotated Home Assistant cookie has gone stale underneath
+you. `echos preferences` is also the read that explains a notification edit's
+`tz`.
+
 ## Whitelist file format
 
 ```
@@ -579,7 +653,9 @@ python3 -m pytest tests/ -v
 ```
 
 The tests cover the **pure logic** — appliance-id → entity parsing, whitelist
-filtering / prune planning, table formatting, notification payload builders,
+filtering / prune planning, table formatting, notification payload builders +
+edit planning (id/label resolution, whole-record diffs, local wall-clock
+recomputation, snooze arithmetic),
 device-group GraphQL variables builders / name-normalization / lookup /
 entity→endpoint resolution, smart-home capability-state decoding, sequence /
 sound / skill-id normalisation, activity-feed flattening, bluetooth address
@@ -591,7 +667,7 @@ contract on all mutating commands). No `alexapy` traffic and no live account.
 python3 -m pytest tests --cov=cli_anything --cov-report=term-missing
 ```
 
-1108 tests, 88% statement/branch coverage; CI fails the build under 85%.
+1329 tests, 90% statement/branch coverage; CI fails the build under 87%.
 
 ## License
 
