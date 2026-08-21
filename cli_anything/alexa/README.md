@@ -98,6 +98,7 @@ Every command supports a global `--json` flag for machine-readable output.
 | `auth login` | **Guided browser login** (default). `--password`/`--otp-secret` for scripted/CI. |
 | `auth import-pickle <path>` | Import an existing alexapy cookie (e.g. HA's) into the local config dir |
 | `auth status` | Validate the saved cookie (`test_loggedin`) |
+| `auth whoami` | Who the cookie is logged in as (`/api/users/me`) — exits non-zero if it no longer buys an account |
 | `config show` / `config save` | Show / persist the connection profile (email + region) |
 | `devices list [--ha-only \| --native-only] [--manufacturer <substr>]` | List smart-home devices with manufacturer + native-vs-HA `source` marker (each HA device shows its mapped entity id) |
 | `devices prune --whitelist <file>` | Delete HA-sourced appliances whose entity isn't whitelisted (dry-run default; `--no-dry-run --yes` to execute) |
@@ -117,6 +118,8 @@ Every command supports a global `--json` flag for machine-readable output.
 | `echos disconnect [--device ...]` | Disconnect **every** bluetooth sink from an Echo (`--yes` to execute) |
 | `echos wake-words` | Configured wake word per Echo |
 | `echos dnd` | Read the current do-not-disturb state of every Echo |
+| `echos preferences [<device>]` | Per-Echo preferences: **timezone**, locale, temperature/distance units |
+| `echos wifi [<device>]` | One Echo's wifi details (SSID, signal, security, MAC/IP) |
 | `kids profiles` | List the Amazon Kids child profiles in the household (name, age, directedId) |
 | `kids status [<device>]` | Amazon Kids state per Echo — every Echo, or one named speaker |
 | `kids enable <device> --child <name\|id>` | Turn Amazon Kids ON for an Echo by assigning it to a child (`--yes` to execute) |
@@ -133,6 +136,10 @@ Every command supports a global `--json` flag for machine-readable output.
 | `notifications add-reminder <label> --device ... [--in N \| --at MS]` | Create a reminder (`--yes` to execute) |
 | `notifications add-alarm --device ... [--in N \| --at MS]` | Create an alarm (`--yes` to execute) |
 | `notifications add-timer --device ... --duration N` | Create a timer (`--yes` to execute) |
+| `notifications show <id\|label>` | One notification: display row + the raw record an edit is built from |
+| `notifications pause\|resume <id\|label>` | Pause (`status: OFF`) / re-enable an alarm or reminder without deleting it (`--yes`) |
+| `notifications reschedule <id\|label> --in N \| --at MS` | Move an alarm/reminder, rewriting its local wall-clock fields in the Echo's timezone (`--yes`) |
+| `notifications snooze <id\|label> [--minutes N]` | Push it further out — default 9 min, Amazon's own snooze (`--yes`) |
 | `notifications delete <id>` | Delete a notification (`--yes` to execute) |
 | `media status [<device>]` | What an Echo is playing (state, title, artist, album, provider, volume) |
 | `media play\|pause\|next\|previous\|forward\|rewind [<device>]` | Transport control on an Echo (`--yes` to execute) |

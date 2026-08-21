@@ -408,6 +408,17 @@ def auth_status(ctx):
         sys.exit(1)
 
 
+@auth.command("whoami")
+@click.pass_context
+def auth_whoami(ctx):
+    """Show the Amazon account the saved cookie belongs to."""
+    login = _login(ctx)
+    row = _run(ctx, session_core.account_info(login))
+    emit(ctx, row)
+    if not row.get("authenticated"):
+        sys.exit(1)
+
+
 # ──────────────────────────────────────────────────────── devices (appliances)
 
 
@@ -1164,6 +1175,39 @@ def echos_dnd(ctx):
     emit(ctx, _run(ctx, devices_meta_core.fetch_dnd_states(login)))
 
 
+@echos.command("preferences")
+@click.argument("device", required=False)
+@click.pass_context
+def echos_preferences(ctx, device):
+    """Per-Echo preferences: timezone, locale, temperature/distance units.
+
+    The timezone is the one `notifications reschedule`/`snooze` writes an
+    alarm's local wall-clock fields in, so this is the read that explains an
+    edit's `tz`.
+    """
+    login = _login(ctx)
+    rows = _run(ctx, devices_meta_core.fetch_device_preferences(login))
+    if device:
+        wanted = device.strip().lower()
+        rows = [
+            r
+            for r in rows
+            if wanted in ((r.get("device") or "").lower(), (r.get("serial") or "").lower())
+        ]
+        if not rows:
+            _abort(f"no device matching {device!r}")
+    emit(ctx, rows)
+
+
+@echos.command("wifi")
+@click.argument("device", required=False)
+@click.pass_context
+def echos_wifi(ctx, device):
+    """Show one Echo's wifi details (default: the first online device)."""
+    login = _login(ctx)
+    emit(ctx, _run(ctx, devices_meta_core.fetch_wifi_details(login, device)))
+
+
 # ──────────────────────────────────────────────────────── amazon kids
 
 
@@ -1522,7 +1566,13 @@ def routines_run(ctx, name_or_id, yes):
 
 @cli.group()
 def notifications():
-    """Alarms / timers / reminders — list / add / delete."""
+    """Alarms / timers / reminders — list / show / add / edit / delete.
+
+    An edit (pause / resume / reschedule / snooze) is a whole-record PUT that
+    is planned first: the dry-run prints the exact `field: from -> to` diff,
+    and `--yes` applies that same plan and then RE-READS to report what Amazon
+    actually holds (the PUT itself cannot distinguish accepted from rejected).
+    """
 
 
 @notifications.command("list")
@@ -1598,6 +1648,84 @@ def notifications_add_timer(ctx, device, duration_seconds, label, yes):
         emit(ctx, {"dry_run": True, "payload": payload, "hint": "re-run with --yes to execute"})
         return
     emit(ctx, _run(ctx, notifications_core.create_notification(login, payload)))
+
+
+@notifications.command("show")
+@click.argument("target")
+@click.pass_context
+def notifications_show(ctx, target):
+    """Show one notification (by id or label) with its raw record."""
+    login = _login(ctx)
+    emit(ctx, _run(ctx, notifications_core.show_notification(login, target)))
+
+
+def _notification_edit(ctx, target, yes, **change):
+    """Plan an edit, print it as the dry-run, and apply it under --yes.
+
+    The plan is built (and the target/type validated) BEFORE the write, so an
+    unknown alarm or a timer-reschedule fails identically with and without
+    ``--yes``.
+    """
+    login = _login(ctx)
+    plan = _run(ctx, notifications_core.plan_update(login, target, **change))
+    if not plan.get("change"):
+        emit(ctx, {"id": plan.get("id"), "change": {}, "ok": True, "note": "already in that state"})
+        return
+    if not yes:
+        preview = {k: v for k, v in plan.items() if k not in ("payload", "before")}
+        preview["dry_run"] = True
+        preview["hint"] = "re-run with --yes to execute"
+        emit(ctx, preview)
+        return
+    emit(ctx, _run(ctx, notifications_core.apply_update(login, plan)))
+
+
+@notifications.command("pause")
+@click.argument("target")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def notifications_pause(ctx, target, yes):
+    """Pause an alarm/reminder (status OFF) without deleting it."""
+    _notification_edit(ctx, target, yes, status="off")
+
+
+@notifications.command("resume")
+@click.argument("target")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def notifications_resume(ctx, target, yes):
+    """Re-enable a paused alarm/reminder (status ON)."""
+    _notification_edit(ctx, target, yes, status="on")
+
+
+@notifications.command("reschedule")
+@click.argument("target")
+@click.option("--in", "in_seconds", type=float, default=None, help="Seconds from now")
+@click.option("--at", "at_epoch_ms", type=int, default=None, help="Absolute epoch milliseconds")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def notifications_reschedule(ctx, target, in_seconds, at_epoch_ms, yes):
+    """Move an alarm/reminder to a new time (timers cannot be moved)."""
+    if (in_seconds is None) == (at_epoch_ms is None):
+        _abort("pass exactly one of --in <seconds> or --at <epoch-ms>")
+    when = notifications_core._epoch_ms(in_seconds, at_epoch_ms)
+    _notification_edit(ctx, target, yes, at_epoch_ms=when)
+
+
+@notifications.command("snooze")
+@click.argument("target")
+@click.option(
+    "--minutes",
+    type=float,
+    default=notifications_core.DEFAULT_SNOOZE_MINUTES,
+    show_default=True,
+    help="How far to push it out (Amazon's own snooze is 9 minutes)",
+)
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def notifications_snooze(ctx, target, minutes, yes):
+    """Push an alarm/reminder further out (from its time, or from now)."""
+    _notification_edit(ctx, target, yes, snooze_minutes=minutes)
 
 
 @notifications.command("delete")

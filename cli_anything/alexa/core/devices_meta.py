@@ -150,6 +150,79 @@ def dnd_rows(payload: Any, devices: list[dict[str, Any]] | None = None) -> list[
     return out
 
 
+def preference_rows(
+    payload: Any, devices: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """Flatten ``/api/device-preferences`` into display rows (pure).
+
+    The interesting field is ``timeZoneId``: it is the clock a reminder's
+    ``originalDate``/``originalTime`` are expressed in, so an alarm edit
+    (:mod:`cli_anything.alexa.core.notifications`) reads it from here rather
+    than assuming the host's timezone.  ``locale`` matters for the same reason
+    announce/speak care about it, and ``temperatureUnit``/``distanceUnits``
+    explain what a device answers "what's the temperature" with.
+    """
+    names = _serial_to_name(devices)
+    out: list[dict[str, Any]] = []
+    for p in _unwrap(payload, "devicePreferences"):
+        serial = p.get("deviceSerialNumber")
+        out.append(
+            {
+                "device": names.get(serial, serial),
+                "serial": serial,
+                "timeZoneId": p.get("timeZoneId"),
+                "locale": p.get("locale"),
+                "temperatureUnit": p.get("temperatureUnit"),
+                "distanceUnits": p.get("distanceUnits"),
+                "wakeWordConfirmation": p.get("goldfishEnabled")
+                if "goldfishEnabled" in p
+                else p.get("wakeWordConfirmation"),
+                "postalCode": p.get("postalCode"),
+            }
+        )
+    return out
+
+
+def device_timezone(rows: list[dict[str, Any]] | None, serial: str | None) -> str | None:
+    """One device's ``timeZoneId`` from :func:`preference_rows` output (pure).
+
+    ``None`` when the device has no preferences entry — the caller must then
+    say which clock it fell back to rather than pretending it knew.
+    """
+    if not serial:
+        return None
+    for row in rows or []:
+        if isinstance(row, dict) and row.get("serial") == serial:
+            return row.get("timeZoneId") or None
+    return None
+
+
+def wifi_row(payload: Any, device: str | None = None, serial: str | None = None) -> dict[str, Any]:
+    """Flatten ``/api/device-wifi-details`` into one display row (pure).
+
+    Every field is optional: a device that has never been on wifi (or an
+    ethernet-attached one) answers with an envelope missing most keys, which
+    comes back as ``None`` rather than raising.
+    """
+    data = payload if isinstance(payload, dict) else {}
+    # The payload is sometimes wrapped in a single-key envelope.
+    for key in ("deviceWifiDetails", "wifiDetails", "details"):
+        inner = data.get(key)
+        if isinstance(inner, dict):
+            data = inner
+            break
+    return {
+        "device": device,
+        "serial": serial or data.get("deviceSerialNumber"),
+        "ssid": data.get("ssid") or data.get("essid"),
+        "signalStrength": data.get("signalStrength") or data.get("rssi"),
+        "securityMethod": data.get("securityMethod"),
+        "macAddress": data.get("macAddress"),
+        "ipAddress": data.get("ipAddress"),
+        "frequency": data.get("frequency") or data.get("frequencyBand"),
+    }
+
+
 async def fetch_bluetooth(login) -> list[dict[str, Any]]:
     """Paired-bluetooth rows for every Echo on the account."""
     from alexapy import AlexaAPI
@@ -172,3 +245,34 @@ async def fetch_dnd_states(login) -> list[dict[str, Any]]:
 
     payload = await AlexaAPI.get_dnd_state(login)
     return dnd_rows(payload, await fetch_devices(login))
+
+
+async def fetch_device_preferences(
+    login, devices: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """Per-Echo preferences (timezone / locale / units) for the account.
+
+    ``devices`` may be passed in by a caller that already fetched the device
+    list (an alarm edit does) so the same records are not fetched twice.
+    """
+    from alexapy import AlexaAPI
+
+    payload = await AlexaAPI.get_device_preferences(login)
+    return preference_rows(payload, devices if devices is not None else await fetch_devices(login))
+
+
+async def fetch_wifi_details(login, device: str | None = None) -> dict[str, Any]:
+    """Wifi details for ONE Echo (default: the first online one).
+
+    Device-bound, so it goes through :class:`DeviceRef` like every other
+    instance-method call.  ``resolve_device`` is imported inside the function
+    on purpose: :mod:`cli_anything.alexa.core.media` imports *this* module at
+    module level, so a top-level import here would be a cycle.
+    """
+    from alexapy import AlexaAPI
+
+    from cli_anything.alexa.core.media import resolve_device
+
+    ref = await resolve_device(login, device)
+    payload = await AlexaAPI(ref, login).get_wifi_details()
+    return wifi_row(payload, device=ref.account_name, serial=ref.device_serial_number)
