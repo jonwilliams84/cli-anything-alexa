@@ -333,9 +333,17 @@ def test_list_notifications_returns_display_rows_not_raw_records():
             "label": "Wake up",
             "deviceSerial": "SN1",
             "alarmTime": ALARM_MS,
+            "recurring": None,
             "remaining": None,
         }
     ]
+
+
+def test_list_notifications_surfaces_the_recurrence_rule():
+    fake = _fake_api([_alarm(recurringPattern="WEEKDAYS")])
+    with patch("alexapy.AlexaAPI", fake):
+        rows = _run(notif.list_notifications(MagicMock()))
+    assert rows[0]["recurring"] == "WEEKDAYS"
 
 
 def test_show_notification_returns_the_row_plus_the_raw_record():
@@ -478,3 +486,200 @@ def test_snooze_plans_and_applies_in_one_call():
         result = _run(notif.snooze(MagicMock(), "alarm-1"))
     assert result["ok"] is True
     assert result["alarmTimeUtc"] == "2026-01-01T07:09:00+00:00"
+
+
+# ── recurrence (repeat / recurringPattern) ───────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        ("daily", "DAILY"),
+        ("WEEKDAYS", "WEEKDAYS"),
+        ("Weekends", "WEEKENDS"),
+        (" weekly ", "WEEKLY"),
+    ],
+)
+def test_normalize_recurrence_accepts_the_app_words_case_insensitively(word, expected):
+    assert notif.normalize_recurrence(word) == expected
+
+
+def test_normalize_recurrence_accepts_amazons_own_upper_case_spellings():
+    for value in ("DAILY", "WEEKLY", "WEEKENDS", "WEEKDAYS"):
+        assert notif.normalize_recurrence(value) == value
+
+
+@pytest.mark.parametrize("word", ["none", "OFF", "never", " once ", ""])
+def test_normalize_recurrence_treats_none_words_and_empty_as_clear(word):
+    assert notif.normalize_recurrence(word) is None
+
+
+def test_normalize_recurrence_of_nothing_is_none():
+    assert notif.normalize_recurrence(None) is None
+
+
+@pytest.mark.parametrize("word", ["hourly", "every other tuesday", 1, ["daily"]])
+def test_normalize_recurrence_refuses_anything_else(word):
+    with pytest.raises(ValueError, match="repeat must be one of"):
+        notif.normalize_recurrence(word)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("Mon,Thu", ["MO", "TH"]),
+        ("MONDAY, friday", ["MO", "FR"]),
+        ("MO,TH", ["MO", "TH"]),
+        ("sun, Tue, Sunday", ["SU", "TU"]),
+        (["wed", "WE", "Wed"], ["WE"]),
+        (" thu ", ["TH"]),
+    ],
+)
+def test_normalize_recurrence_days_accepts_names_and_codes(value, expected):
+    assert notif.normalize_recurrence_days(value) == expected
+
+
+@pytest.mark.parametrize("value", [None, "", "  ", [], (), ","])
+def test_normalize_recurrence_days_of_nothing_is_none(value):
+    assert notif.normalize_recurrence_days(value) is None
+
+
+@pytest.mark.parametrize("value", ["someday", "monday,tueday", 5, "thurz"])
+def test_normalize_recurrence_days_refuses_unknown_days(value):
+    with pytest.raises(ValueError, match="unknown weekday"):
+        notif.normalize_recurrence_days(value)
+
+
+def test_is_recurring_reads_the_pattern_field_only():
+    assert notif.is_recurring(_alarm(recurringPattern="DAILY")) is True
+    assert notif.is_recurring(_alarm()) is False
+    assert notif.is_recurring(None) is False
+
+
+def test_build_alarm_and_reminder_accept_a_repeat_pattern():
+    alarm = notif.build_alarm("S", "T", ALARM_MS, label="x", recurring_pattern="Daily")
+    assert alarm["recurringPattern"] == "DAILY"
+    assert "rRuleData" not in alarm
+    reminder = notif.build_reminder("milk", "S", "T", ALARM_MS, recurring_pattern="weekends")
+    assert reminder["recurringPattern"] == "WEEKENDS"
+
+
+def test_build_alarm_weekly_with_days_stamps_the_rrule():
+    alarm = notif.build_alarm(
+        "S", "T", ALARM_MS, recurring_pattern="weekly", recurrence_days="Mon,Thu"
+    )
+    assert alarm["recurringPattern"] == "WEEKLY"
+    assert alarm["rRuleData"] == {"byWeekDays": ["MO", "TH"]}
+
+
+def test_build_alarm_refuses_days_with_a_fixed_day_pattern():
+    with pytest.raises(ValueError, match="days only apply to a weekly repeat"):
+        notif.build_alarm("S", "T", ALARM_MS, recurring_pattern="daily", recurrence_days="Mon")
+
+
+def test_build_alarm_treats_a_none_word_as_not_recurring():
+    alarm = notif.build_alarm("S", "T", ALARM_MS, recurring_pattern="none")
+    assert "recurringPattern" not in alarm
+
+
+def test_build_recurrence_update_keeps_every_other_field_of_the_record():
+    payload = notif.build_recurrence_update(_alarm(), "daily")
+    assert payload["recurringPattern"] == "DAILY"
+    assert payload["rRuleData"] == {"byWeekDays": ["MO"]}  # untouched other field
+    assert payload["alarmTime"] == ALARM_MS
+
+
+def test_build_recurrence_update_does_not_mutate_the_source_record():
+    record = _alarm(recurringPattern="WEEKDAYS")
+    notif.build_recurrence_update(record, "daily")
+    assert record["recurringPattern"] == "WEEKDAYS"
+
+
+def test_build_recurrence_update_weekly_rewrites_the_day_list():
+    payload = notif.build_recurrence_update(_alarm(), "Weekly", days="Sat,Sun")
+    assert payload["recurringPattern"] == "WEEKLY"
+    assert payload["rRuleData"] == {"byWeekDays": ["SA", "SU"]}
+
+
+def test_build_recurrence_update_clearing_removes_both_rule_fields():
+    record = _alarm(recurringPattern="WEEKLY", rRuleData={"byWeekDays": ["MO"]})
+    payload = notif.build_recurrence_update(record, "none")
+    assert "recurringPattern" not in payload
+    assert "rRuleData" not in payload
+
+
+def test_build_recurrence_update_refuses_days_with_no_pattern():
+    with pytest.raises(ValueError, match="--days needs a repeat pattern"):
+        notif.build_recurrence_update(_alarm(), "none", "Mon")
+
+
+def test_build_recurrence_update_refuses_days_with_a_fixed_day_pattern():
+    with pytest.raises(ValueError, match="days only apply to a weekly repeat"):
+        notif.build_recurrence_update(_alarm(), "weekdays", days="Mon,Thu")
+
+
+def test_build_recurrence_update_refuses_a_timer_and_an_empty_record():
+    with pytest.raises(ValueError, match="cannot be made recurring"):
+        notif.build_recurrence_update(_timer(), "daily")
+    with pytest.raises(ValueError, match="empty notification record"):
+        notif.build_recurrence_update({}, "daily")
+
+
+def test_change_summary_diffs_the_recurrence_fields():
+    after = notif.build_recurrence_update(_alarm(), "daily")
+    assert notif.change_summary(_alarm(), after) == {
+        "recurringPattern": {"from": None, "to": "DAILY"}
+    }
+    recurring = _alarm(recurringPattern="DAILY", rRuleData={"byWeekDays": ["MO"]})
+    cleared = notif.build_recurrence_update(recurring, "none")
+    assert notif.change_summary(recurring, cleared) == {
+        "recurringPattern": {"from": "DAILY", "to": None},
+        "rRuleData": {"from": {"byWeekDays": ["MO"]}, "to": None},
+    }
+
+
+def test_plan_update_for_a_repeat_diffs_the_rule_without_writing():
+    fake = _fake_api([_alarm()])
+    with patch("alexapy.AlexaAPI", fake):
+        plan = _run(notif.plan_update(MagicMock(), "alarm-1", recurring_pattern="weekly", recurrence_days="Mon"))
+    assert plan["change"]["recurringPattern"] == {"from": None, "to": "WEEKLY"}
+    assert plan["payload"]["rRuleData"] == {"byWeekDays": ["MO"]}
+    fake.set_notifications.assert_not_awaited()
+
+
+def test_plan_update_refuses_making_a_timer_recurring_before_any_write():
+    fake = _fake_api([_timer()])
+    with (
+        patch("alexapy.AlexaAPI", fake),
+        pytest.raises(ValueError, match="cannot be made recurring"),
+    ):
+        _run(notif.plan_update(MagicMock(), "timer-1", recurring_pattern="daily"))
+    fake.set_notifications.assert_not_awaited()
+
+
+def test_plan_update_still_refuses_no_change_for_a_recurrence_no_op():
+    """A repeat word that matches the record's own rule diffs to nothing here;
+    plan_update refuses only when NOTHING was requested."""
+    fake = _fake_api([_alarm()])
+    with patch("alexapy.AlexaAPI", fake), pytest.raises(ValueError, match="nothing to change"):
+        _run(notif.plan_update(MagicMock(), "alarm-1"))
+
+
+def test_apply_update_verifies_the_recurrence_edit_by_rereading():
+    after = _alarm(recurringPattern="WEEKDAYS")
+    fake = _fake_api([_alarm()], after=[after])
+    with patch("alexapy.AlexaAPI", fake):
+        login = MagicMock()
+        plan = _run(notif.plan_update(login, "alarm-1", recurring_pattern="weekdays"))
+        result = _run(notif.apply_update(login, plan))
+    assert result["ok"] is True
+    assert fake.set_notifications.await_args.args[1]["recurringPattern"] == "WEEKDAYS"
+
+
+def test_set_recurrence_plans_and_applies_in_one_call():
+    after = _alarm(recurringPattern="WEEKLY", rRuleData={"byWeekDays": ["SA"]})
+    fake = _fake_api([_alarm()], after=[after])
+    with patch("alexapy.AlexaAPI", fake):
+        result = _run(notif.set_recurrence(MagicMock(), "alarm-1", "weekly", "Sat"))
+    assert result["ok"] is True
+    assert result["change"]["recurringPattern"]["to"] == "WEEKLY"

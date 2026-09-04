@@ -557,8 +557,24 @@ cli-anything-alexa notifications pause "Wake up" --yes   # status ON -> OFF
 cli-anything-alexa notifications resume "Wake up" --yes
 cli-anything-alexa notifications snooze "Wake up" --minutes 15 --yes
 cli-anything-alexa notifications reschedule "Wake up" --in 3600 --yes
+cli-anything-alexa notifications repeat "Wake up" daily --yes
+cli-anything-alexa notifications repeat "Bin night" weekly --days Tue --yes
+cli-anything-alexa notifications repeat "One-off alarm" none --yes   # clear the rule
 cli-anything-alexa notifications delete <id> --yes
 ```
+
+**Recurring alarms & reminders.** Alarms and reminders can repeat, exactly the
+way the app's "Repeats" picker does. New ones take `--repeat
+daily|weekdays|weekends|weekly` (add `--days Mon,Thu` with `weekly` to name
+the weekdays), and `notifications repeat` sets or **clears** the rule on an
+existing alarm/reminder. Under the hood this writes Amazon's
+`recurringPattern` (`DAILY` / `WEEKDAYS` / `WEEKENDS` / `WEEKLY`) plus
+`rRuleData.byWeekDays` for a named-day weekly rule; `none` removes both fields
+(the explicit absence the app writes for "no repeat"). `notifications list`
+gains a `recurring` column, edits keep the rule (whole-record PUT), and
+`repeat` obeys the same plan → dry-run diff → `--yes` → verify cycle as every
+other edit. Timers cannot repeat — a timer counts down exactly once — so the
+CLI refuses before any write.
 
 **An edit is a whole-record PUT, not a patch.** `/api/notifications` *replaces*
 the notification with the body it is given, so every edit starts from the record
