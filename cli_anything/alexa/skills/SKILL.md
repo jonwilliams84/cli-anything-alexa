@@ -145,7 +145,9 @@ Every command takes `--json`.
   its action), while the v2 read goes stale (can't verify). Edit routines in the
   Alexa app.
 - `notifications list` / `show <id|label>` / `add-reminder` / `add-alarm` /
-  `add-timer` / `delete` (`--yes`).
+  `add-timer` / `delete` (`--yes`). `add-reminder`/`add-alarm` also take
+  `--repeat daily|weekdays|weekends|weekly [--days Mon,Thu]` to create a
+  recurring one (weekly names its days via `rRuleData.byWeekDays`).
 - `notifications pause|resume <id|label>` (`--yes`) — `status: OFF`/`ON`; a
   paused alarm keeps its schedule, unlike a delete.
 - `notifications reschedule <id|label> --in N|--at MS` and
@@ -158,6 +160,10 @@ Every command takes `--json`.
   rescheduled or snoozed** (no `alarmTime` — delete and recreate). The PUT
   cannot report success, so every edit re-reads and sets `ok` from what Amazon
   holds; `ok: null` means the verify read was throttled, NOT that it failed.
+- `notifications repeat <id|label> daily|weekdays|weekends|weekly|none
+  [--days Mon,Thu]` (`--yes`) — set or **clear** a recurrence
+  (`recurringPattern` + `rRuleData.byWeekDays`; `none` removes both).
+  Timers can't repeat.
   Targets resolve by id or label, and an ambiguous label aborts with the ids.
 - `media status [<device>]` — what an Echo is playing: state, title, artist,
   album, provider, volume, progress. Read-only, no `--yes`.

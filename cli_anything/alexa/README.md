@@ -133,13 +133,14 @@ Every command supports a global `--json` flag for machine-readable output.
 | `routines list` | List Alexa routines (behaviors) with trigger utterance + action-target summary (editing a routine is brittle/destructive via API — do it in the app) |
 | `routines run <name\|id>` | Trigger a routine via `behaviors/preview` (`--yes` to execute) |
 | `notifications list` | List alarms / timers / reminders |
-| `notifications add-reminder <label> --device ... [--in N \| --at MS]` | Create a reminder (`--yes` to execute) |
-| `notifications add-alarm --device ... [--in N \| --at MS]` | Create an alarm (`--yes` to execute) |
+| `notifications add-reminder <label> --device ... [--in N \| --at MS] [--repeat daily\|weekdays\|weekends\|weekly [--days Mon,Thu]]` | Create a reminder, optionally recurring (`--yes` to execute) |
+| `notifications add-alarm --device ... [--in N \| --at MS] [--repeat daily\|weekdays\|weekends\|weekly [--days Mon,Thu]]` | Create an alarm, optionally recurring (`--yes` to execute) |
 | `notifications add-timer --device ... --duration N` | Create a timer (`--yes` to execute) |
 | `notifications show <id\|label>` | One notification: display row + the raw record an edit is built from |
 | `notifications pause\|resume <id\|label>` | Pause (`status: OFF`) / re-enable an alarm or reminder without deleting it (`--yes`) |
 | `notifications reschedule <id\|label> --in N \| --at MS` | Move an alarm/reminder, rewriting its local wall-clock fields in the Echo's timezone (`--yes`) |
 | `notifications snooze <id\|label> [--minutes N]` | Push it further out — default 9 min, Amazon's own snooze (`--yes`) |
+| `notifications repeat <id\|label> daily\|weekdays\|weekends\|weekly\|none [--days Mon,Thu]` | Set or clear a notification's recurrence (`recurringPattern`, `rRuleData`) (`--yes`) |
 | `notifications delete <id>` | Delete a notification (`--yes` to execute) |
 | `media status [<device>]` | What an Echo is playing (state, title, artist, album, provider, volume) |
 | `media play\|pause\|next\|previous\|forward\|rewind [<device>]` | Transport control on an Echo (`--yes` to execute) |

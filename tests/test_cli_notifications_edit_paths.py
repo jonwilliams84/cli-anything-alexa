@@ -305,3 +305,151 @@ def test_wifi_takes_an_explicit_echo():
     with _stub_run({}), _stub_core(devices_meta_core, "fetch_wifi_details") as stub:
         _invoke(["--json", "echos", "wifi", "Study"])
     assert stub.call_args.args[1] == "Study"
+
+
+# ── notifications repeat ─────────────────────────────────────────────────
+
+
+REPEAT_PLAN = {
+    "id": "alarm-1",
+    "type": "Alarm",
+    "label": "Wake up",
+    "change": {"recurringPattern": {"from": None, "to": "WEEKLY"}},
+    "payload": {"notificationIndex": "alarm-1", "recurringPattern": "WEEKLY"},
+    "before": {"notificationIndex": "alarm-1"},
+}
+
+
+@pytest.mark.parametrize(
+    ("pattern", "expected"),
+    [
+        ("daily", "daily"),
+        ("WEEKDAYS", "weekdays"),
+        ("weekly", "weekly"),
+        ("none", "none"),
+    ],
+    ids=lambda v: str(v),
+)
+def test_repeat_plans_the_pattern_verbatim_for_the_core_to_normalize(pattern, expected):
+    """The CLI stays thin: it passes the user's word through and the core
+    normalizes/clears, so the edit is reviewable in the dry-run diff."""
+    with _stub_run(PLAN), _stub_core(notifications_core, "plan_update") as plan_stub:
+        assert _invoke(["--json", "notifications", "repeat", "alarm-1", pattern]).exit_code == 0
+    assert plan_stub.call_args.kwargs["recurring_pattern"] == expected
+    assert plan_stub.call_args.kwargs["recurrence_days"] is None
+
+
+def test_repeat_passes_the_weekday_list_through():
+    with _stub_run(PLAN), _stub_core(notifications_core, "plan_update") as plan_stub:
+        _invoke(["--json", "notifications", "repeat", "alarm-1", "weekly", "--days", "Mon,Thu"])
+    assert plan_stub.call_args.kwargs["recurrence_days"] == "Mon,Thu"
+
+
+def test_repeat_previews_the_diff_without_yes():
+    with _stub_run(REPEAT_PLAN):
+        parsed = json.loads(_invoke(["--json", "notifications", "repeat", "alarm-1", "daily"]).output)
+    assert parsed["dry_run"] is True
+    assert parsed["change"] == {"recurringPattern": {"from": None, "to": "WEEKLY"}}
+
+
+def test_repeat_applies_the_planned_payload_with_yes():
+    applied = {**APPLIED, "change": REPEAT_PLAN["change"]}
+    with (
+        _stub_run(REPEAT_PLAN, applied),
+        _stub_core(notifications_core, "apply_update") as apply_stub,
+    ):
+        parsed = json.loads(
+            _invoke(["--json", "notifications", "repeat", "alarm-1", "daily", "--yes"]).output
+        )
+    assert parsed["ok"] is True
+    assert apply_stub.call_args.args[1] is REPEAT_PLAN
+
+
+@pytest.mark.parametrize("pattern", ["hourly", "every day", ""])
+def test_repeat_refuses_an_unknown_pattern_without_any_network_call(pattern):
+    with patch("cli_anything.alexa.alexa_cli._login") as login:
+        result = CliRunner().invoke(
+            cli, ["--json", "notifications", "repeat", "alarm-1", pattern], obj={}
+        )
+    assert result.exit_code != 0
+    login.assert_not_called()
+
+
+def test_repeat_refuses_days_with_a_fixed_day_pattern_before_any_network_call():
+    with patch("cli_anything.alexa.alexa_cli._login") as login:
+        result = CliRunner().invoke(
+            cli, ["--json", "notifications", "repeat", "alarm-1", "daily", "--days", "Mon"], obj={}
+        )
+    assert result.exit_code != 0
+    assert "--days" in result.output
+    login.assert_not_called()
+
+
+@pytest.mark.parametrize("argv", [["notifications", "repeat", "alarm-1"], ["notifications", "repeat"]])
+def test_repeat_requires_a_target_and_a_pattern(argv):
+    assert CliRunner().invoke(cli, ["--json", *argv], obj={}).exit_code != 0
+
+
+# ── recurring creation (add-alarm / add-reminder --repeat) ───────────────
+
+
+DEVICE = [{"serialNumber": "SN1", "deviceType": "DT1", "accountName": "Kitchen"}]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["add-alarm", "--device", "Kitchen"],
+        ["add-reminder", "eggs", "--device", "Kitchen"],
+    ],
+)
+def test_add_commands_preview_the_payload_without_yes(argv):
+    with _stub_run(DEVICE):
+        parsed = json.loads(_invoke(["--json", "notifications", *argv, "--in", "60"]).output)
+    assert parsed["dry_run"] is True
+    assert parsed["payload"]["deviceSerialNumber"] == "SN1"
+
+
+@pytest.mark.parametrize(
+    ("argv", "field", "expected"),
+    [
+        (["add-alarm", "--device", "Kitchen", "--in", "60", "--repeat", "daily"], "recurringPattern", "DAILY"),
+        (
+            ["add-reminder", "eggs", "--device", "Kitchen", "--in", "60", "--repeat", "weekly", "--days", "Mon,Thu"],
+            "rRuleData",
+            {"byWeekDays": ["MO", "TH"]},
+        ),
+    ],
+    ids=["alarm-daily", "reminder-weekly-days"],
+)
+def test_add_commands_stamp_the_recurrence_rule(argv, field, expected):
+    with _stub_run(DEVICE):
+        parsed = json.loads(_invoke(["--json", "notifications", *argv]).output)
+    assert parsed["payload"][field] == expected
+
+
+def test_add_commands_refuse_days_without_a_weekly_repeat_before_any_network_call():
+    with patch("cli_anything.alexa.alexa_cli._login") as login:
+        result = CliRunner().invoke(
+            cli,
+            ["--json", "notifications", "add-alarm", "--device", "Kitchen", "--in", "60", "--repeat", "daily", "--days", "Mon"],
+            obj={},
+        )
+    assert result.exit_code != 0
+    assert "--days" in result.output
+    login.assert_not_called()
+
+
+def test_add_alarm_executes_the_built_payload_with_yes():
+    with (
+        _stub_run(DEVICE, {"ok": True, "status": 201}),
+        _stub_core(notifications_core, "create_notification") as create_stub,
+    ):
+        result = _invoke(
+            ["--json", "notifications", "add-alarm", "--device", "Kitchen", "--in", "60", "--repeat", "daily", "--yes"]
+        )
+    assert result.exit_code == 0
+    assert json.loads(result.output)["ok"] is True
+    payload = create_stub.call_args.args[1]
+    assert payload["recurringPattern"] == "DAILY"
+    assert payload["type"] == "Alarm"

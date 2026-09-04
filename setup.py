@@ -5,7 +5,7 @@ with open("cli_anything/alexa/README.md") as f:
 
 setup(
     name="cli-anything-alexa",
-    version="0.2.0",
+    version="0.3.0",
     description="CLI harness for Amazon Alexa — appliance/group/routine/notification management over the unofficial web API, with a browser-proxy login (no Home Assistant required)",
     long_description=long_description,
     long_description_content_type="text/markdown",

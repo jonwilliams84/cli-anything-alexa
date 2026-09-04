@@ -20,7 +20,7 @@ is a **browser-proxy login** that needs no Home Assistant.
   - `device_ref.py` — **pure** adapter: raw `get_devices()` dict → the *attribute* surface alexapy's device-bound methods read off `self._device`. Unit-tested against the alexapy contract.
   - `devices_meta.py` — physical Echo devices (announce/dnd/media/routine targets) + the static state reads: bluetooth pairings, wake words, DND status, **device preferences** (`timeZoneId`/locale/units — the timezone a notification edit needs) and **per-Echo wifi details** (pure row builders + thin fetchers).
   - `media.py` — Echo transport (`play`/`pause`/`next`/`previous`/`forward`/`rewind`/`stop`), volume, shuffle/repeat, `play_music`, and the `get_state` player read. Pure volume/provider/player-row helpers unit-tested.
-  - `notifications.py` — alarms/timers/reminders: list + pure payload builders + POST/PUT/DELETE, **plus the edit surface** (`pause`/`resume`/`reschedule`/`snooze`): pure resolution by id-or-label, whole-record PUT builders, local wall-clock (`originalDate`/`originalTime`) recomputation in the Echo's own timezone, the `plan_update` → `apply_update` split (dry-run prints the `change` diff, `--yes` applies that same plan) and the re-read verify. Pure half unit-tested.
+  - `notifications.py` — alarms/timers/reminders: list + pure payload builders + POST/PUT/DELETE, **plus the edit surface** (`pause`/`resume`/`reschedule`/`snooze`/`repeat`): pure resolution by id-or-label, whole-record PUT builders, local wall-clock (`originalDate`/`originalTime`) recomputation in the Echo's own timezone, **recurrence** (`normalize_recurrence`/`normalize_recurrence_days`/`build_recurrence_update` — the `recurringPattern` + `rRuleData.byWeekDays` fields, created via `add-alarm/add-reminder --repeat` and edited/cleared via `notifications repeat`), the `plan_update` → `apply_update` split (dry-run prints the `change` diff, `--yes` applies that same plan) and the re-read verify. Pure half unit-tested.
   - `routines.py` — behaviors list (with trigger utterance + best-effort `action_targets` summary) + trigger (device-bound `run_routine`). **Routine EDITS are not API-supported — Alexa-app-only** (see note below).
   - `control.py` — announce (`send_announcement`, chime + fan-out) + **speak** (`send_tts`, no chime, one speaker) + **push** (`send_mobilepush` / `send_dropin_notification` — lands in the Alexa APP, silent on the speakers) + dnd. Pure `normalize_push` unit-tested.
   - `smarthome.py` — smart-home **state reads + actuation** over `/api/phoenix/state`: `get_entity_state` (read) and `set_light_state` (the *generic* control call — a plug is a light with no brightness) + Guard (`static_set_guard_state`). Pure capability-state decoding / colour+brightness validation unit-tested.
@@ -107,8 +107,9 @@ cli-anything-alexa devices list --json
 - **Routine EDITS are not the only Alexa-app-only surface** — see the routines
   note below; media/transport, by contrast, is fully API-driven.
 - **Mutations are dry-run-by-default + require `--yes`** (prune, delete, run,
-  notifications add/delete, announce, speak, push, dnd, devices on/off/light,
-  guard set, media *, run *, echos connect/disconnect, activity clear). Mirror
+  notifications add/delete/repeat, announce, speak, push, dnd,
+  devices on/off/light, guard set, media *, run *, echos connect/disconnect,
+  activity clear). Mirror
   this when adding commands, and **normalise/validate BEFORE `_login`** so bad
   input fails identically with and without `--yes`.
 - **`run command` is the escape hatch.** `AlexaAPI.run_custom` sends literal text
@@ -304,6 +305,14 @@ implementation + Amazon's documented shapes, not observed):
   `originalDate`/`originalTime`, and that the verify re-read is not so
   aggressively cached (`?cached=true`) that a correct edit reports `ok: false`.
   `notifications show` is the safe read to try first.
+- `notifications repeat` — that `recurringPattern` `DAILY`/`WEEKDAYS`/
+  `WEEKENDS`/`WEEKLY` (and a `weekly` rule's `rRuleData.byWeekDays`) round-trips
+  exactly as created, and that a `none` edit's explicit absence of both fields
+  is accepted rather than rejected (it is how the app expresses "no repeat").
+  Also worth confirming live: that an existing **weekly** rule's `rRuleData`
+  survives a `pause`/`reschedule` of the whole-record PUT (it should — the rule
+  is copied verbatim). `notifications list`'s `recurring` column on any
+  recurring alarm is the safe read to check the field names against first.
 - `kids enable` — that the `ft-panda-csrf-token` bootstrap actually succeeds on a
   real account, and that `get_child_mode` flips to `True` promptly after the
   assign (the verify read is immediate; if Amazon is eventually-consistent here,

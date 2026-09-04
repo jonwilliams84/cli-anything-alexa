@@ -36,7 +36,17 @@ module (``pause``/``resume``/``reschedule``/``snooze``):
 
 Timers are deliberately excluded from reschedule/snooze: a timer counts down
 via ``remainingTime`` from the moment it was set and has no ``alarmTime`` to
-move, so the honest answer is delete-and-recreate.
+move, so the honest answer is delete-and-recreate.  The same applies to
+recurrence (``repeat``): a timer counts down exactly once and has no schedule
+to repeat.
+
+The RECURRENCE surface (``add-alarm/add-reminder --repeat`` and the ``repeat``
+edit) writes Amazon's ``recurringPattern`` — ``DAILY`` / ``WEEKDAYS`` /
+``WEEKENDS`` / ``WEEKLY`` — plus ``rRuleData.byWeekDays`` when a ``weekly``
+rule names its days.  A "none"-word clears the rule by removing both fields
+(an explicit absence, matching how the app expresses "no repeat").  Fixed-day
+patterns (``daily``/``weekdays``/``weekends``) name their own days, so a
+weekday list is refused with them.
 """
 
 from __future__ import annotations
@@ -66,6 +76,40 @@ SCHEDULABLE_TYPES: tuple[str, ...] = ("Alarm", "Reminder", "MusicAlarm")
 #: "snooze" voice command applies, so the CLI default matches the speaker.
 DEFAULT_SNOOZE_MINUTES = 9
 
+#: Amazon's ``recurringPattern`` vocabulary — the words the Alexa app offers
+#: (Every day / Weekdays / Weekends / Every week), upper-cased.
+RECURRING_PATTERNS: dict[str, str] = {
+    "daily": "DAILY",
+    "weekdays": "WEEKDAYS",
+    "weekends": "WEEKENDS",
+    "weekly": "WEEKLY",
+}
+
+#: Words that mean "not recurring" — they clear the rule instead of setting one.
+RECURRING_NONE_WORDS: frozenset[str] = frozenset({"none", "off", "never", "once"})
+
+#: Day names → the two-letter codes Amazon's ``rRuleData.byWeekDays`` uses.
+WEEKDAY_CODES: dict[str, str] = {
+    "mon": "MO",
+    "monday": "MO",
+    "tue": "TU",
+    "tues": "TU",
+    "tuesday": "TU",
+    "wed": "WE",
+    "weds": "WE",
+    "wednesday": "WE",
+    "thu": "TH",
+    "thur": "TH",
+    "thurs": "TH",
+    "thursday": "TH",
+    "fri": "FR",
+    "friday": "FR",
+    "sat": "SA",
+    "saturday": "SA",
+    "sun": "SU",
+    "sunday": "SU",
+}
+
 
 def notification_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Flatten raw notification records to display rows (pure)."""
@@ -79,6 +123,7 @@ def notification_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "label": n.get("reminderLabel") or n.get("originalLabel") or n.get("timerLabel"),
                 "deviceSerial": n.get("deviceSerialNumber"),
                 "alarmTime": n.get("alarmTime") or n.get("originalTime"),
+                "recurring": n.get("recurringPattern"),
                 "remaining": n.get("remainingTime"),
             }
         )
@@ -91,11 +136,81 @@ def _epoch_ms(seconds_from_now: float | None = None, at_epoch_ms: int | None = N
     return int((time.time() + (seconds_from_now or 0)) * 1000)
 
 
+# ── recurrence (recurringPattern / rRuleData) ────────────────────────────
+
+
+def normalize_recurrence(value: Any) -> str | None:
+    """A user's repeat word → Amazon's canonical ``recurringPattern`` (pure).
+
+    Accepts the app's words (``daily``/``weekdays``/``weekends``/``weekly``,
+    case-insensitive) and Amazon's own upper-case spellings.  "none"-words
+    (``none``/``off``/``never``/``once``) and empty values mean *clear the
+    rule* and come back as ``None`` — the caller then writes an absent field.
+    Anything else is refused with the valid vocabulary spelled out.
+    """
+    if value is None:
+        return None
+    word = str(value).strip().lower()
+    if not word:
+        return None
+    if word in RECURRING_NONE_WORDS:
+        return None
+    if word in RECURRING_PATTERNS:
+        return RECURRING_PATTERNS[word]
+    raise ValueError(
+        f"repeat must be one of daily/weekdays/weekends/weekly (or none to clear it), got {value!r}"
+    )
+
+
+def normalize_recurrence_days(value: Any) -> list[str] | None:
+    """Weekday names → the two-letter codes ``rRuleData.byWeekDays`` uses (pure).
+
+    ``"Mon,Thu"``, ``"MO,TH"`` and a list/tuple of those all work; duplicates
+    are collapsed in the caller's order.  ``None``/empty → ``None`` (no day
+    list — a ``weekly`` rule then just repeats on the alarm's own weekday).
+    An unknown day is refused with the accepted spellings.
+    """
+    if value is None:
+        return None
+    items = list(value) if isinstance(value, (list, tuple, set)) else str(value).split(",")
+    codes: list[str] = []
+    for raw in items:
+        word = str(raw).strip().lower()
+        if not word:
+            continue
+        code = WEEKDAY_CODES.get(word)
+        if code is None and word.upper() in ("MO", "TU", "WE", "TH", "FR", "SA", "SU"):
+            code = word.upper()
+        if code is None:
+            raise ValueError(
+                f"unknown weekday {raw!r}; use Mon Tue Wed Thu Fri Sat Sun (or MO..SU)"
+            )
+        if code not in codes:
+            codes.append(code)
+    return codes or None
+
+
+def is_recurring(record: Any) -> bool:
+    """True when a record carries a ``recurringPattern`` rule (pure)."""
+    return bool(isinstance(record, dict) and record.get("recurringPattern"))
+
+
 def build_reminder(
-    label: str, device_serial: str, device_type: str, at_epoch_ms: int
+    label: str,
+    device_serial: str,
+    device_type: str,
+    at_epoch_ms: int,
+    recurring_pattern: Any = None,
+    recurrence_days: Any = None,
 ) -> dict[str, Any]:
-    """Build a Reminder creation payload (pure)."""
-    return {
+    """Build a Reminder creation payload (pure).
+
+    ``recurring_pattern``/``recurrence_days`` are optional; when a pattern is
+    given it is normalised and stamped on as ``recurringPattern`` (plus
+    ``rRuleData.byWeekDays`` when a weekday list is supplied — see
+    :func:`build_recurrence_update` for the rules the edit path shares).
+    """
+    payload = {
         "type": "Reminder",
         "status": "ON",
         "alarmTime": int(at_epoch_ms),
@@ -104,13 +219,20 @@ def build_reminder(
         "deviceSerialNumber": device_serial,
         "deviceType": device_type,
     }
+    _stamp_recurrence(payload, recurring_pattern, recurrence_days)
+    return payload
 
 
 def build_alarm(
-    device_serial: str, device_type: str, at_epoch_ms: int, label: str = ""
+    device_serial: str,
+    device_type: str,
+    at_epoch_ms: int,
+    label: str = "",
+    recurring_pattern: Any = None,
+    recurrence_days: Any = None,
 ) -> dict[str, Any]:
-    """Build an Alarm creation payload (pure)."""
-    return {
+    """Build an Alarm creation payload (pure) — recurrence as for reminders."""
+    payload = {
         "type": "Alarm",
         "status": "ON",
         "alarmTime": int(at_epoch_ms),
@@ -119,6 +241,74 @@ def build_alarm(
         "deviceSerialNumber": device_serial,
         "deviceType": device_type,
     }
+    _stamp_recurrence(payload, recurring_pattern, recurrence_days)
+    return payload
+
+
+def _stamp_recurrence(payload: dict[str, Any], pattern: Any, days: Any) -> None:
+    """Stamp a normalised recurrence rule onto a NEW notification (pure).
+
+    Creation has no "clear" case — a ``none``-word simply means "don't make it
+    recurring" — so a cleared rule adds nothing and the payload stays exactly
+    the non-recurring shape Amazon already accepts.
+    """
+    rule = normalize_recurrence(pattern)
+    if rule is None:
+        return
+    payload["recurringPattern"] = rule
+    codes = normalize_recurrence_days(days)
+    if codes and rule != "WEEKLY":
+        raise ValueError(
+            f"days only apply to a weekly repeat (daily/weekdays/weekends fix their own days), "
+            f"got --days {codes} with {rule}"
+        )
+    if codes:
+        payload["rRuleData"] = {"byWeekDays": codes}
+
+
+def build_recurrence_update(record: Any, pattern: Any, days: Any = None) -> dict[str, Any]:
+    """Whole-record PUT body that sets or clears a notification's recurrence (pure).
+
+    Same whole-record rule as every other edit here: starts from a copy of the
+    record Amazon returned and touches only the recurrence fields.  ``pattern``
+    is a :func:`normalize_recurrence` word; a "none"-word (or ``None``) CLEARS
+    the rule by removing ``recurringPattern`` and ``rRuleData`` — an explicit
+    absence, which is how the app expresses "no repeat" too.  ``days`` is only
+    meaningful for ``weekly``: it rewrites ``rRuleData.byWeekDays`` with the
+    given days, replacing whatever rule was there, and is refused for the
+    fixed-day patterns (``daily``/``weekdays``/``weekends`` name their own days).
+    """
+    if not isinstance(record, dict) or not record:
+        raise ValueError("cannot update an empty notification record")
+    if not is_schedulable(record):
+        kind = record.get("type") or "unknown"
+        raise ValueError(
+            f"a {kind} cannot be made recurring; timers count down once — "
+            "delete it and set a new one when you want it again"
+        )
+    payload = dict(record)
+    rule = normalize_recurrence(pattern)
+    codes = normalize_recurrence_days(days)
+    if rule is None:
+        if codes:
+            raise ValueError(
+                "--days needs a repeat pattern (weekly); with no pattern there is "
+                "nothing to attach them to"
+            )
+        payload.pop("recurringPattern", None)
+        payload.pop("rRuleData", None)
+        return payload
+    payload["recurringPattern"] = rule
+    if codes and rule != "WEEKLY":
+        raise ValueError(
+            f"days only apply to a weekly repeat (daily/weekdays/weekends fix their own days), "
+            f"got --days {codes} with {rule}"
+        )
+    if codes:
+        rule_data = dict(payload.get("rRuleData") or {})
+        rule_data["byWeekDays"] = codes
+        payload["rRuleData"] = rule_data
+    return payload
 
 
 def build_timer(
@@ -444,15 +634,18 @@ async def plan_update(
     status: Any = None,
     at_epoch_ms: int | None = None,
     snooze_minutes: float | None = None,
+    recurring_pattern: Any = None,
+    recurrence_days: Any = None,
     now_ms: int | None = None,
 ) -> dict[str, Any]:
     """Resolve ``target`` and build the PUT body for one edit (no write).
 
-    Exactly one of ``status`` / ``at_epoch_ms`` / ``snooze_minutes`` is applied;
-    the result carries both the payload and a readable ``change`` diff so the
-    CLI can print the same plan for the dry-run and then execute it verbatim.
-    Resolution and validation happen HERE, before any write, so a bad target or
-    a timer-reschedule fails identically with and without ``--yes``.
+    Exactly one of ``status`` / ``at_epoch_ms`` / ``snooze_minutes`` /
+    ``recurring_pattern`` is applied; the result carries both the payload and a
+    readable ``change`` diff so the CLI can print the same plan for the dry-run
+    and then execute it verbatim.  Resolution and validation happen HERE,
+    before any write, so a bad target or a timer-reschedule fails identically
+    with and without ``--yes``.
     """
     records = await fetch_notifications(login)
     record = resolve_notification(records, target)
@@ -465,8 +658,12 @@ async def plan_update(
     elif snooze_minutes is not None:
         tz_id = await _timezone_for(login, record)
         payload = build_snooze(record, snooze_minutes, tz_id, now_ms)
+    elif recurring_pattern is not None:
+        payload = build_recurrence_update(record, recurring_pattern, recurrence_days)
     else:
-        raise ValueError("nothing to change: pass a status, a new time, or a snooze")
+        raise ValueError(
+            "nothing to change: pass a status, a new time, a snooze, or a repeat pattern"
+        )
     return {
         "id": notification_id(record),
         "type": record.get("type"),
@@ -527,6 +724,13 @@ async def reschedule(login, target: str, at_epoch_ms: int) -> dict[str, Any]:
 async def snooze(login, target: str, minutes: float = DEFAULT_SNOOZE_MINUTES) -> dict[str, Any]:
     """Push a notification further out by ``minutes`` (plan + apply)."""
     return await apply_update(login, await plan_update(login, target, snooze_minutes=minutes))
+
+
+async def set_recurrence(login, target: str, pattern: Any, days: Any = None) -> dict[str, Any]:
+    """Set or clear a notification's recurrence (plan + apply)."""
+    return await apply_update(
+        login, await plan_update(login, target, recurring_pattern=pattern, recurrence_days=days)
+    )
 
 
 async def create_notification(login, payload: dict[str, Any]) -> dict[str, Any]:

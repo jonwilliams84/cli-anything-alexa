@@ -42,7 +42,7 @@ def _resolve_version() -> str:
     try:
         return _pkg_version("cli-anything-alexa")
     except PackageNotFoundError:
-        return "0.2.0+unknown"
+        return "0.3.0+unknown"
 
 
 __version__ = _resolve_version()
@@ -1568,10 +1568,11 @@ def routines_run(ctx, name_or_id, yes):
 def notifications():
     """Alarms / timers / reminders — list / show / add / edit / delete.
 
-    An edit (pause / resume / reschedule / snooze) is a whole-record PUT that
-    is planned first: the dry-run prints the exact `field: from -> to` diff,
-    and `--yes` applies that same plan and then RE-READS to report what Amazon
-    actually holds (the PUT itself cannot distinguish accepted from rejected).
+    An edit (pause / resume / reschedule / snooze / repeat) is a whole-record
+    PUT that is planned first: the dry-run prints the exact `field: from -> to`
+    diff, and `--yes` applies that same plan and then RE-READS to report what
+    Amazon actually holds (the PUT itself cannot distinguish accepted from
+    rejected).
     """
 
 
@@ -1582,22 +1583,55 @@ def notifications_list(ctx):
     emit(ctx, _run(ctx, notifications_core.list_notifications(login)))
 
 
+_REPEAT_OPTIONS = ["daily", "weekdays", "weekends", "weekly"]
+
+
+def _check_repeat_args(pattern, days) -> None:
+    """Validate --repeat/--days locally, BEFORE any login or network call."""
+    try:
+        rule = notifications_core.normalize_recurrence(pattern)
+        codes = notifications_core.normalize_recurrence_days(days)
+        if codes and rule != "WEEKLY":
+            raise ValueError("--days only applies to --repeat weekly")
+    except ValueError as exc:
+        _abort(str(exc))
+
+
 @notifications.command("add-reminder")
 @click.argument("label")
 @click.option("--device", required=True, help="Echo accountName or serial")
 @click.option("--in", "in_seconds", type=float, default=None, help="Seconds from now")
 @click.option("--at", "at_epoch_ms", type=int, default=None, help="Absolute epoch milliseconds")
+@click.option(
+    "--repeat",
+    type=click.Choice(_REPEAT_OPTIONS, case_sensitive=False),
+    default=None,
+    help="Make it recurring: daily / weekdays / weekends / weekly",
+)
+@click.option(
+    "--days",
+    default=None,
+    help="With --repeat weekly: the weekdays, e.g. 'Mon,Thu'",
+)
 @click.option("--yes", is_flag=True, default=False, help="Required to execute")
 @click.pass_context
-def notifications_add_reminder(ctx, label, device, in_seconds, at_epoch_ms, yes):
+def notifications_add_reminder(ctx, label, device, in_seconds, at_epoch_ms, repeat, days, yes):
     """Create a reminder on a device."""
+    _check_repeat_args(repeat, days)
     login = _login(ctx)
     raw = _run(ctx, devices_meta_core.fetch_devices(login))
     d = devices_meta_core.find_device(raw, device)
     if not d:
         _abort(f"no device matching {device!r}")
     when = notifications_core._epoch_ms(in_seconds, at_epoch_ms)
-    payload = notifications_core.build_reminder(label, d["serialNumber"], d["deviceType"], when)
+    payload = notifications_core.build_reminder(
+        label,
+        d["serialNumber"],
+        d["deviceType"],
+        when,
+        recurring_pattern=repeat,
+        recurrence_days=days,
+    )
     if not yes:
         emit(ctx, {"dry_run": True, "payload": payload, "hint": "re-run with --yes to execute"})
         return
@@ -1609,17 +1643,36 @@ def notifications_add_reminder(ctx, label, device, in_seconds, at_epoch_ms, yes)
 @click.option("--in", "in_seconds", type=float, default=None)
 @click.option("--at", "at_epoch_ms", type=int, default=None)
 @click.option("--label", default="")
+@click.option(
+    "--repeat",
+    type=click.Choice(_REPEAT_OPTIONS, case_sensitive=False),
+    default=None,
+    help="Make it recurring: daily / weekdays / weekends / weekly",
+)
+@click.option(
+    "--days",
+    default=None,
+    help="With --repeat weekly: the weekdays, e.g. 'Mon,Thu'",
+)
 @click.option("--yes", is_flag=True, default=False, help="Required to execute")
 @click.pass_context
-def notifications_add_alarm(ctx, device, in_seconds, at_epoch_ms, label, yes):
+def notifications_add_alarm(ctx, device, in_seconds, at_epoch_ms, label, repeat, days, yes):
     """Create an alarm on a device."""
+    _check_repeat_args(repeat, days)
     login = _login(ctx)
     raw = _run(ctx, devices_meta_core.fetch_devices(login))
     d = devices_meta_core.find_device(raw, device)
     if not d:
         _abort(f"no device matching {device!r}")
     when = notifications_core._epoch_ms(in_seconds, at_epoch_ms)
-    payload = notifications_core.build_alarm(d["serialNumber"], d["deviceType"], when, label=label)
+    payload = notifications_core.build_alarm(
+        d["serialNumber"],
+        d["deviceType"],
+        when,
+        label=label,
+        recurring_pattern=repeat,
+        recurrence_days=days,
+    )
     if not yes:
         emit(ctx, {"dry_run": True, "payload": payload, "hint": "re-run with --yes to execute"})
         return
@@ -1726,6 +1779,26 @@ def notifications_reschedule(ctx, target, in_seconds, at_epoch_ms, yes):
 def notifications_snooze(ctx, target, minutes, yes):
     """Push an alarm/reminder further out (from its time, or from now)."""
     _notification_edit(ctx, target, yes, snooze_minutes=minutes)
+
+
+@notifications.command("repeat")
+@click.argument("target")
+@click.argument(
+    "pattern",
+    type=click.Choice(["none", *_REPEAT_OPTIONS], case_sensitive=False),
+)
+@click.option("--days", default=None, help="With PATTERN weekly: the weekdays, e.g. 'Mon,Thu'")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def notifications_repeat(ctx, target, pattern, days, yes):
+    """Set or clear a notification's recurrence (dry-run by default).
+
+    PATTERN is daily / weekdays / weekends / weekly — or `none` to clear the
+    rule. With `weekly`, `--days Mon,Thu` names the weekdays the alarm
+    repeats on.
+    """
+    _check_repeat_args(pattern, days)
+    _notification_edit(ctx, target, yes, recurring_pattern=pattern, recurrence_days=days)
 
 
 @notifications.command("delete")

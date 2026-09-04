@@ -153,3 +153,39 @@ Still true, and still the single biggest gap in confidence: **nothing in the
 harness has had a mutation executed against a real account.** The notification
 edits add four more to that list — see CLAUDE.md's Verified section, where
 `notifications show` is flagged as the safe read to try first.
+
+---
+
+# Refine Outcome 2 — recurring alarms & reminders (the recurrence surface)
+
+## Summary
+
+One coherent gap closed: **recurrence**. Alexa alarms/reminders carry
+`recurringPattern` (`DAILY`/`WEEKDAYS`/`WEEKENDS`/`WEEKLY`) and — for a named
+weekly rule — `rRuleData.byWeekDays`. The harness *preserved* those fields on
+every whole-record edit but had no way to create or change them. Now:
+
+| Command | alexapy call(s) | Notes |
+| --- | --- | --- |
+| `notifications add-alarm --repeat daily\|weekdays\|weekends\|weekly [--days Mon,Thu]` | `get_notifications`+`get_devices` (as before) + raw POST create | stamps `recurringPattern` (+`rRuleData.byWeekDays`) at creation |
+| `notifications add-reminder ... --repeat ...` | same | same for reminders |
+| `notifications repeat <id\|label> <pattern\|none> [--days ...]` | `set_notifications` | set or **clear** the rule; dry-run diff → `--yes` → re-read verify, like every other edit |
+| `notifications list` | `get_notifications` | new `recurring` column |
+
+Pure helpers: `normalize_recurrence`, `normalize_recurrence_days`,
+`is_recurring`, `build_recurrence_update`, `set_recurrence`;
+`build_alarm`/`build_reminder` gained `recurring_pattern`/`recurrence_days`.
+
+Design notes worth keeping:
+- A `none`-word (or `--repeat none`) CLEARS by removing both fields — an
+  explicit absence, matching how the app writes "no repeat".
+- A weekday list with a fixed-day pattern (`daily`/`weekdays`/`weekends`) is
+  refused — those patterns name their own days.
+- Timers are refused (they count down exactly once).
+- Repeat words are validated in the CLI BEFORE `_login`, so bad input fails
+  identically with and without `--yes`.
+
+Tests: **1329 → 1398** (+69). Coverage: **89.9% → 90.6%**;
+`core/notifications.py` stays **100%**. One existing expectation updated for
+the new `recurring` row field (`notifications list` schema addition) — no test
+weakened. Version bumped **0.2.0 → 0.3.0** (minor: new commands).
