@@ -9,14 +9,14 @@ python -m pytest tests --cov=cli_anything --cov-fail-under=87 -q --durations=10 
   && bandit -r cli_anything/ -ll -x '*/tests/*,*/test_*.py,*/conftest.py'
 ```
 
-## Current state (after 0.4.0 refine, 2026-09-06)
+## Current state (after 0.6.0 refine, 2026-09-06)
 
-- **1487 tests pass**, 0 failures, in ~5 s (no live account, no network —
+- **1548 tests pass**, 0 failures, in ~7 s (no live account, no network —
   alexapy is mocked; pure logic is tested without it).
-- Coverage **97.29%** (gate: ≥87%). `core/notifications.py` at **100%**
-  (statements + branches), including the recurrence surface; the CLI layer
-  (`alexa_cli.py`) is at ~95%, the REPL skin at ~97%.
-- Lint (`ruff check`), format (`ruff format --check`) and bandit (-ll): clean.
+- Coverage **97.13%** (gate: ≥87%). `core/notifications.py` at **100%**
+  (statements + branches), including the recurrence surface; the new
+  `core/lists.py` at **95%**; the CLI layer (`alexa_cli.py`) ~95%, the REPL
+  skin ~97%.
 - Lint (`ruff check`), format (`ruff format --check`) and bandit (-ll): clean.
 
 ## What the tests cover
@@ -67,6 +67,26 @@ history bootstrap / colour detection / prompt-toolkit fallbacks.
 Workflow coverage: the apply path is asserted to feed the **planned** payload
 verbatim into `apply_update`/`create_notification` (the dry-run and the
 `--yes` run are the same plan), and the verify re-read pins the final `ok`.
+
+- `tests/test_lists.py` — the `lists` surface's pure half (list/item row
+  flattening, `find_list`/`resolve_item` with ambiguity refusal, the
+  add/update payload builders, `add_verify_summary`'s three-valued report)
+  and the network wrappers against a fake `_static_request`: the **www
+  subdomain** every lists call must ride, path/limit/`nextToken` shapes,
+  pagination clamping, non-JSON/missing-response errors, and every write's
+  payload + version gating + verify semantics (`ok` True/False/None,
+  `verified` from absence).
+- `tests/test_cli_lists_paths.py` — every `lists` command's observable
+  contract: reads, dry-run previews (list id + item id + **the version the
+  `--yes` run will send** + payload), `--yes` execute paths (which core
+  coroutine, with which args), `--status` validation **before** login, and
+  unknown list/item refusals.
+- `tests/test_lists_workflow.py` — multi-command workflows against a
+  state-machine fake of the v2 lists API: the add → items → check → rename →
+  remove round-trip, **stale-version refusal** (a concurrent edit bumps the
+  version; the API answers non-JSON and the module raises), ambiguous list
+  names never writing, pagination across pages, and the
+  "added but off page 1" verify `null`.
 
 ## Not covered (known gaps)
 

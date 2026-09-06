@@ -1,6 +1,6 @@
 ---
 name: cli-anything-alexa
-description: Manage Amazon Alexa from the shell — smart-home appliances (list/prune/delete), groups, routines, alarms/timers/reminders, Echo media playback, announce/speak, and do-not-disturb — over the unofficial Alexa web API via alexapy. Logs in via a browser-proxy flow (no Home Assistant needed; captcha/2FA handled by Amazon's own pages) and caches a local cookie so there's no per-call MFA. Use when an agent needs to inspect or tidy what Alexa knows without the app.
+description: Manage Amazon Alexa from the shell — smart-home appliances (list/prune/delete), groups, routines, alarms/timers/reminders, Echo media playback, announce/speak, do-not-disturb, and shopping/to-do lists — over the unofficial Alexa web API via alexapy. Logs in via a browser-proxy flow (no Home Assistant needed; captcha/2FA handled by Amazon's own pages) and caches a local cookie so there's no per-call MFA. Use when an agent needs to inspect or tidy what Alexa knows without the app.
 ---
 
 # cli-anything-alexa
@@ -165,6 +165,19 @@ Every command takes `--json`.
   (`recurringPattern` + `rRuleData.byWeekDays`; `none` removes both).
   Timers can't repeat.
   Targets resolve by id or label, and an ambiguous label aborts with the ids.
+- `lists list` — the account's lists: shopping, to-do, custom (id, name, type).
+- `lists items <list> [--limit N] [--pages N] [--status active|complete]
+  [--contains text]` — items with id, name, status, `checked` and **version**
+  (the field every write is gated on). Paged via `nextToken`.
+- `lists add <list> <text>...` (`--yes`) — add items; verified by re-read
+  (`found: null` = added but not on page 1 of a long list, not a failure).
+- `lists check|uncheck <list> <item>` (`--yes`) — mark complete / re-open.
+- `lists rename <list> <item> <new-name>` (`--yes`).
+- `lists remove <list> <item>` (`--yes`) — delete; `verified` from absence.
+  Lists and items resolve by **name or id** (the lists API lives on Amazon's
+  www host at `/alexashoppinglists/api/v2`); writes send the version as read,
+  so a dry-run preview shows the exact version the `--yes` run will use; an
+  ambiguous name aborts with the ids.
 - `media status [<device>]` — what an Echo is playing: state, title, artist,
   album, provider, volume, progress. Read-only, no `--yes`.
 - `media play|pause|next|previous|forward|rewind [<device>]` (`--yes`) — transport.

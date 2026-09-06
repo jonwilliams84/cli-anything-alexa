@@ -28,6 +28,7 @@ is a **browser-proxy login** that needs no Home Assistant.
   - `activity.py` — voice **history**: privacy records (`get_customer_history_records`, the only feed with BOTH halves of a turn), legacy `/api/activities` (ids + status), `get_last_device_serial`, and `clear_history` (irreversible). Pure window/limit/row/filter logic unit-tested.
   - `bluetooth.py` — Echo **bluetooth writes**: `set_bluetooth` (connect an already-paired sink) + `disconnect_bluetooth` (all sinks). Pure MAC canonicalisation / per-Echo pairing extraction / target resolution unit-tested.
   - `kids.py` — **Amazon Kids / child mode**: household child profiles (`get_child_profiles`), per-Echo state (`get_child_mode` + `get_device_child`) and the assign/unassign writes (`enable_child_mode`/`disable_child_mode`). Pure profile flattening / child resolution / status rows unit-tested. **Every write re-reads and reports `ok` from the verify**, because the writes return `None` either way (see the note below).
+  - `lists.py` — **shopping & to-do lists** over `/alexashoppinglists/api/v2/...` on Amazon's **www** host (alexapy doesn't wrap it — the calls ride `AlexaAPI._static_request(..., sub_domain="www")`, the same reuse-the-helper lesson as the groups GraphQL host): list + item reads (items fetch is paginated via `nextToken`, page max 100) and the four writes — add (`KEYWORD` items), check/uncheck, rename, delete. **Writes are version-gated**: PUT/DELETE URLs must carry the item `version` as read, so edits read the item fresh (never from a cached row) and dry-run previews pin the version the `--yes` run will send. **Writes report nothing useful, so every write re-reads**: add reports each name's status from a fresh page (`null` = "not on page 1 of a long list yet", deliberately NOT failure), check/uncheck/rename report `ok` from what Amazon holds (`None` when the item left page 1), delete reports `verified` from absence. Pure half unit-tested (rows/normalize/find/resolve/payload builders + add-verify summary); network faked at `_static_request` and driven end-to-end by a state-machine fake (`tests/test_lists_workflow.py`).
   - `groups.py` — device-groups (rooms) over **GraphQL** `/nexus/v1/graphql`: list/create/add/remove/set/delete, **including nested child groups** (`--child-group`, the rollup pattern). Pure variables-builders (member + `childDeviceGroupIds`) + name-normalize/lookup + entity→endpoint + child-group name→id resolution are unit-tested; network goes via `AlexaAPI._static_request`.
   - `project.py` — local profile (`~/.config/cli-anything-alexa/config.json`).
 - `cli_anything/alexa/utils/repl_skin.py` — shared cli-anything REPL skin.
@@ -324,3 +325,11 @@ implementation + Amazon's documented shapes, not observed):
   assign (the verify read is immediate; if Amazon is eventually-consistent here,
   a first-read `ok: false` may be a false negative needing a retry/backoff).
   `kids profiles` is the safe read to try first — it needs no child at all.
+- `lists add/check/rename/remove` — that the `/alexashoppinglists/api/v2`
+  surface really accepts alexapy's session cookies on the **www** host without
+  an extra CSRF handshake (the reference clients send none), and that the item
+  `version` gate behaves as the consumers assume (stale version → non-JSON
+  error page, which `_list_request` turns into a `RuntimeError`, not a silent
+  no-op). `lists list` then `lists items` are the safe reads to try first —
+  if Amazon's field shapes differ, `list_rows`/`item_rows` are the only code
+  that needs touching.

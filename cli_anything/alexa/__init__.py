@@ -1,4 +1,4 @@
 """cli-anything-alexa — programmatic management of Amazon Alexa via the
 unofficial web API (the same one the Alexa app uses), built on `alexapy`."""
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"

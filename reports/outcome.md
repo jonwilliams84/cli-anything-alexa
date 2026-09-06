@@ -189,3 +189,78 @@ Tests: **1329 → 1398** (+69). Coverage: **89.9% → 90.6%**;
 `core/notifications.py` stays **100%**. One existing expectation updated for
 the new `recurring` row field (`notifications list` schema addition) — no test
 weakened. Version bumped **0.2.0 → 0.3.0** (minor: new commands).
+
+
+---
+
+# Refine Outcome 3 — shopping & to-do lists (the www-host surface)
+
+## Summary
+
+One coherent gap closed: the **shopping / to-do / custom lists** surface, the
+last big Alexa capability the harness never touched. Amazon moved it off
+`alexa.amazon.<tld>` onto `https://www.amazon.<tld>/alexashoppinglists/api/v2/...`
+and alexapy does not wrap it. Endpoint shapes were reverse-engineered from the
+live Alexa app traffic via the actively-maintained consumers (`pyalexatodo`,
+`ha-alexa-todo-lists`); alexapy's own `AlexaAPI._static_request` is reused with
+`sub_domain="www"` so the login session, headers and 401-retry stay correct —
+the same "don't hand-roll the host" rule the groups GraphQL surface taught.
+
+Seven new commands, no command changed or removed:
+
+| Command | Endpoint(s) | Notes |
+| --- | --- | --- |
+| `lists list` | `POST lists/fetch` | shopping / to-do / custom rows |
+| `lists items <list> [--limit N] [--pages N] [--status ...] [--contains ...]` | `POST lists/<id>/items/fetch` | paged (`nextToken`, max 100/page) |
+| `lists add <list> <text>...` | `POST lists/<id>/items` | verified by re-read (`found`) |
+| `lists check\|uncheck <list> <item>` | `PUT items/<id>?version=V` | version-gated; `ok` from re-read |
+| `lists rename <list> <item> <new-name>` | `PUT items/<id>?version=V` | version-gated; `ok` from re-read |
+| `lists remove <list> <item>` | `DELETE items/<id>?version=V` | version-gated; `verified` from absence |
+
+## Design notes worth keeping
+
+- **Writes are version-gated and answer nothing useful.** Every item carries a
+  monotone `version`; the PUT/DELETE URL must send it *as read*. Edits
+  therefore read the item fresh (never from a cached row) and the dry-run
+  preview pins the exact version the `--yes` run will send. Like the kids and
+  notifications writes, every write re-reads and reports three-valued
+  `ok`/`found`/`verified` — `null` means "not on page 1 (yet)", never silently
+  success or failure.
+- **`add` uses `KEYWORD` items** (`{"items":[{"itemType":"KEYWORD","itemName":n}]}`)
+  — the app's own shape for free-text entries.
+- **The www host serves this surface with alexapy's existing session cookies**;
+  nothing extra is fetched or refreshed. Status words (`active`/`complete`) are
+  validated in the CLI BEFORE `_login`, so bad input fails identically with and
+  without `--yes`.
+- **Ambiguity refused, never guessed** — two custom lists sharing a name (or
+  two items sharing a name) abort with the ids, matching `devices rename` /
+  `notifications` resolution rules.
+
+## Tests
+
+**1487 → 1548** (+61): 40 unit (`test_lists.py`), 16 CLI paths
+(`test_cli_lists_paths.py`), 5 workflows (`test_lists_workflow.py`, state-machine
+fake incl. the stale-version conflict path). Coverage 97.29% → 97.13% total
+(new module 95%; gate unchanged at ≥87%).
+
+## Gates
+
+| Gate | Result |
+| --- | --- |
+| `pytest tests` | **1548 passed**, 0 failed |
+| `--cov-fail-under=87` | **97.13%** |
+| `ruff check cli_anything/` | clean |
+| `ruff format --check cli_anything/` | clean |
+| `bandit -r cli_anything/ -ll` | 0 findings |
+
+## Not covered (next refine pass)
+
+* `lists add` for *structured* items (itemType beyond KEYWORD, e.g. scanning a
+  product into the shopping list) — the v2 API supports richer item types; the
+  app UI only exposes free text.
+* `lists archive/clear-completed` — no endpoint observed in the consumers;
+  would need live traffic.
+* The lists surface on the www host **has not been exercised against a live
+  account** — same caveat as every other write in this harness. The reads
+  (`lists list`, `lists items`) are the safe first calls; if Amazon's field
+  shapes differ, `list_rows`/`item_rows` are the only code that needs touching.
