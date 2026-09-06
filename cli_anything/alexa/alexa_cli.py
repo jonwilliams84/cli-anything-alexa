@@ -979,6 +979,20 @@ def devices_delete(ctx, appliance_ids, entity, name, verify, yes):
     emit(ctx, {"results": results, "verify": verification, "native_warnings": warnings})
 
 
+@devices.command("capabilities")
+@click.pass_context
+def devices_capabilities(ctx):
+    """Per-appliance detail from alexapy's GraphQL smart-home query.
+
+    The detail view behind `devices list`: applianceTypes, capability count,
+    model, connectedVia and the HA entityId. Targeting (rename/delete/groups)
+    still resolves through the canonical `endpoints` query — this is read-only
+    enrichment, not a resolution source.
+    """
+    login = _login(ctx)
+    emit(ctx, _run(ctx, endpoints_core.fetch_appliance_details(login)))
+
+
 @cli.command("discover")
 @click.option(
     "--yes",
@@ -1165,6 +1179,49 @@ def echos_wake_words(ctx):
     """Show the configured wake word for each Echo."""
     login = _login(ctx)
     emit(ctx, _run(ctx, devices_meta_core.fetch_wake_words(login)))
+
+
+@echos.command("wake-word")
+@click.argument("device", required=False)
+@click.pass_context
+def echos_wake_word(ctx, device):
+    """Show ONE Echo's wake word (default: the first online device).
+
+    Answers from the same feed as `wake-words` (alexapy caches the read), but
+    targeted at a single speaker instead of the whole account.
+    """
+    login = _login(ctx)
+    emit(ctx, _run(ctx, devices_meta_core.fetch_wake_word(login, device)))
+
+
+@echos.command("background")
+@click.argument("url")
+@click.option("--device", default=None, help="Echo accountName/serial (default: first online)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def echos_background(ctx, url, device, yes):
+    """Set an Echo Show's background to an https image URL.
+
+    Only https is accepted: alexapy merely warns about plain http and posts it
+    anyway, and Amazon answers with nothing on screen — so a non-https URL is
+    refused here, before any session is touched.
+    """
+    problem = devices_meta_core.background_url_problem(url)
+    if problem:
+        _abort(problem)
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "device": device or "first online",
+                "would_set_background": url,
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(ctx, _run(ctx, devices_meta_core.set_background(login, device, url)))
 
 
 @echos.command("dnd")

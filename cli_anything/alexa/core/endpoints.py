@@ -617,6 +617,44 @@ async def fetch_endpoint_records(login) -> list[dict[str, Any]]:
     return endpoint_records(await fetch_endpoints(login))
 
 
+def gql_appliance_rows(items: Any) -> list[dict[str, Any]]:
+    """Flatten alexapy ``get_devices_gql`` (``data.endpoints.items``) into rows (pure).
+
+    The harness's own ``ENDPOINTS_QUERY`` stays the one source of truth for
+    *targeting* (it ties endpoint id + applianceId + name together); alexapy's
+    older smart-home query is the *detail* read — it is the only one that
+    returns ``applianceTypes``, the capability list (counted here),
+    ``modelName``, ``connectedVia`` and the HA ``entityId`` per appliance.
+    """
+    out: list[dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        legacy = item.get("legacyAppliance") or {}
+        caps = legacy.get("capabilities")
+        out.append(
+            {
+                "applianceId": legacy.get("applianceId"),
+                "name": legacy.get("friendlyName"),
+                "manufacturer": legacy.get("manufacturerName"),
+                "model": legacy.get("modelName"),
+                "connectedVia": legacy.get("connectedVia"),
+                "entityId": legacy.get("entityId"),
+                "types": list(legacy.get("applianceTypes") or []),
+                "capabilities": len(caps) if isinstance(caps, list) else None,
+            }
+        )
+    return out
+
+
+async def fetch_appliance_details(login) -> list[dict[str, Any]]:
+    """Per-appliance detail rows from alexapy's ``get_devices_gql``."""
+    from alexapy import AlexaAPI
+
+    items = await AlexaAPI.get_devices_gql(login)
+    return gql_appliance_rows(items)
+
+
 async def rename_endpoint(login, endpoint_id: str, friendly_name: str) -> dict[str, Any]:
     """setEndpointFriendlyName — rename a device by its endpoint id.
 
