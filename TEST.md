@@ -11,10 +11,11 @@ python -m pytest tests --cov=cli_anything --cov-fail-under=87 -q --durations=10 
 
 ## Current state (after 0.3.0, 2026-09-04)
 
-- **1398 tests pass**, 0 failures, in ~5 s (no live account, no network —
+- **1456 tests pass**, 0 failures, in ~5 s (no live account, no network —
   alexapy is mocked; pure logic is tested without it).
-- Coverage **90.6%** (gate: ≥87%). `core/notifications.py` at **100%**
-  (statements + branches), including the recurrence surface.
+- Coverage **97.2%** (gate: ≥87%). `core/notifications.py` at **100%**
+  (statements + branches), including the recurrence surface; the CLI layer
+  (`alexa_cli.py`) is at ~95%, the REPL skin at ~97%.
 - Lint (`ruff check`), format (`ruff format --check`) and bandit (-ll): clean.
 
 ## What the tests cover
@@ -43,6 +44,16 @@ or network call, `--json` output shape, and which core coroutine each command
 invokes (via stubbed `_run`). The notification-edit file
 (`test_cli_notifications_edit_paths.py`) also covers `notifications repeat`
 and the `--repeat` flags of `add-alarm`/`add-reminder`.
+`test_cli_refine_paths.py` closes the remaining CLI-layer gaps: both
+`auth login` flows (scripted + guided proxy) and `auth import-pickle` success,
+bulk `rename --pattern` / `--map` and single renames (dry-run + `--yes`),
+`devices prune` / `delete --entity|--name --verify` (incl. native warnings),
+`duplicates`, `discover --yes`, `echos list/bluetooth`, group create/add/
+remove/set/delete execute paths (incl. `--device` display-name resolution),
+routines and notifications execute paths, `announce`/`speak`/`dnd` under
+`--yes`, the REPL loop (help / blank / unknown command / `exit` / `quit` /
+Ctrl-C), `main()` + `python -m cli_anything.alexa`, and the ReplSkin banner /
+history bootstrap / colour detection / prompt-toolkit fallbacks.
 
 Workflow coverage: the apply path is asserted to feed the **planned** payload
 verbatim into `apply_update`/`create_notification` (the dry-run and the

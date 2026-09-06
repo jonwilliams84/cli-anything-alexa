@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.4.0] — 2026-09-06
+
+- Updated `test.md`. (1 file changed, 14 insertions(+), 3 deletions(-))
+
 ## 0.3.0 — 2026-09-04
 
 ### Added — recurring alarms & reminders (the recurrence surface)
