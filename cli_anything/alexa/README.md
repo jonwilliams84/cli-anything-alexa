@@ -142,6 +142,12 @@ Every command supports a global `--json` flag for machine-readable output.
 | `notifications snooze <id\|label> [--minutes N]` | Push it further out — default 9 min, Amazon's own snooze (`--yes`) |
 | `notifications repeat <id\|label> daily\|weekdays\|weekends\|weekly\|none [--days Mon,Thu]` | Set or clear a notification's recurrence (`recurringPattern`, `rRuleData`) (`--yes`) |
 | `notifications delete <id>` | Delete a notification (`--yes` to execute) |
+| `lists list` | The account's lists — shopping, to-do, custom (id, name, type) |
+| `lists items <list> [--limit N] [--pages N] [--status active\|complete] [--contains text]` | Items in a list (id, name, status, checked, version) — paged and filtered |
+| `lists add <list> <text>...` | Add items (`--yes` to execute; verified by re-read) |
+| `lists check\|uncheck <list> <item>` | Mark an item complete / re-open it (by name or id; `--yes`) |
+| `lists rename <list> <item> <new-name>` | Rename an item (by name or id; `--yes`) |
+| `lists remove <list> <item>` | Delete an item (by name or id; `--yes`) |
 | `media status [<device>]` | What an Echo is playing (state, title, artist, album, provider, volume) |
 | `media play\|pause\|next\|previous\|forward\|rewind [<device>]` | Transport control on an Echo (`--yes` to execute) |
 | `media stop [<device>] [--all]` | Stop playback on one Echo, or every device with `--all` (`--yes`) |
@@ -253,6 +259,26 @@ cli-anything-alexa kids disable "Playroom Echo" --yes
 An unknown child name is refused locally with the known profiles (Amazon rejects
 an unknown `childDirectedId` without a message reaching the caller), and two
 siblings sharing a first name abort with their `directedId`s to pick from.
+
+### Shopping & to-do lists
+
+The Alexa app's shopping / to-do / custom lists live on Amazon's **www** host
+(`/alexashoppinglists/api/v2/...`) — a surface alexapy does not wrap. The
+module reuses `AlexaAPI._static_request(..., sub_domain="www")` so the login
+session, headers and 401-retry stay correct (the same lesson as the groups
+GraphQL host). Items are version-gated: check/uncheck/rename/delete send the
+version **as read**, and every write verifies by re-reading (add reports each
+name's status from a fresh page — `null` means "added, not on page 1 of a long
+list yet", not failure). `lists items` follows `--pages` via `nextToken` at
+`--limit` (max 100). Ambiguous list or item names are refused with the ids.
+
+```bash
+cli-anything-alexa lists list --json
+cli-anything-alexa lists items Shopping --status active --json
+cli-anything-alexa lists add Shopping "Oat milk" "Tea" --yes
+cli-anything-alexa lists check Shopping "Oat milk" --yes
+cli-anything-alexa lists remove Shopping "Oat milk" --yes
+```
 
 ### Prune housekeeping
 

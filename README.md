@@ -214,6 +214,12 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `notifications reschedule <id\|label> --in N \| --at MS` | Move an alarm/reminder to a new time (`--yes` to execute) |
 | `notifications snooze <id\|label> [--minutes N]` | Push an alarm/reminder further out — default 9 min, Amazon's own snooze (`--yes`) |
 | `notifications delete <id>` | Delete a notification (`--yes` to execute) |
+| `lists list` | The account's lists — shopping, to-do, custom (id, name, type) |
+| `lists items <list> [--limit N] [--pages N] [--status active\|complete] [--contains text]` | Items in a list, paged + filtered |
+| `lists add <list> <text>...` | Add items to a list (by name or id; `--yes` to execute) |
+| `lists check\|uncheck <list> <item>` | Mark an item complete / re-open it (by name or id; `--yes`) |
+| `lists rename <list> <item> <new-name>` | Rename an item (by name or id; `--yes` to execute) |
+| `lists remove <list> <item>` | Delete an item (by name or id; `--yes` to execute) |
 | `media status [<device>]` | Show what an Echo is playing (state, title, artist, album, provider, volume) |
 | `media play\|pause\|next\|previous\|forward\|rewind [<device>]` | Transport control on an Echo (`--yes` to execute) |
 | `media stop [<device>] [--all]` | Stop playback on one Echo, or every device with `--all` (`--yes`) |
@@ -628,6 +634,44 @@ alarm's time when that is still ahead, or from *now* when it has already fired.
 
 Ambiguity is refused, never guessed: two alarms sharing the label *"Wake up"*
 abort with both ids so you can pick one, the same rule `devices rename` follows.
+
+### Shopping & to-do lists
+
+`lists` reads and writes the Alexa app's list surface — the shopping list, the
+to-do list and any custom lists — which lives on Amazon's **www** host at
+`/alexashoppinglists/api/v2/...` (not `alexa.amazon.<tld>`), so the calls ride
+alexapy's session helper with the right subdomain. Items are addressed by
+**name or id**, lists by **name or id**, and every write is dry-run by default,
+`--yes`-gated, and **verified by re-reading** the list afterwards.
+
+```bash
+cli-anything-alexa lists list --json                     # shopping / to-do / custom
+cli-anything-alexa lists items Shopping                  # what's on the list
+cli-anything-alexa lists items Shopping --status active  # or --complete / --contains tea
+cli-anything-alexa lists add Shopping "Oat milk" "Tea" --yes
+cli-anything-alexa lists check Shopping "Oat milk" --yes     # mark complete
+cli-anything-alexa lists uncheck Shopping "Oat milk" --yes
+cli-anything-alexa lists rename Shopping "Oat milk" "Oatly" --yes
+cli-anything-alexa lists remove Shopping "Oat milk" --yes
+```
+
+Three API traits are baked in:
+
+* **Writes are version-gated.** Every item carries a `version`; the
+  check/uncheck/rename/delete URLs must send the version *as read*, so an edit
+  reads the item fresh (never from a cached row) and dry-run previews show the
+  version the `--yes` run will send. A stale version (a concurrent edit — Home
+  Assistant or the app) is refused.
+* **The writes answer nothing useful, so every write re-reads.** Add reports
+  each name's status from a fresh page (`active`/`complete`, or `null` when the
+  item is not on page 1 of a long list — "added, not visible yet" is not
+  "failed"); check/uncheck/rename report `ok` from what Amazon actually holds;
+  `remove` reports `verified` from the item's absence.
+* **The items fetch is paginated** (`nextToken`); `lists items` follows
+  `--pages` pages at `--limit` (max 100) per page and says whether more remain.
+
+Ambiguity is refused, never guessed: two custom lists with the same name (or
+two items with the same name) abort with the ids to pick from.
 
 ### Account & device introspection
 

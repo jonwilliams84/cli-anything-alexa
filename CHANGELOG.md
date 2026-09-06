@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.6.0] — 2026-09-06
+
+### Added — Alexa shopping & to-do lists (`lists`)
+
+The one big Alexa surface no earlier round had touched: the app's **shopping
+list, to-do list and custom lists**. Amazon serves them at
+`/alexashoppinglists/api/v2/...` on the **www** host (not `alexa.amazon.<tld>`)
+and alexapy does not wrap them, so `core/lists.py` talks to that surface via
+`AlexaAPI._static_request(..., sub_domain="www")` — session, headers and the
+401-retry stay correct. New commands (all `--json`, all writes dry-run by
+default + `--yes`):
+
+| Command | Endpoint(s) | Notes |
+| --- | --- | --- |
+| `lists list` | `POST lists/fetch` | shopping / to-do / custom rows |
+| `lists items <list> [--limit N] [--pages N] [--status active\|complete] [--contains text]` | `POST lists/<id>/items/fetch` | paged (`nextToken`, max 100/page), filtered |
+| `lists add <list> <text>...` | `POST lists/<id>/items` | `KEYWORD` items; verified by re-read (`found`) |
+| `lists check\|uncheck <list> <item>` | `PUT lists/<id>/items/<id>?version=V` | version-gated; `ok` from re-read |
+| `lists rename <list> <item> <new-name>` | `PUT lists/<id>/items/<id>?version=V` | version-gated; `ok` from re-read |
+| `lists remove <list> <item>` | `DELETE lists/<id>/items/<id>?version=V` | version-gated; `verified` from absence |
+
+Lists and items resolve by **name or id** (ambiguity refused with the ids).
+Every write re-reads: `found`/`ok`/`verified` are three-valued — `null` means
+"the item is not on page 1 (yet)", never silently success or failure. Pure
+helpers (`list_rows`, `item_rows`, `find_list`, `resolve_item`,
+`build_add_payload`, `build_attributes_update`, `add_verify_summary`,
+`filter_items`, `normalize_status_word`) are unit-tested in
+`tests/test_lists.py`; CLI paths in `tests/test_cli_lists_paths.py`; the
+cross-command contracts (fresh-version threading, stale-version refusal,
+pagination, ambiguity) run against a state-machine fake of the API in
+`tests/test_lists_workflow.py`.
+
+Tests: 1487 → 1548 (+61). Coverage: 97.29% → **97.13%** total (new module at
+95%, gate ≥87% unchanged). Version bumped 0.5.0 → **0.6.0**.
+
 ## [0.5.0] — 2026-09-06
 
 - Updated `claude.md`, `readme.md`, `test.md`, `cli_anything/alexa/alexa_cli.py`, `cli_anything/alexa/core/devices_meta.py`, `cli_anything/alexa/core/endpoints.py`. (7 files changed, 228 insertions(+), 5 deletions(-))

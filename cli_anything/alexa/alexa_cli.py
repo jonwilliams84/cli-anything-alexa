@@ -26,6 +26,7 @@ from cli_anything.alexa.core import devices_meta as devices_meta_core
 from cli_anything.alexa.core import endpoints as endpoints_core
 from cli_anything.alexa.core import groups as groups_core
 from cli_anything.alexa.core import kids as kids_core
+from cli_anything.alexa.core import lists as lists_core
 from cli_anything.alexa.core import media as media_core
 from cli_anything.alexa.core import notifications as notifications_core
 from cli_anything.alexa.core import project
@@ -1876,6 +1877,206 @@ def notifications_delete(ctx, notification_id, yes):
         )
         return
     emit(ctx, _run(ctx, notifications_core.delete_notification(login, notification_id)))
+
+
+# ──────────────────────────────────────────────────────── lists (shopping / to-do)
+
+
+@cli.group()
+def lists():
+    """Alexa shopping & to-do lists (read + add/check/rename/remove items).
+
+    LIST is a list name (e.g. "Shopping", a custom list) or its id — resolve
+    with `lists list`. Items are named or by id; every write is dry-run by
+    default and verified by re-reading the list.
+    """
+
+
+@lists.command("list")
+@click.pass_context
+def lists_list(ctx):
+    """List the lists on the account (shopping / to-do / custom)."""
+    login = _login(ctx)
+    emit(ctx, _run(ctx, lists_core.list_lists(login)))
+
+
+@lists.command("items")
+@click.argument("list_ref")
+@click.option(
+    "--limit", type=int, default=lists_core.MAX_PAGE_LIMIT, help="Items per page (max 100)"
+)
+@click.option("--pages", type=int, default=1, help="Pages to follow via nextToken (default 1)")
+@click.option("--status", default=None, help="Filter: 'active' or 'complete'")
+@click.option("--contains", default=None, help="Only items whose name contains this text")
+@click.pass_context
+def lists_items(ctx, list_ref, limit, pages, status, contains):
+    """Show the items in a list (by name or id), optionally filtered."""
+    if status:
+        try:
+            lists_core.normalize_status_word(status)
+        except ValueError as exc:
+            _abort(str(exc))
+    login = _login(ctx)
+    emit(
+        ctx,
+        _run(
+            ctx,
+            lists_core.list_items(
+                login, list_ref, limit=limit, pages=pages, status=status, contains=contains
+            ),
+        ),
+    )
+
+
+@lists.command("add")
+@click.argument("list_ref")
+@click.argument("text", nargs=-1, required=True)
+@click.option(
+    "--yes", is_flag=True, default=False, help="Required to actually add (guards live mutation)"
+)
+@click.pass_context
+def lists_add(ctx, list_ref, text, yes):
+    """Add items to a list (dry-run unless --yes; verified by re-read)."""
+    login = _login(ctx)
+    names = [t for t in text if t.strip()]
+    if not names:
+        _abort("nothing to add")
+    rows = _run(ctx, lists_core.list_lists(login))
+    lst = lists_core.find_list(rows, list_ref)
+    if not lst:
+        _abort(f"no Alexa list matching {list_ref!r}")
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "list": lst["name"],
+                "listId": lst["id"],
+                "would_add": names,
+                "payload": lists_core.build_add_payload(names),
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(ctx, _run(ctx, lists_core.add_to_list(login, list_ref, names)))
+
+
+@lists.command("check")
+@click.argument("list_ref")
+@click.argument("item_ref")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def lists_check(ctx, list_ref, item_ref, yes):
+    """Mark a list item complete (by name or id; dry-run unless --yes)."""
+    _lists_item_edit(ctx, list_ref, item_ref, yes, checked=True)
+
+
+@lists.command("uncheck")
+@click.argument("list_ref")
+@click.argument("item_ref")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def lists_uncheck(ctx, list_ref, item_ref, yes):
+    """Un-mark a completed list item (by name or id; dry-run unless --yes)."""
+    _lists_item_edit(ctx, list_ref, item_ref, yes, checked=False)
+
+
+@lists.command("rename")
+@click.argument("list_ref")
+@click.argument("item_ref")
+@click.argument("new_name")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def lists_rename(ctx, list_ref, item_ref, new_name, yes):
+    """Rename a list item (by name or id; dry-run unless --yes)."""
+    _lists_item_edit(ctx, list_ref, item_ref, yes, new_name=new_name)
+
+
+@lists.command("remove")
+@click.argument("list_ref")
+@click.argument("item_ref")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def lists_remove(ctx, list_ref, item_ref, yes):
+    """Delete a list item (by name or id; dry-run unless --yes)."""
+    login = _login(ctx)
+    preview = _lists_resolve_preview(ctx, login, list_ref, item_ref)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "list": preview["list"],
+                "listId": preview["listId"],
+                "item": preview["item"],
+                "itemId": preview["itemId"],
+                "version": preview["version"],
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(ctx, _run(ctx, lists_core.remove_item(login, list_ref, item_ref)))
+
+
+def _lists_resolve_preview(ctx, login, list_ref, item_ref):
+    """Resolve list + item and return the fields a write preview shows.
+
+    The version on the preview is the one a --yes re-run will send: edits are
+    version-gated, so the dry-run pins exactly what the write would carry.
+    """
+    rows = _run(ctx, lists_core.list_lists(login))
+    lst = lists_core.find_list(rows, list_ref)
+    if not lst:
+        _abort(f"no Alexa list matching {list_ref!r}")
+    raw, _ = _run(ctx, lists_core.fetch_items_pageable(login, lst["id"]))
+    resolved = lists_core.resolve_item(lists_core.item_rows({"itemInfoList": raw}), item_ref)
+    if not resolved:
+        _abort(f"no item matching {item_ref!r} in {lst['name']!r}")
+    return {
+        "list": lst["name"],
+        "listId": lst["id"],
+        "item": resolved["name"],
+        "itemId": resolved["id"],
+        "version": resolved["version"],
+    }
+
+
+def _lists_item_edit(ctx, list_ref, item_ref, yes, checked=None, new_name=None):
+    """Shared check/uncheck/rename body: resolve, preview, execute."""
+    login = _login(ctx)
+    preview = _lists_resolve_preview(ctx, login, list_ref, item_ref)
+    action = (
+        "would_rename" if new_name is not None else ("would_check" if checked else "would_uncheck")
+    )
+    if not yes:
+        change = (
+            {"itemAttributesToUpdate": [{"type": "itemName", "value": new_name}]}
+            if new_name is not None
+            else {
+                "itemAttributesToUpdate": [
+                    {"type": "itemStatus", "value": "COMPLETE" if checked else "ACTIVE"}
+                ]
+            }
+        )
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "list": preview["list"],
+                "listId": preview["listId"],
+                "item": preview["item"],
+                "itemId": preview["itemId"],
+                "version": preview["version"],
+                action: new_name if new_name is not None else checked,
+                "payload": change,
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    if new_name is not None:
+        emit(ctx, _run(ctx, lists_core.rename_item(login, list_ref, item_ref, new_name)))
+    else:
+        emit(ctx, _run(ctx, lists_core.set_checked(login, list_ref, item_ref, checked)))
 
 
 # ──────────────────────────────────────────────────────── media
