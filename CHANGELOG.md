@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.5.0] — 2026-09-06
+
+- Updated `claude.md`, `readme.md`, `test.md`, `cli_anything/alexa/alexa_cli.py`, `cli_anything/alexa/core/devices_meta.py`, `cli_anything/alexa/core/endpoints.py`. (7 files changed, 228 insertions(+), 5 deletions(-))
+
+## Unreleased — refine round (2026-09-06)
+
+### Added — the last unwrapped alexapy surfaces
+
+Three `AlexaAPI` calls the first build did not wrap, found by diffing alexapy's
+public surface against the CLI:
+
+- `echos wake-word [<device>]` — one Echo's wake word via `AlexaAPI.
+  find_wake_word` (device-bound; answers from the same feed as
+  `echos wake-words`, targeted at a single speaker; an unreadable word stays
+  `None` rather than implying "alexa").
+- `devices capabilities` — per-appliance **detail** read via alexapy's own
+  GraphQL smart-home query (`get_devices_gql`): the only read returning
+  `applianceTypes`, the capability list (counted), `modelName`, `connectedVia`
+  and the HA `entityId` per appliance. Read-only enrichment — targeting still
+  resolves through the canonical `endpoints` query.
+- `echos background <url> [--device ...]` — set an Echo Show's background to
+  an https image URL (`--yes` to execute). The URL is validated **before**
+  login, because alexapy merely warns about plain `http://` and posts it
+  anyway; `ok` comes straight from alexapy's success bool (no verify re-read
+  needed, unlike the Kids writes).
+
+New pure helpers: `devices_meta.wake_word_row`, `devices_meta.
+background_url_problem`, `endpoints.gql_appliance_rows`; new wrappers
+`devices_meta.fetch_wake_word` / `set_background`,
+`endpoints.fetch_appliance_details`.
+
+Two alexapy methods are deliberately NOT wrapped, now documented in CLAUDE.md:
+`force_logout()` (a stub that unconditionally raises a swallowed
+`AlexapyLoginError` — no server-side effect) and `update_login()` (internal
+plumbing).
+
+Tests: 1456 → 1487 (+31, `tests/test_refine_surfaces.py`). Coverage:
+97.25% → 97.29%. No existing test weakened.
+
 ## [0.4.0] — 2026-09-06
 
 - Updated `test.md`. (1 file changed, 14 insertions(+), 3 deletions(-))

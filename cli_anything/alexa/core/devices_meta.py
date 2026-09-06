@@ -239,6 +239,65 @@ async def fetch_wake_words(login) -> list[dict[str, Any]]:
     return wake_word_rows(payload, await fetch_devices(login))
 
 
+def wake_word_row(word: str | None, *, device: str, serial: str) -> dict[str, Any]:
+    """One Echo's wake word as a display row (pure)."""
+    return {"device": device, "serial": serial, "wakeWord": word}
+
+
+async def fetch_wake_word(login, device: str | None = None) -> dict[str, Any]:
+    """Wake word for ONE Echo via ``AlexaAPI.find_wake_word`` (device-bound).
+
+    ``find_wake_word`` answers from alexapy's own ``get_wake_words`` read
+    (lower-casing the word) and returns ``None`` when the serial has no entry —
+    the row keeps that ``None`` rather than guessing a default, because an
+    unreadable value is not the same as "alexa".
+    """
+    from alexapy import AlexaAPI
+
+    from cli_anything.alexa.core.media import resolve_device
+
+    ref = await resolve_device(login, device)
+    word = await AlexaAPI.find_wake_word(login, ref.device_serial_number)
+    return wake_word_row(word, device=ref.account_name, serial=ref.device_serial_number)
+
+
+def background_url_problem(url: Any) -> str | None:
+    """Why ``url`` is not a usable Echo Show background (pure), or ``None``.
+
+    alexapy only *warns* about a plain-``http://`` URL and posts it anyway;
+    Amazon answers it with nothing on screen, so the CLI refuses the URL
+    locally instead of posting into the void.  Same contract as
+    ``media.normalize_volume``: called before login, so bad input fails
+    identically with and without ``--yes``.
+    """
+    if not isinstance(url, str) or not url.strip():
+        return "a background image URL is required"
+    if not url.strip().lower().startswith("https://"):
+        return "the background image URL must be https (an Echo Show ignores plain http)"
+    return None
+
+
+async def set_background(login, device: str | None, url: str) -> dict[str, Any]:
+    """Set an Echo Show's background to an https image URL (device-bound).
+
+    Unlike the Amazon Kids writes, ``set_background`` returns a real success
+    bool (HTTP 200 or not), so ``ok`` comes straight from the call — no verify
+    re-read is needed.
+    """
+    from alexapy import AlexaAPI
+
+    from cli_anything.alexa.core.media import resolve_device
+
+    ref = await resolve_device(login, device)
+    ok = await AlexaAPI(ref, login).set_background(url)
+    return {
+        "device": ref.account_name,
+        "serial": ref.device_serial_number,
+        "url": url,
+        "ok": bool(ok),
+    }
+
+
 async def fetch_dnd_states(login) -> list[dict[str, Any]]:
     """Current Do-Not-Disturb state per Echo."""
     from alexapy import AlexaAPI

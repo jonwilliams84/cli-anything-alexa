@@ -174,6 +174,7 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `devices rename --map <file>` | **Bulk** rename from `current name => new name` (or `endpointId => new name`) lines (`#` comments) |
 | `devices rename ... --speakable` | Auto-fix new names DACS would reject (hyphens→spaces, strip control chars) |
 | `devices duplicates` | Detect devices exposed twice (native + HA twin, or any shared display name) |
+| `devices capabilities` | Per-appliance **detail** read from alexapy's GraphQL smart-home query: applianceTypes, capability count, model, connectedVia, HA entityId |
 | `devices state [<target>...] [--all]` | Read live smart-home state (power, brightness, colour, temperature…) |
 | `devices on\|off [<target>...] [--all]` | Turn appliances on / off (`--yes` to execute) |
 | `devices light <target> [--on\|--off] [--brightness N] [--color <name>] [--color-temperature <name>]` | Drive a light's power / brightness / colour (`--yes` to execute) |
@@ -186,9 +187,11 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `echos connect <name\|mac> [--device ...]` | Connect an already-paired bluetooth device to an Echo (`--yes` to execute) |
 | `echos disconnect [--device ...]` | Disconnect **every** bluetooth sink from an Echo (`--yes` to execute) |
 | `echos wake-words` | Show the configured wake word per Echo |
+| `echos wake-word [<device>]` | Show ONE Echo's wake word (default: first online) |
 | `echos dnd` | Read the current do-not-disturb state of every Echo |
 | `echos preferences [<device>]` | Per-Echo preferences: **timezone**, locale, temperature/distance units, postal code |
 | `echos wifi [<device>]` | One Echo's wifi details (SSID, signal, security, MAC/IP) |
+| `echos background <url> [--device ...]` | Set an Echo Show's background to an https image URL (`--yes` to execute; non-https refused before login) |
 | `kids profiles` | List the Amazon Kids child profiles in the household (name, age, directedId) |
 | `kids status [<device>]` | Amazon Kids state per Echo — every Echo, or one named speaker |
 | `kids enable <device> --child <name\|id>` | Turn Amazon Kids ON for an Echo by assigning it to a child profile (`--yes` to execute) |
@@ -467,8 +470,24 @@ Echo state lives under `echos`:
 cli-anything-alexa echos bluetooth --json     # paired phones/laptops, account-wide
 cli-anything-alexa echos pairings "Kitchen Echo"   # one Echo, with the addresses
 cli-anything-alexa echos wake-words           # ALEXA / ECHO / COMPUTER per device
+cli-anything-alexa echos wake-word "Kitchen Echo"  # one Echo's wake word
 cli-anything-alexa echos dnd                  # current DND state (the `dnd` command writes it)
 ```
+
+**Echo Show background.** `echos background` sets an Echo Show's background
+image (`PERSONAL_PHOTOS` slot) to an https URL. Only **https** is accepted: the
+URL is validated before any session is touched, because alexapy merely warns
+about plain `http://` and posts it anyway — Amazon then shows nothing.
+
+```bash
+cli-anything-alexa echos background "https://example.com/sunrise.jpg" --device "Kitchen Show" --yes
+```
+
+**Per-appliance detail.** `devices capabilities` reads alexapy's own GraphQL
+smart-home query (`get_devices_gql`) — the only read that returns
+`applianceTypes`, the capability list (shown as a count), `modelName`,
+`connectedVia` and the HA `entityId` per appliance. Targeting still resolves
+through the canonical `endpoints` query; this is read-only enrichment.
 
 **Bluetooth: connect / disconnect, not pair.** `echos connect` calls
 `pair-sink`, which connects a sink that is **already paired** — the initial
