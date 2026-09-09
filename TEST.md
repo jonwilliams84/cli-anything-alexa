@@ -9,14 +9,16 @@ python -m pytest tests --cov=cli_anything --cov-fail-under=87 -q --durations=10 
   && bandit -r cli_anything/ -ll -x '*/tests/*,*/test_*.py,*/conftest.py'
 ```
 
-## Current state (after 0.6.0 refine, 2026-09-06)
+## Current state (after 0.7.0 refine, 2026-09-09)
 
-- **1548 tests pass**, 0 failures, in ~7 s (no live account, no network —
+- **1586 tests pass**, 0 failures, in ~6 s (no live account, no network —
   alexapy is mocked; pure logic is tested without it).
-- Coverage **97.13%** (gate: ≥87%). `core/notifications.py` at **100%**
-  (statements + branches), including the recurrence surface; the new
-  `core/lists.py` at **95%**; the CLI layer (`alexa_cli.py`) ~95%, the REPL
-  skin ~97%.
+- Coverage **97.19%** (gate: ≥87%). `core/notifications.py` at **100%**
+  (statements + branches); the new session-lifecycle surface in
+  `core/session.py` (ping/refresh/logout/totp) is covered line-for-line
+  (the module sits at **95%**, the misses all in pre-existing
+  import/proxy-login branches); the CLI layer (`alexa_cli.py`) ~95%, the
+  REPL skin ~97%.
 - Lint (`ruff check`), format (`ruff format --check`) and bandit (-ll): clean.
 
 ## What the tests cover
@@ -46,6 +48,17 @@ Unit tests (per-module files under `tests/`):
   background` dry-run/`--yes`/pre-login https refusal, `devices capabilities`).
 - `test_security_fixes.py` — asserts the import block and redaction behaviour
   the security gate cares about.
+- `test_auth_lifecycle.py` — the 0.7.0 session-lifecycle surface in
+  `core/session.py`: `ping_row` (ok from a live body; empty/error/None
+  refused), `session_ping` against a faked `AlexaAPI.ping`;
+  `refresh_access_token` (refused without a refresh token — no network call
+  attempted, expiry iso-timestamp reported on success, `None` on failure or a
+  garbled `expires_in`); `cookie_paths_in_dir` (mirrors alexapy's
+  `_cookiefile` list, email sanitized), `logout_plan` (present vs absent) and
+  `logout_session` (removes every cookie file, `verified` from a fresh disk
+  re-read, a directory squatting on the path reported as `failed` — never a
+  silent success); `totp_row` (code pinned to an instant, `valid_for`
+  windowing, empty/non-base32 secrets raise `AlexaSessionError`).
 
 CLI/E2E tests (`test_cli_*.py`): every command's observable contract —
 preview-by-default / act-on-`--yes`, argument validation **before** any login
@@ -53,6 +66,14 @@ or network call, `--json` output shape, and which core coroutine each command
 invokes (via stubbed `_run`). The notification-edit file
 (`test_cli_notifications_edit_paths.py`) also covers `notifications repeat`
 and the `--repeat` flags of `add-alarm`/`add-reminder`.
+`test_cli_auth_lifecycle_paths.py` (0.7.0) covers `auth ping` (row +
+non-zero exit when dead), `auth refresh` (row + non-zero exit when the
+exchange fails), `auth logout` (preview with `would_remove` + hint, the
+`--yes` path runs the REAL filesystem delete and reports `verified`, a
+blocked delete exits non-zero, the read-in-place `--cookie-dir` refusal, the
+missing-email abort) and `auth totp` (six-digit code + validity, clean abort
+on a bad secret), plus an end-to-end ping → refresh → logout workflow over
+one cookie story.
 `test_cli_refine_paths.py` closes the remaining CLI-layer gaps: both
 `auth login` flows (scripted + guided proxy) and `auth import-pickle` success,
 bulk `rename --pattern` / `--map` and single renames (dry-run + `--yes`),

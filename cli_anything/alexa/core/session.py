@@ -38,6 +38,7 @@ host. So 3.14 is needed only for ``import-pickle`` from a 3.14 source.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 import os
 import re
@@ -697,3 +698,154 @@ async def account_info(login) -> dict[str, Any]:
     from alexapy import AlexaAPI
 
     return account_row(await AlexaAPI.get_authentication(login))
+
+
+# ──────────────────────────────────────────── session lifecycle (ping/refresh/logout)
+
+
+def ping_row(payload: Any) -> dict[str, Any]:
+    """Normalize ``AlexaAPI.ping`` (``/api/ping``) into a health row (pure).
+
+    ``ok`` is ``True`` only when the endpoint answered with a non-empty body
+    and no ``error`` field — an empty body (or ``None``, which alexapy returns
+    when the request never completed) means the session did not buy live API
+    traffic. ``auth status`` (``test_loggedin``) checks the *cookie* against
+    Amazon's login pages; ping checks the session the way the app itself does.
+    """
+    ok = bool(payload) and not (isinstance(payload, dict) and payload.get("error") is not None)
+    return {"ok": ok, "detail": payload or None}
+
+
+async def session_ping(login) -> dict[str, Any]:
+    """Deep session health check via ``AlexaAPI.ping`` (``/api/ping``)."""
+    from alexapy import AlexaAPI
+
+    return ping_row(await AlexaAPI.ping(login))
+
+
+def refresh_row(
+    refreshed: bool, has_refresh_token: bool, expires_at: str | None = None
+) -> dict[str, Any]:
+    """Row for an access-token refresh attempt (pure)."""
+    return {
+        "refreshed": bool(refreshed),
+        "has_refresh_token": bool(has_refresh_token),
+        "expires_at": expires_at,
+    }
+
+
+async def refresh_access_token(login) -> dict[str, Any]:
+    """Renew the access token using the cookie's refresh token.
+
+    Wraps ``AlexaLogin.refresh_access_token`` (the OAuth ``/auth/token``
+    exchange on the ``api.`` host). When the cookie carries no refresh token
+    the refresh is refused up front with ``refreshed=False`` /
+    ``has_refresh_token=False`` rather than a network call that would fail
+    the same way — the caller (``auth refresh``) can point at the fix
+    (re-authenticate) instead of a cryptic HTTP error.
+    """
+    if not getattr(login, "refresh_token", None):
+        return refresh_row(False, False)
+    refreshed = bool(await login.refresh_access_token())
+    expires_at = None
+    if refreshed:
+        expires = getattr(login, "expires_in", None)
+        try:
+            expires_at = (
+                datetime.datetime.fromtimestamp(float(expires), tz=datetime.timezone.utc).isoformat(
+                    timespec="seconds"
+                )
+                if expires
+                else None
+            )
+        except (TypeError, ValueError, OSError, OverflowError):
+            expires_at = None
+    return refresh_row(refreshed, True, expires_at)
+
+
+def cookie_paths_in_dir(config_dir: Path, email: str) -> list[Path]:
+    """Every cookie-file path alexapy maintains for this account (pure).
+
+    Mirrors ``AlexaLogin._cookiefile`` in order: the versioned JSON jar
+    ``.storage/alexa_media.<email>.cookies`` (the write target), the legacy
+    ``.storage/alexa_media.<email>.pickle``, the config-root pickle (what
+    ``import-pickle`` writes), and the ``.storage/alexa_media.<email>.txt``
+    Mozilla jar. ``logout`` removes all of them; the email is sanitized, so
+    no component can escape the config dir.
+    """
+    safe = _sanitize_email_for_filename(email)
+    base = Path(config_dir)
+    return [
+        base / ".storage" / f"alexa_media.{safe}.cookies",
+        base / ".storage" / f"alexa_media.{safe}.pickle",
+        base / f"alexa_media.{safe}.pickle",
+        base / ".storage" / f"alexa_media.{safe}.txt",
+    ]
+
+
+def logout_plan(config_dir: Path, email: str) -> dict[str, Any]:
+    """Which of those cookie files exist right now (pure, read-only).
+
+    Drives the ``auth logout`` dry-run: ``present`` are the files a ``--yes``
+    run would delete, ``absent`` the ones already gone.
+    """
+    paths = cookie_paths_in_dir(config_dir, email)
+    return {
+        "present": [str(p) for p in paths if p.is_file()],
+        "absent": [str(p) for p in paths if not p.is_file()],
+    }
+
+
+def logout_session(email: str, config_dir: Path = DEFAULT_CONFIG_DIR) -> dict[str, Any]:
+    """Delete every cookie file alexapy keeps for this account. Destructive.
+
+    Pure filesystem — no network, no alexapy import (a logout must work even
+    when the session is already unusable). Removes the versioned JSON jar,
+    both pickles and the legacy txt, then re-reads from disk: ``verified`` is
+    ``True`` only when nothing is left, so a failed unlink (permissions, a
+    directory in the way) is reported, never silently swallowed.
+    """
+    paths = cookie_paths_in_dir(config_dir, email)
+    removed: list[str] = []
+    for p in paths:
+        if p.is_file():
+            p.unlink()
+            removed.append(str(p))
+    # Anything still present after the sweep — an unlink that failed, or a
+    # directory squatting on the cookie path — is a failure, never a silent
+    # success: `verified` is False and `failed` names the leftovers.
+    still_there = [str(p) for p in paths if p.is_file() or p.is_dir()]
+    return {
+        "email": email,
+        "config_dir": str(config_dir),
+        "removed": removed,
+        "verified": not still_there,
+        "failed": still_there,
+    }
+
+
+def totp_row(secret: str, at: float | None = None) -> dict[str, Any]:
+    """Current TOTP code for an authenticator secret.
+
+    The code ``auth login --password --otp-secret`` will send, computable
+    standalone for scripted/CI flows that need to show or log the code.
+    ``at`` pins the evaluation instant (tests); ``None`` means now. Raises
+    ``AlexaSessionError`` on an invalid/empty secret — never a raw pyotp
+    traceback.
+    """
+    import time as _time
+
+    import pyotp
+
+    if not secret or not isinstance(secret, str):
+        raise AlexaSessionError("an --otp-secret (base32) is required.")
+    try:
+        totp = pyotp.TOTP(secret.strip())
+        code = totp.at(float(at)) if at is not None else totp.now()
+    except Exception as exc:  # noqa: BLE001 — any pyotp failure is "bad secret"
+        raise AlexaSessionError(
+            f"invalid TOTP secret ({type(exc).__name__}); expected base32."
+        ) from exc
+    now = int(float(at)) if at is not None else int(_time.time())
+    remaining = totp.interval - (now % totp.interval)
+    return {"code": code, "valid_for": remaining, "interval": totp.interval}

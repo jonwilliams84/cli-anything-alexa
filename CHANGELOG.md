@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.7.0] — 2026-09-09
+
+### Added — session lifecycle (`auth ping` / `auth refresh` / `auth logout` / `auth totp`)
+
+The auth surface ended at `status`/`whoami`: alexapy's own session-lifecycle
+calls were unwrapped, and there was no way to log out at all. New commands
+(all `--json`):
+
+| Command | Wraps | Notes |
+| --- | --- | --- |
+| `auth ping` | `AlexaAPI.ping` (`/api/ping`) | The app's own authenticated health check — answers "does this session still buy live API traffic" (`auth status` only tests the cookie). `ok` + raw `detail`; exits non-zero when dead. Read-only, no `--yes`. |
+| `auth refresh` | `AlexaLogin.refresh_access_token` | OAuth `/auth/token` exchange from the cookie's refresh token — renews the access token without re-login or touching the cookie. Exits non-zero when the cookie has no refresh token (refused up front, no doomed network call) or the exchange fails. |
+| `auth logout` | `AlexaLogin._cookiefile` deletion | **Destructive**, preview by default + `--yes`: deletes every cookie file alexapy maintains (versioned `.storage/...cookies` jar, both pickles, legacy txt) and reports `verified` from a fresh disk re-read — an unlink that fails, or a directory squatting on the path, is a failure, never a silent success. **Refused under `--cookie-dir`** (read-in-place): that cookie belongs to another tool (e.g. HA) — deleting it would break their session. |
+| `auth totp` | `pyotp` (the `set_totp`/`get_totp_token` half of alexapy) | Current 2FA code + seconds left for an `--otp-secret` — the code the scripted `auth login` flow will send, computable standalone for scripted/CI. No session, no network. |
+
+Pure helpers (`ping_row`, `refresh_row`, `cookie_paths_in_dir`, `logout_plan`,
+`logout_session`, `totp_row`) live in `core/session.py`; unit tests in
+`tests/test_auth_lifecycle.py`, CLI paths in
+`tests/test_cli_auth_lifecycle_paths.py` (the `--yes` logout path runs the
+real filesystem delete, plus an end-to-end ping → refresh → logout workflow).
+
+Tests: 1548 → 1586 (+38). Version bumped 0.6.0 → **0.7.0**.
+
 ## [0.6.0] — 2026-09-06
 
 ### Added — Alexa shopping & to-do lists (`lists`)
