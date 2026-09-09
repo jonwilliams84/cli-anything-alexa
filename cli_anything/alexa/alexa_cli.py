@@ -207,7 +207,7 @@ def config_save(ctx):
 
 @cli.group()
 def auth():
-    """Manage the Alexa session (cookie import / fresh login / status)."""
+    """Manage the Alexa session (login / status / ping / refresh / logout / totp)."""
 
 
 @auth.command("import-pickle")
@@ -418,6 +418,102 @@ def auth_whoami(ctx):
     emit(ctx, row)
     if not row.get("authenticated"):
         sys.exit(1)
+
+
+@auth.command("ping")
+@click.pass_context
+def auth_ping(ctx):
+    """Deep session health check (the app's own /api/ping call).
+
+    `auth status` tests the cookie against Amazon's login pages; ping sends
+    the authenticated API call the app itself uses, so it answers the
+    question "does this session still buy live API traffic". Read-only.
+    """
+    login = _login(ctx)
+    row = _run(ctx, session_core.session_ping(login))
+    emit(ctx, row)
+    if not row.get("ok"):
+        sys.exit(1)
+
+
+@auth.command("refresh")
+@click.pass_context
+def auth_refresh(ctx):
+    """Renew the access token using the cookie's refresh token.
+
+    alexapy stores a refresh token at login; when the access token expires
+    this re-exchanges it (OAuth /auth/token) without touching the cookie.
+    Exits non-zero when there is no refresh token or the exchange fails —
+    the fix for both is a fresh `auth login`.
+    """
+    login = _login(ctx)
+    row = _run(ctx, session_core.refresh_access_token(login))
+    emit(ctx, {"email": ctx.obj.get("email"), **row})
+    if not row.get("refreshed"):
+        sys.exit(1)
+
+
+@auth.command("logout")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def auth_logout(ctx, yes):
+    """Delete the saved cookie file(s) for this account (destructive).
+
+    Removes every cookie file alexapy maintains (the versioned JSON jar, the
+    pickles and the legacy txt) and verifies they are gone. Pure filesystem —
+    works even when the session is already unusable. Preview by default.
+
+    \b
+    Refused under --cookie-dir (read-in-place): that cookie belongs to another
+    tool (e.g. Home Assistant) — let it manage its own session.
+    """
+    email = _require_email(ctx)
+    if ctx.obj.get("read_in_place"):
+        _abort(
+            f"--cookie-dir ({ctx.obj.get('cookie_dir')}) reads a cookie owned "
+            "by another app IN PLACE — deleting it would break their session. "
+            "Point --cookie-dir at your own config dir instead, or let the "
+            "cookie's owner rotate it."
+        )
+    config_dir = ctx.obj.get("cookie_dir", session_core.DEFAULT_CONFIG_DIR)
+    if not yes:
+        plan = session_core.logout_plan(config_dir, email)
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "email": email,
+                "config_dir": str(config_dir),
+                "would_remove": plan["present"],
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    result = _run(ctx, _as_coro(session_core.logout_session, email, config_dir=config_dir))
+    emit(ctx, result)
+    if not result.get("verified"):
+        sys.exit(1)
+
+
+@auth.command("totp")
+@click.option(
+    "--otp-secret",
+    required=True,
+    help="Base32 authenticator secret (the same one passed to `auth login`)",
+)
+@click.pass_context
+def auth_totp(ctx, otp_secret):
+    """Show the current 2FA code for an authenticator secret.
+
+    The code `auth login --password --otp-secret` will send, computable
+    standalone for scripted/CI flows that need to display or log it. No
+    session or network involved.
+    """
+    try:
+        row = session_core.totp_row(otp_secret)
+    except session_core.AlexaSessionError as exc:
+        _abort(str(exc))
+    emit(ctx, row)
 
 
 # ──────────────────────────────────────────────────────── devices (appliances)

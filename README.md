@@ -135,7 +135,20 @@ cli-anything-alexa auth status            # -> {"email": ..., "logged_in": true}
 
 ```bash
 cli-anything-alexa auth status            # validates the saved cookie
+cli-anything-alexa auth ping              # the app's own /api/ping health check
+cli-anything-alexa auth refresh           # renew the access token, no re-login
+cli-anything-alexa auth logout            # delete the cookie (preview; --yes to execute)
 ```
+
+`auth status` tests the **cookie** against Amazon's login pages; `auth ping`
+sends the authenticated API call the app itself uses (`/api/ping`), so it
+answers "does this session still buy live API traffic". `auth refresh`
+re-exchanges the OAuth access token from the cookie's refresh token without
+touching the cookie (or re-logging-in) — handy when a long-lived session's
+access token ages out. `auth logout` removes every cookie file alexapy
+maintains for the account and verifies they are gone — it previews first and
+refuses to run under `--cookie-dir`, because that cookie belongs to another
+tool (e.g. Home Assistant).
 
 If a cookie expires, any command fails with a friendly message pointing you
 back at `auth login`.
@@ -165,6 +178,10 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `auth import-pickle <path>` | Copy an existing alexapy cookie (e.g. HA's) into the local config dir (snapshot — goes stale if HA keeps rotating it; prefer `--cookie-dir`) |
 | `auth status` | Validate the saved cookie (`test_loggedin`) |
 | `auth whoami` | Show WHO the cookie is logged in as (`/api/users/me`: customer id, name, email, Prime Music) — exits non-zero if it no longer buys an account |
+| `auth ping` | Deep session health check — the app's own authenticated `/api/ping` call (`ok` + the raw `detail`); exits non-zero when the session no longer buys live API traffic |
+| `auth refresh` | Renew the access token from the cookie's refresh token (OAuth `/auth/token`) — no re-login; exits non-zero when the cookie has no refresh token or the exchange fails (fix: `auth login`) |
+| `auth logout` | **Destructive**: delete every cookie file alexapy keeps for the account (versioned JSON jar + pickles + legacy txt), verified from a fresh disk re-read. Preview by default; `--yes` to execute. Refused under `--cookie-dir` (that cookie belongs to another app) |
+| `auth totp --otp-secret <b32>` | Show the current 2FA code (and seconds left) for an authenticator secret — the code `auth login --password --otp-secret` will send, computable standalone for scripted/CI flows. No session or network involved |
 | `config show` / `config save` | Show / persist the connection profile (email + region) |
 | `devices list [--ha-only \| --native-only] [--manufacturer <substr>]` | List smart-home devices with manufacturer + native-vs-HA `source` marker (each HA device shows its mapped entity id) |
 | `devices prune --whitelist <file>` | Delete HA-sourced appliances whose entity isn't whitelisted (dry-run default; `--no-dry-run --yes` to execute) |

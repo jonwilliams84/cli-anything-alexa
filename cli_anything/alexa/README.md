@@ -99,6 +99,10 @@ Every command supports a global `--json` flag for machine-readable output.
 | `auth import-pickle <path>` | Import an existing alexapy cookie (e.g. HA's) into the local config dir |
 | `auth status` | Validate the saved cookie (`test_loggedin`) |
 | `auth whoami` | Who the cookie is logged in as (`/api/users/me`) — exits non-zero if it no longer buys an account |
+| `auth ping` | Deep session health check — the app's own authenticated `/api/ping` call; exits non-zero when the session no longer buys live API traffic |
+| `auth refresh` | Renew the access token from the cookie's refresh token (OAuth `/auth/token`) — no re-login; exits non-zero when there is no refresh token or the exchange fails |
+| `auth logout` | **Destructive**: delete every cookie file alexapy keeps for the account, verified from a fresh disk re-read. Preview by default, `--yes` to execute; refused under `--cookie-dir` |
+| `auth totp --otp-secret <b32>` | Current 2FA code (+ seconds left) for an authenticator secret, standalone for scripted/CI flows. No session or network |
 | `config show` / `config save` | Show / persist the connection profile (email + region) |
 | `devices list [--ha-only \| --native-only] [--manufacturer <substr>]` | List smart-home devices with manufacturer + native-vs-HA `source` marker (each HA device shows its mapped entity id) |
 | `devices prune --whitelist <file>` | Delete HA-sourced appliances whose entity isn't whitelisted (dry-run default; `--no-dry-run --yes` to execute) |
