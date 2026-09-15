@@ -373,6 +373,55 @@ def guard_row(payload: Any, name: str | None = None) -> dict[str, Any]:
     return {"name": name, "armState": arm_state, "mode": human}
 
 
+# ── locks (Alexa.LockController) ──────────────────────────────────────────
+
+#: Human verb → the phoenix ``action`` Amazon expects for a lock. A lock write
+#: is ONE controlRequest with a bare ``lock``/``unlock`` — the same request
+#: family as ``turnOn``/``controlSecurityPanel`` (both already shipped in this
+#: harness via alexapy's own builders).
+LOCK_ACTIONS: dict[bool, str] = {True: "lock", False: "unlock"}
+
+#: The values Amazon reports for ``Alexa.LockController.lockState``. JAMMED is a
+#: real, reportable state — never map it to UNLOCKED.
+LOCK_STATES = ("LOCKED", "UNLOCKED", "JAMMED")
+
+
+def lock_action(lock: bool) -> str:
+    """``True`` → ``lock``, ``False`` → ``unlock`` (pure)."""
+    return LOCK_ACTIONS[bool(lock)]
+
+
+def lock_state(payload: Any, entity_id: str | None = None) -> str | None:
+    """The ``lockState`` value from a phoenix state read, or ``None`` (pure).
+
+    ``None`` means "Amazon reported no lockState for this entity (yet)" — an
+    unreachable device or a throttled read. Collapsing that into ``UNLOCKED``
+    would report a silent write as a success, so the caller sees the ``None``.
+    """
+    for row in state_rows(payload):
+        if row.get("property") != "lockState":
+            continue
+        if entity_id and row.get("entityId") not in (None, entity_id):
+            continue
+        value = row.get("value")
+        return value if isinstance(value, str) else None
+    return None
+
+
+def lock_verify(payload: Any, entity_id: str, lock: bool) -> bool | None:
+    """Three-valued verify of a lock write against a fresh state read (pure).
+
+    ``True``/``False`` — Amazon holds (not) the state we asked for; JAMMED is a
+    False. ``None`` — Amazon reported no lockState at all: the verify read was
+    throttled or the device unreachable, which is "could not check", never a
+    quiet failure. Mirrors the kids/notification write-verify semantics.
+    """
+    value = lock_state(payload, entity_id)
+    if value is None:
+        return None
+    return value == ("LOCKED" if lock else "UNLOCKED")
+
+
 # ── live operations ──────────────────────────────────────────────────────
 
 
@@ -476,4 +525,62 @@ async def set_guard_state(
         "entityId": entity_id,
         "armState": arm_state,
         "response": response or {},
+    }
+
+
+async def set_lock_state(login, entity_id: str, lock: bool) -> dict[str, Any]:
+    """Send one lock/unlock controlRequest (``PUT /api/phoenix/state``).
+
+    alexapy wraps all 58 of its public ``AlexaAPI`` methods and none of them is
+    a lock write, so this rides ``AlexaAPI._static_request`` directly — the same
+    reuse-the-helper pattern as groups (nexus) and lists (www) — with the same
+    ``controlRequests`` shape the Guard arm (``controlSecurityPanel``) and the
+    light verbs (``turnOn``/``setBrightness``) already use, addressed by
+    **entityId** with ``entityType: ENTITY``.
+
+    Like every write whose response answers nothing useful (a bare control
+    response, no state), the caller must re-read and verify — use
+    :func:`verify_lock_write`.
+    """
+    from alexapy import AlexaAPI
+
+    action = lock_action(lock)
+    data = {
+        "controlRequests": [
+            {
+                "entityId": entity_id,
+                "entityType": "ENTITY",
+                "parameters": {"action": action},
+            }
+        ]
+    }
+    resp = await AlexaAPI._static_request("put", login, "/api/phoenix/state", data=data)
+    if resp is None:
+        raise RuntimeError("the lock control request returned no response")
+    text = await resp.text()
+    try:
+        body = json.loads(text)
+    except (TypeError, ValueError):
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    return {"entityId": entity_id, "action": action, "response": body}
+
+
+async def verify_lock_write(
+    login, entity_id: str, lock: bool, name: str | None = None
+) -> dict[str, Any]:
+    """Re-read one lock's state after a write and report ``ok`` (pure-ish).
+
+    The write's own response carries no state, so ``ok`` comes from what Amazon
+    **holds** on a fresh ``/api/phoenix/state`` read: ``True``/``False``, or
+    ``None`` when the read answered nothing for the entity (unreachable or
+    throttled — "could not check", never silently failure).
+    """
+    payload = await fetch_states(login, entity_ids=[entity_id])
+    return {
+        "name": name,
+        "entityId": entity_id,
+        "lockState": lock_state(payload, entity_id),
+        "ok": lock_verify(payload, entity_id, lock),
     }

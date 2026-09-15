@@ -9,16 +9,15 @@ python -m pytest tests --cov=cli_anything --cov-fail-under=87 -q --durations=10 
   && bandit -r cli_anything/ -ll -x '*/tests/*,*/test_*.py,*/conftest.py'
 ```
 
-## Current state (after 0.7.0 refine, 2026-09-09)
+## Current state (after 0.8.0 refine, 2026-09-15)
 
-- **1586 tests pass**, 0 failures, in ~6 s (no live account, no network —
+- **1613 tests pass**, 0 failures, in ~6 s (no live account, no network —
   alexapy is mocked; pure logic is tested without it).
-- Coverage **97.19%** (gate: ≥87%). `core/notifications.py` at **100%**
-  (statements + branches); the new session-lifecycle surface in
-  `core/session.py` (ping/refresh/logout/totp) is covered line-for-line
-  (the module sits at **95%**, the misses all in pre-existing
-  import/proxy-login branches); the CLI layer (`alexa_cli.py`) ~95%, the
-  REPL skin ~97%.
+- Coverage **97.20%** (gate: ≥87%). `core/notifications.py` at **100%**
+  (statements + branches); the 0.8.0 lock surface in
+  `core/smarthome.py` (controlRequests writer + three-valued verify) is
+  covered line-for-line (the module sits at **99%**); the CLI layer
+  (`alexa_cli.py`) ~95%, the REPL skin ~97%.
 - Lint (`ruff check`), format (`ruff format --check`) and bandit (-ll): clean.
 
 ## What the tests cover
@@ -74,6 +73,19 @@ blocked delete exits non-zero, the read-in-place `--cookie-dir` refusal, the
 missing-email abort) and `auth totp` (six-digit code + validity, clean abort
 on a bad secret), plus an end-to-end ping → refresh → logout workflow over
 one cookie story.
+- `test_smarthome.py` / `test_cli_smarthome_paths.py` (0.8.0 additions) — the
+  **lock** surface: `lock_action` (verb mapping), `lock_state` (`lockState`
+  out of a capability read, entity-scoped, `None` when Amazon reports nothing,
+  non-string values ignored), `lock_verify` (three-valued: True/False —
+  `JAMMED` is a False — and **`None` when the read answered nothing**), and the
+  async pair against a fake `_static_request`: `set_lock_state` posts the
+  exact `controlRequests` body (`lock`/`unlock`, `entityType: ENTITY`) via
+  `PUT /api/phoenix/state`, survives a non-JSON body, raises on a missing
+  response; `verify_lock_write` re-reads and reports `ok` from the fresh
+  payload. CLI: both verbs preview by default, `--yes` executes write → verify
+  (row carries `lockState` + three-valued `ok`), `ok: null` is never a silent
+  pass, targeting/ambiguity/no-entityId refusals, `--all`, and a
+  lock → unlock round-trip workflow.
 `test_cli_refine_paths.py` closes the remaining CLI-layer gaps: both
 `auth login` flows (scripted + guided proxy) and `auth import-pickle` success,
 bulk `rename --pattern` / `--map` and single renames (dry-run + `--yes`),

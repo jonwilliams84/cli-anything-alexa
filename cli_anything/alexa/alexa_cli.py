@@ -934,6 +934,76 @@ def devices_light(ctx, target, power, brightness, color, color_temperature, yes)
     )
 
 
+def _lock_command(ctx, targets, all_devices, lock, yes):
+    """Shared dry-run/execute path for `devices lock` / `devices unlock`.
+
+    A lock write's response answers nothing useful, so every executed write
+    re-reads the device's `lockState` and reports `ok` from what Amazon holds —
+    three-valued, like the kids/notifications verifies (`null` = the verify
+    read answered nothing, never a quiet success).
+    """
+    login = _login(ctx)
+    records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
+    selected = _select_records(ctx, records, targets, all_devices)
+    action = smarthome_core.lock_action(lock)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "action": action,
+                "count": len(selected),
+                "devices": [r.get("name") for r in selected],
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    results = []
+    for rec in selected:
+        entity_id = _run(ctx, _as_coro(smarthome_core.entity_ref, rec))
+        write = _run(ctx, smarthome_core.set_lock_state(login, entity_id, lock))
+        verify = _run(
+            ctx,
+            smarthome_core.verify_lock_write(login, entity_id, lock, name=rec.get("name")),
+        )
+        results.append(
+            {
+                "name": rec.get("name"),
+                "entityId": write["entityId"],
+                "action": write["action"],
+                "lockState": verify["lockState"],
+                "ok": verify["ok"],
+            }
+        )
+    emit(ctx, results)
+
+
+@devices.command("lock")
+@click.argument("targets", nargs=-1)
+@click.option("--all", "all_devices", is_flag=True, default=False, help="Every lock (careful)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def devices_lock(ctx, targets, all_devices, yes):
+    """Lock device(s) (Alexa.LockController: deadbolts, smart locks).
+
+    \b
+    TARGET is anything `devices state` addresses. Preview by default; --yes
+    executes and then re-reads the state: `ok` is True/False from what Amazon
+    holds, `null` when the verify read answered nothing (never a quiet pass).
+    """
+    _lock_command(ctx, targets, all_devices, True, yes)
+
+
+@devices.command("unlock")
+@click.argument("targets", nargs=-1)
+@click.option("--all", "all_devices", is_flag=True, default=False, help="Every lock (careful)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def devices_unlock(ctx, targets, all_devices, yes):
+    """Unlock device(s) (Alexa.LockController: deadbolts, smart locks)."""
+    _lock_command(ctx, targets, all_devices, False, yes)
+
+
 @devices.command("prune")
 @click.option(
     "--whitelist",

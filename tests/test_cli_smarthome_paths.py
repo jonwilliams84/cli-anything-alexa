@@ -388,3 +388,150 @@ def test_guard_set_aborts_when_the_panel_has_no_entity_id():
         result = _invoke(["guard", "set", "away", "--yes"])
     assert result.exit_code == 1
     assert "no phoenix entityId" in result.output
+
+
+# ── devices lock / unlock ─────────────────────────────────────────────────
+
+_LOCK_RECORD = {
+    "endpointId": "amzn1.alexa.endpoint.lock",
+    "applianceId": "APPL-LOCK",
+    "entityId": "entity-lock",
+    "applianceTypes": ["SMARTLOCK"],
+    "name": "Front Door",
+    "manufacturer": "Yale",
+    "ha_sourced": False,
+    "entity_id": None,
+    "enabled": "ENABLED",
+}
+
+
+@pytest.mark.parametrize(("verb", "expected"), [("lock", "lock"), ("unlock", "unlock")])
+def test_lock_previews_without_yes(verb, expected):
+    with _stub_cli([_LOCK_RECORD]) as run:
+        result = _invoke(["--json", "devices", verb, "Front Door"])
+    parsed = _json_out(result)
+    assert result.exit_code == 0
+    assert parsed["dry_run"] is True
+    assert parsed["action"] == expected
+    assert parsed["devices"] == ["Front Door"]
+    assert "re-run with --yes" in parsed["hint"]
+    assert "set_lock_state" not in run.seen
+
+
+@pytest.mark.parametrize(("verb", "lock", "ok_state"), [("lock", True, "LOCKED"),
+                                                        ("unlock", False, "UNLOCKED")])
+def test_lock_executes_with_yes_and_reports_the_verify(verb, lock, ok_state):
+    """A lock write is verified by a fresh re-read: `ok` comes from Amazon."""
+    calls = []
+
+    async def fake_write(_login, entity_id, want):
+        calls.append(("set_lock_state", entity_id, want))
+        return {"entityId": entity_id, "action": smarthome_core.lock_action(want), "response": {}}
+
+    async def fake_verify(_login, entity_id, want, name=None):
+        calls.append(("verify_lock_write", entity_id, want))
+        return {"name": name, "entityId": entity_id, "lockState": ok_state, "ok": want}
+
+    with _stub_network([_LOCK_RECORD]):
+        with patch.object(smarthome_core, "set_lock_state", side_effect=fake_write):
+            with patch.object(smarthome_core, "verify_lock_write", side_effect=fake_verify):
+                result = _invoke(["--json", "devices", verb, "Front Door", "--yes"])
+    assert result.exit_code == 0
+    assert calls == [
+        ("set_lock_state", "entity-lock", lock),
+        ("verify_lock_write", "entity-lock", lock),
+    ]
+    row = _json_out(result)[0]
+    assert row == {
+        "name": "Front Door",
+        "entityId": "entity-lock",
+        "action": expected_action(verb),
+        "lockState": ok_state,
+        "ok": lock,
+    }
+
+
+def expected_action(verb):
+    return "lock" if verb == "lock" else "unlock"
+
+
+def test_lock_text_mode_renders_the_verify_row():
+    async def fake_write(_login, entity_id, want):
+        return {"entityId": entity_id, "action": "lock", "response": {}}
+
+    async def fake_verify(_login, entity_id, want, name=None):
+        return {"name": name, "entityId": entity_id, "lockState": "LOCKED", "ok": True}
+
+    with _stub_network([_LOCK_RECORD]):
+        with patch.object(smarthome_core, "set_lock_state", side_effect=fake_write):
+            with patch.object(smarthome_core, "verify_lock_write", side_effect=fake_verify):
+                result = _invoke(["devices", "lock", "Front Door", "--yes"])
+    assert result.exit_code == 0
+    assert "Front Door" in result.output
+    assert "LOCKED" in result.output
+
+
+def test_lock_ok_null_when_the_verify_read_answers_nothing():
+    """`ok: null` = could not check — never a silent success or failure."""
+    async def fake_write(_login, entity_id, want):
+        return {"entityId": entity_id, "action": "lock", "response": {}}
+
+    async def fake_verify(_login, entity_id, want, name=None):
+        return {"name": name, "entityId": entity_id, "lockState": None, "ok": None}
+
+    with _stub_network([_LOCK_RECORD]):
+        with patch.object(smarthome_core, "set_lock_state", side_effect=fake_write):
+            with patch.object(smarthome_core, "verify_lock_write", side_effect=fake_verify):
+                result = _invoke(["--json", "devices", "lock", "Front Door", "--yes"])
+    assert result.exit_code == 0
+    assert _json_out(result)[0]["ok"] is None
+
+
+def test_lock_aborts_when_the_lock_has_no_entity_id():
+    with _stub_network([{**_LOCK_RECORD, "entityId": ""}]):
+        result = _invoke(["devices", "lock", "Front Door", "--yes"])
+    assert result.exit_code == 1
+    assert "no phoenix entityId" in result.output
+
+
+def test_lock_requires_a_target():
+    with _stub_cli([_LOCK_RECORD]):
+        result = _invoke(["devices", "lock"])
+    assert result.exit_code == 1
+    assert "name at least one device" in result.output
+
+
+def test_lock_aborts_on_unknown_device():
+    with _stub_cli([_LOCK_RECORD]):
+        result = _invoke(["devices", "lock", "Nope"])
+    assert result.exit_code == 1
+    assert "no device matching" in result.output
+
+
+def test_lock_all_previews_every_selected_record():
+    with _stub_cli([_LOCK_RECORD, _RECORDS[0]]):
+        result = _invoke(["--json", "devices", "lock", "--all"])
+    parsed = _json_out(result)
+    assert parsed["count"] == 2
+    assert parsed["devices"] == ["Front Door", "Kitchen Lamp"]
+
+
+def test_lock_then_unlock_round_trips_the_action_verb():
+    """Workflow: lock --yes then unlock --yes send opposite controlRequests."""
+    seen = []
+
+    async def fake_write(_login, entity_id, want):
+        seen.append(smarthome_core.lock_action(want))
+        return {"entityId": entity_id, "action": seen[-1], "response": {}}
+
+    async def fake_verify(_login, entity_id, want, name=None):
+        return {"name": name, "entityId": entity_id, "lockState": "LOCKED", "ok": want}
+
+    with _stub_network([_LOCK_RECORD]):
+        with patch.object(smarthome_core, "set_lock_state", side_effect=fake_write):
+            with patch.object(smarthome_core, "verify_lock_write", side_effect=fake_verify):
+                first = _invoke(["--json", "devices", "lock", "Front Door", "--yes"])
+                second = _invoke(["--json", "devices", "unlock", "Front Door", "--yes"])
+    assert first.exit_code == 0 and second.exit_code == 0
+    assert seen == ["lock", "unlock"]
+    assert _json_out(second)[0]["action"] == "unlock"

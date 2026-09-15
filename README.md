@@ -195,6 +195,7 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `devices state [<target>...] [--all]` | Read live smart-home state (power, brightness, colour, temperature…) |
 | `devices on\|off [<target>...] [--all]` | Turn appliances on / off (`--yes` to execute) |
 | `devices light <target> [--on\|--off] [--brightness N] [--color <name>] [--color-temperature <name>]` | Drive a light's power / brightness / colour (`--yes` to execute) |
+| `devices lock\|unlock [<target>...] [--all]` | Lock / unlock via `Alexa.LockController` (`--yes` to execute; verified by re-read) |
 | `discover` | Trigger Alexa smart-home device discovery (`--yes` to execute) |
 | `guard status` | Read Alexa Guard's arm state (away vs home) |
 | `guard set away\|home` | Arm / disarm Alexa Guard (`--yes` to execute) |
@@ -387,6 +388,21 @@ cli-anything-alexa devices state "Kitchen Lamp" --json
 cli-anything-alexa devices state --all --json
 cli-anything-alexa devices off "Lounge Plug" --yes
 cli-anything-alexa devices light "Kitchen Lamp" --on --brightness 40 --color soft_white --yes
+```
+
+Locks ride the same `/api/phoenix/state` controlRequests — `Alexa.LockController`
+is one more action verb in the family the lights and Guard already use
+(`turnOn`, `setBrightness`, `controlSecurityPanel` — now `lock` / `unlock`).
+A lock write's response answers nothing useful, so every executed write is
+**verified by a fresh re-read**: `ok` is `true`/`false` from the `lockState`
+Amazon holds, and `null` when the verify read answered nothing (device
+unreachable or throttled) — "could not check", never a silent pass. `JAMMED`
+is reported as `lockState` verbatim and counts as `ok: false`.
+
+```bash
+cli-anything-alexa devices lock "Front Door" --yes          # verify row follows the write
+cli-anything-alexa devices unlock "Front Door" --yes
+cli-anything-alexa devices lock --all --json                # every lock on the account
 ```
 
 `guard` reads and writes Alexa Guard's arm state:
