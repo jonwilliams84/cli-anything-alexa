@@ -23,7 +23,7 @@ is a **browser-proxy login** that needs no Home Assistant.
   - `notifications.py` — alarms/timers/reminders: list + pure payload builders + POST/PUT/DELETE, **plus the edit surface** (`pause`/`resume`/`reschedule`/`snooze`/`repeat`): pure resolution by id-or-label, whole-record PUT builders, local wall-clock (`originalDate`/`originalTime`) recomputation in the Echo's own timezone, **recurrence** (`normalize_recurrence`/`normalize_recurrence_days`/`build_recurrence_update` — the `recurringPattern` + `rRuleData.byWeekDays` fields, created via `add-alarm/add-reminder --repeat` and edited/cleared via `notifications repeat`), the `plan_update` → `apply_update` split (dry-run prints the `change` diff, `--yes` applies that same plan) and the re-read verify. Pure half unit-tested.
   - `routines.py` — behaviors list (with trigger utterance + best-effort `action_targets` summary) + trigger (device-bound `run_routine`). **Routine EDITS are not API-supported — Alexa-app-only** (see note below).
   - `control.py` — announce (`send_announcement`, chime + fan-out) + **speak** (`send_tts`, no chime, one speaker) + **push** (`send_mobilepush` / `send_dropin_notification` — lands in the Alexa APP, silent on the speakers) + dnd. Pure `normalize_push` unit-tested.
-  - `smarthome.py` — smart-home **state reads + actuation** over `/api/phoenix/state`: `get_entity_state` (read) and `set_light_state` (the *generic* control call — a plug is a light with no brightness) + Guard (`static_set_guard_state`). Pure capability-state decoding / colour+brightness validation unit-tested.
+  - `smarthome.py` — smart-home **state reads + actuation** over `/api/phoenix/state`: `get_entity_state` (read) and `set_light_state` (the *generic* control call — a plug is a light with no brightness) + Guard (`static_set_guard_state`) + **locks** (`set_lock_state`/`verify_lock_write` — `Alexa.LockController` `lock`/`unlock` controlRequests via `AlexaAPI._static_request`, behind `devices lock`/`devices unlock`, verified by re-read). Pure capability-state decoding / colour+brightness/lock-state validation unit-tested.
   - `sequences.py` — the **behaviour** surface (`POST /api/behaviors/preview`): `run_command` (`run_custom` — literal text through Alexa's own parser), `run_sequence` (`Alexa.*.Play`), `run_skill`, `play_sound`, plus the sequence/sound catalogs. Pure normalisers unit-tested.
   - `activity.py` — voice **history**: privacy records (`get_customer_history_records`, the only feed with BOTH halves of a turn), legacy `/api/activities` (ids + status), `get_last_device_serial`, and `clear_history` (irreversible). Pure window/limit/row/filter logic unit-tested.
   - `bluetooth.py` — Echo **bluetooth writes**: `set_bluetooth` (connect an already-paired sink) + `disconnect_bluetooth` (all sinks). Pure MAC canonicalisation / per-Echo pairing extraction / target resolution unit-tested.
@@ -151,6 +151,17 @@ cli-anything-alexa devices list --json
 - **applianceId → entity:** HA appliances encode the entity as `..._<domain>#<object_id>`.
   `appliances.parse_entity_id` splits domain at the last `_` before `#`; object_id
   (after `#`) may contain underscores. Only `manufacturerName=="Home Assistant"` is HA-sourced.
+- **Locks: the one alexapy method that doesn't exist, built from the ones that do.**
+  All 58 public `AlexaAPI` methods are wrapped, and none of them is a lock write —
+  so `devices lock`/`unlock` rides `AlexaAPI._static_request("put", login,
+  "/api/phoenix/state", …)` (the groups/lists reuse-the-helper pattern) with the
+  same `controlRequests` shape the light verbs and Guard arm already use:
+  `{"entityId", "entityType": "ENTITY", "parameters": {"action": "lock"|"unlock"}}`.
+  The write's response answers nothing useful, so every executed write re-reads
+  `lockState` and reports `ok` from what Amazon holds — three-valued
+  (`null` = the verify read answered nothing: unreachable or throttled, NEVER a
+  quiet pass), exactly the kids/notifications verify semantics. `JAMMED` is a
+  real state: reported verbatim, `ok: false` — never collapsed into UNLOCKED.
 - **csrf header** required on every mutating raw call — `session.csrf_header(login)`
   pulls the `csrf` cookie off the authed aiohttp jar.
 - **Never commit** the profile or cookie (gitignored — live Amazon session).

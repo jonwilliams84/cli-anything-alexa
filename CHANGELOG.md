@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.8.0] — 2026-09-15
+
+### Added — lock control (`devices lock` / `devices unlock`)
+
+The one smart-home capability the harness could inventory and read but never
+actuate: **locks**. All 58 public `AlexaAPI` methods in alexapy are already
+wrapped, and none of them is a lock write — so the lock surface rides
+`AlexaAPI._static_request("put", login, "/api/phoenix/state", …)` directly
+(the same reuse-the-helper pattern as groups and lists) with the same
+`controlRequests` shape the light verbs (`turnOn`/`setBrightness`) and the
+Guard arm (`controlSecurityPanel`) already use:
+
+```json
+{"controlRequests": [{"entityId": "…", "entityType": "ENTITY",
+                      "parameters": {"action": "lock"}}]}
+```
+
+New commands (both `--json`, both dry-run by default + `--yes`):
+
+| Command | Wraps | Notes |
+| --- | --- | --- |
+| `devices lock [<target>...] [--all]` | `PUT /api/phoenix/state`, `action: "lock"` | Targets resolve exactly like `devices on/off` (applianceId / endpoint id / display name; ambiguity aborts) |
+| `devices unlock [<target>...] [--all]` | `PUT /api/phoenix/state`, `action: "unlock"` | Same contract, opposite verb |
+
+A lock write's response answers nothing useful — a bare control response, no
+state — so every executed write is **verified by a fresh re-read** of
+`Alexa.LockController.lockState` (the established kids/notifications
+write-verify pattern): `ok` is `true`/`false` from what Amazon actually holds,
+and `null` when the verify read answered nothing (device unreachable or
+throttled) — "could not check", never a silent pass. `JAMMED` is a real state:
+reported verbatim as `lockState` and counted as `ok: false`, never collapsed
+into UNLOCKED. The write is refused up front for a device with no phoenix
+`entityId` (the state API would accept it and quietly do nothing).
+
+Pure helpers (`lock_action`, `lock_state`, `lock_verify`) and the network pair
+(`set_lock_state`, `verify_lock_write`) live in `core/smarthome.py`; unit
+tests in `tests/test_smarthome.py` (exact controlRequests body, verb mapping,
+three-valued verify, non-JSON/missing-response survival), CLI paths + a
+lock → unlock round-trip workflow in `tests/test_cli_smarthome_paths.py`.
+
+Tests: 1586 → **1613** (+27). Coverage: 97.19% → **97.20%** (gate ≥87%
+unchanged); `core/smarthome.py` at 99%. Version bumped 0.7.0 → **0.8.0**
+(by the release runner).
+
 ## [0.7.0] — 2026-09-09
 
 ### Added — session lifecycle (`auth ping` / `auth refresh` / `auth logout` / `auth totp`)

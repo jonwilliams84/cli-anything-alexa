@@ -553,3 +553,168 @@ def test_set_guard_state_validates_before_calling_the_api():
         with pytest.raises(ValueError, match="unknown guard state"):
             _run(smarthome.set_guard_state(MagicMock(), "e", "disarmed"))
     api.assert_not_awaited()
+
+
+# ── locks (pure) ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(("lock", "expected"), [(True, "lock"), (False, "unlock"), (1, "lock")])
+def test_lock_action_maps_the_verb(lock, expected):
+    assert smarthome.lock_action(lock) == expected
+
+
+def test_lock_state_reads_the_lock_capability():
+    payload = _state_payload(
+        capabilities=[
+            {"namespace": "Alexa.PowerController", "name": "powerState", "value": "ON"},
+            {"namespace": "Alexa.LockController", "name": "lockState", "value": "LOCKED"},
+        ]
+    )
+    assert smarthome.lock_state(payload) == "LOCKED"
+
+
+def test_lock_state_scopes_to_the_entity_id():
+    payload = {
+        "deviceStates": [
+            {
+                "entity": {"entityId": "e1", "entityType": "ENTITY"},
+                "capabilityStates": [
+                    json.dumps(
+                        {"namespace": "Alexa.LockController", "name": "lockState", "value": "JAMMED"}
+                    )
+                ],
+            },
+            {
+                "entity": {"entityId": "e2", "entityType": "ENTITY"},
+                "capabilityStates": [
+                    json.dumps(
+                        {"namespace": "Alexa.LockController", "name": "lockState", "value": "LOCKED"}
+                    )
+                ],
+            },
+        ]
+    }
+    assert smarthome.lock_state(payload, "e1") == "JAMMED"
+    assert smarthome.lock_state(payload, "e2") == "LOCKED"
+
+
+def test_lock_state_returns_none_when_amazon_reports_no_lock_state():
+    assert smarthome.lock_state(_state_payload()) is None
+    assert smarthome.lock_state({}) is None
+    assert smarthome.lock_state(None) is None
+
+
+def test_lock_state_ignores_non_string_values():
+    payload = _state_payload(
+        capabilities=[{"namespace": "Alexa.LockController", "name": "lockState", "value": 7}]
+    )
+    assert smarthome.lock_state(payload) is None
+
+
+def test_lock_verify_is_true_only_for_the_requested_state():
+    payload = _state_payload(
+        capabilities=[{"namespace": "Alexa.LockController", "name": "lockState", "value": "LOCKED"}]
+    )
+    assert smarthome.lock_verify(payload, "e1", True) is True
+    assert smarthome.lock_verify(payload, "e1", False) is False
+
+
+def test_lock_verify_treats_jammed_as_not_the_requested_state():
+    payload = _state_payload(
+        capabilities=[{"namespace": "Alexa.LockController", "name": "lockState", "value": "JAMMED"}]
+    )
+    assert smarthome.lock_verify(payload, "e1", True) is False
+    assert smarthome.lock_verify(payload, "e1", False) is False
+
+
+def test_lock_verify_is_none_when_the_read_answered_nothing():
+    assert smarthome.lock_verify(_state_payload(), "e1", True) is None
+
+
+# ── locks (async) ────────────────────────────────────────────────────────
+
+
+def test_set_lock_state_posts_the_control_request_via_static_request():
+    captured = {}
+
+    class _Resp:
+        status = 200
+
+        @staticmethod
+        async def text():
+            return json.dumps({"controlResponses": [{"code": "SUCCESS"}]})
+
+    async def _fake(method, login, path, data=None, **kwargs):
+        captured.update(method=method, path=path, data=data)
+        return _Resp()
+
+    with patch("alexapy.AlexaAPI._static_request", new=_fake):
+        result = _run(smarthome.set_lock_state(MagicMock(), "e1", True))
+    assert captured["method"] == "put"
+    assert captured["path"] == "/api/phoenix/state"
+    assert captured["data"] == {
+        "controlRequests": [
+            {"entityId": "e1", "entityType": "ENTITY", "parameters": {"action": "lock"}}
+        ]
+    }
+    assert result == {
+        "entityId": "e1",
+        "action": "lock",
+        "response": {"controlResponses": [{"code": "SUCCESS"}]},
+    }
+
+
+def test_set_lock_state_unlock_action():
+    captured = {}
+
+    class _Resp:
+        @staticmethod
+        async def text():
+            return "{}"
+
+    async def _fake(method, login, path, data=None, **kwargs):
+        captured["data"] = data
+        return _Resp()
+
+    with patch("alexapy.AlexaAPI._static_request", new=_fake):
+        result = _run(smarthome.set_lock_state(MagicMock(), "e1", False))
+    assert result["action"] == "unlock"
+    assert captured["data"]["controlRequests"][0]["parameters"] == {"action": "unlock"}
+
+
+def test_set_lock_state_survives_a_non_json_response():
+    class _Resp:
+        @staticmethod
+        async def text():
+            return "<html>oops</html>"
+
+    with patch("alexapy.AlexaAPI._static_request", new=AsyncMock(return_value=_Resp())):
+        result = _run(smarthome.set_lock_state(MagicMock(), "e1", True))
+    assert result == {"entityId": "e1", "action": "lock", "response": {}}
+
+
+def test_set_lock_state_raises_when_the_response_is_missing():
+    with patch("alexapy.AlexaAPI._static_request", new=AsyncMock(return_value=None)):
+        with pytest.raises(RuntimeError, match="no response"):
+            _run(smarthome.set_lock_state(MagicMock(), "e1", True))
+
+
+def test_verify_lock_write_reports_ok_from_a_fresh_read():
+    read_payloads = [
+        _state_payload(
+            capabilities=[{"namespace": "Alexa.LockController", "name": "lockState", "value": "LOCKED"}]
+        )
+    ]
+
+    async def _fake(login, entity_ids=None, appliance_ids=None):
+        return read_payloads.pop(0)
+
+    with patch("alexapy.AlexaAPI.get_entity_state", new=_fake):
+        row = _run(smarthome.verify_lock_write(MagicMock(), "e1", True, name="Front Door"))
+    assert row == {"name": "Front Door", "entityId": "e1", "lockState": "LOCKED", "ok": True}
+
+
+def test_verify_lock_write_none_when_the_verify_read_is_empty():
+    with patch("alexapy.AlexaAPI.get_entity_state", new=AsyncMock(return_value={})):
+        row = _run(smarthome.verify_lock_write(MagicMock(), "e1", True, name="Front Door"))
+    assert row == {"name": "Front Door", "entityId": "e1", "lockState": None, "ok": None}
