@@ -23,7 +23,7 @@ is a **browser-proxy login** that needs no Home Assistant.
   - `notifications.py` — alarms/timers/reminders: list + pure payload builders + POST/PUT/DELETE, **plus the edit surface** (`pause`/`resume`/`reschedule`/`snooze`/`repeat`): pure resolution by id-or-label, whole-record PUT builders, local wall-clock (`originalDate`/`originalTime`) recomputation in the Echo's own timezone, **recurrence** (`normalize_recurrence`/`normalize_recurrence_days`/`build_recurrence_update` — the `recurringPattern` + `rRuleData.byWeekDays` fields, created via `add-alarm/add-reminder --repeat` and edited/cleared via `notifications repeat`), the `plan_update` → `apply_update` split (dry-run prints the `change` diff, `--yes` applies that same plan) and the re-read verify. Pure half unit-tested.
   - `routines.py` — behaviors list (with trigger utterance + best-effort `action_targets` summary) + trigger (device-bound `run_routine`). **Routine EDITS are not API-supported — Alexa-app-only** (see note below).
   - `control.py` — announce (`send_announcement`, chime + fan-out) + **speak** (`send_tts`, no chime, one speaker) + **push** (`send_mobilepush` / `send_dropin_notification` — lands in the Alexa APP, silent on the speakers) + dnd. Pure `normalize_push` unit-tested.
-  - `smarthome.py` — smart-home **state reads + actuation** over `/api/phoenix/state`: `get_entity_state` (read) and `set_light_state` (the *generic* control call — a plug is a light with no brightness) + Guard (`static_set_guard_state`) + **locks** (`set_lock_state`/`verify_lock_write` — `Alexa.LockController` `lock`/`unlock` controlRequests via `AlexaAPI._static_request`, behind `devices lock`/`devices unlock`, verified by re-read). Pure capability-state decoding / colour+brightness/lock-state validation unit-tested.
+  - `smarthome.py` — smart-home **state reads + actuation** over `/api/phoenix/state`: `get_entity_state` (read) and `set_light_state` (the *generic* control call — a plug is a light with no brightness) + Guard (`static_set_guard_state`) + **locks** (`set_lock_state`/`verify_lock_write` — `Alexa.LockController` `lock`/`unlock` controlRequests via `AlexaAPI._static_request`, behind `devices lock`/`devices unlock`, verified by re-read) + **thermostats** (0.9.0: `set_thermostat_state`/`verify_thermostat_write` — `setTargetSetpoint`/`adjustTargetTemperature`/`setMode` controlRequests built locally (alexapy's builder has no thermostat actions) and sent via `_static_request`, behind `devices temperature`, verified by re-read; `--adjust` is verified against the *pre-write* setpoint read just before the PUT; cross-scale verify converts with ±0.5° slack). Pure capability-state decoding / colour+brightness/lock/thermostat validation unit-tested.
   - `sequences.py` — the **behaviour** surface (`POST /api/behaviors/preview`): `run_command` (`run_custom` — literal text through Alexa's own parser), `run_sequence` (`Alexa.*.Play`), `run_skill`, `play_sound`, plus the sequence/sound catalogs. Pure normalisers unit-tested.
   - `activity.py` — voice **history**: privacy records (`get_customer_history_records`, the only feed with BOTH halves of a turn), legacy `/api/activities` (ids + status), `get_last_device_serial`, and `clear_history` (irreversible). Pure window/limit/row/filter logic unit-tested.
   - `bluetooth.py` — Echo **bluetooth writes**: `set_bluetooth` (connect an already-paired sink) + `disconnect_bluetooth` (all sinks). Pure MAC canonicalisation / per-Echo pairing extraction / target resolution unit-tested.
@@ -162,6 +162,20 @@ cli-anything-alexa devices list --json
   (`null` = the verify read answered nothing: unreachable or throttled, NEVER a
   quiet pass), exactly the kids/notifications verify semantics. `JAMMED` is a
   real state: reported verbatim, `ok: false` — never collapsed into UNLOCKED.
+- **Thermostats: same builder gap as locks, same answer.** alexapy has no
+  thermostat write either, so `devices temperature` builds the app's own
+  `setTargetSetpoint` / `adjustTargetTemperature` / `setMode` controlRequests
+  (value parameters ride INSIDE the request entry:
+  `{"action": "setTargetSetpoint", "targetSetpoint": {"value": "21.0", "scale": "CELSIUS"}}`)
+  and posts them via `AlexaAPI._static_request`. `--setpoint` and `--adjust`
+  are mutually exclusive (the dry-run and the `--yes` run share
+  `plan_thermostat_change`, validated BEFORE `_login`); `--mode` rides along.
+  Verify semantics worth keeping: a relative `--adjust` is checked against the
+  **pre-write** setpoint read just before the PUT (a failed pre-read →
+  `ok: null`, the write still happens); a thermostat reporting in the other
+  scale is still a valid answer — the verify converts (69.8 °F ≈ 21 °C, ±0.5°
+  cross-scale slack vs ±0.05° same-scale). `ok: null` stays "could not check",
+  exactly like the lock verify.
 - **csrf header** required on every mutating raw call — `session.csrf_header(login)`
   pulls the `csrf` cookie off the authed aiohttp jar.
 - **Never commit** the profile or cookie (gitignored — live Amazon session).

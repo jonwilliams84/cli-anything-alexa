@@ -9,14 +9,14 @@ python -m pytest tests --cov=cli_anything --cov-fail-under=87 -q --durations=10 
   && bandit -r cli_anything/ -ll -x '*/tests/*,*/test_*.py,*/conftest.py'
 ```
 
-## Current state (after 0.8.0 refine, 2026-09-15)
+## Current state (after 0.9.0 refine, 2026-09-22)
 
-- **1613 tests pass**, 0 failures, in ~6 s (no live account, no network —
+- **1679 tests pass**, 0 failures, in ~6 s (no live account, no network —
   alexapy is mocked; pure logic is tested without it).
-- Coverage **97.20%** (gate: ≥87%). `core/notifications.py` at **100%**
-  (statements + branches); the 0.8.0 lock surface in
-  `core/smarthome.py` (controlRequests writer + three-valued verify) is
-  covered line-for-line (the module sits at **99%**); the CLI layer
+- Coverage **97.2%+** (gate: ≥87%). `core/notifications.py` at **100%**
+  (statements + branches); the 0.8.0 lock surface and the 0.9.0 thermostat
+  surface in `core/smarthome.py` (controlRequests writer + three-valued
+  verify) are covered line-for-line (the module sits at **99%**); the CLI layer
   (`alexa_cli.py`) ~95%, the REPL skin ~97%.
 - Lint (`ruff check`), format (`ruff format --check`) and bandit (-ll): clean.
 
@@ -86,6 +86,28 @@ one cookie story.
   (row carries `lockState` + three-valued `ok`), `ok: null` is never a silent
   pass, targeting/ambiguity/no-entityId refusals, `--all`, and a
   lock → unlock round-trip workflow.
+- `test_smarthome.py` / `test_cli_smarthome_paths.py` (0.9.0 additions) — the
+  **thermostat** surface: `normalize_scale` / `normalize_temperature` /
+  `normalize_thermostat_mode` vocabularies (empty refused with "required",
+  unknown refused with the alternatives), `plan_thermostat_change`
+  (setpoint/adjust mutual exclusion, nothing-to-change refusal, `--mode` riding
+  along, exact `targetSetpoint`/`targetSetpointDelta` parameter shapes),
+  `thermostat_state` / `thermostat_mode_state` (entity-scoped reads out of the
+  capability payload, `None` when Amazon reports nothing or the value is
+  unparseable), `thermostat_verify` (three-valued; cross-scale comparison
+  converts with ±0.5° slack; `--adjust` needs the pre-write setpoint or the
+  verify is honestly `None`), and the async pair against a fake
+  `_static_request`: `set_thermostat_state` posts the exact `controlRequests`
+  body (`setTargetSetpoint` / `adjustTargetTemperature` with the value nested
+  in the request entry, `setMode`, `entityType: ENTITY`) via
+  `PUT /api/phoenix/state`, survives a non-JSON body, raises on a missing
+  response; `verify_thermostat_write` re-reads and reports `ok` from the fresh
+  payload. CLI: previews by default (actions listed), `--yes` executes write →
+  verify (row carries the held `targetSetpoint`, `mode` and three-valued
+  `ok`), all five parser-level validations fire BEFORE `_login`, targeting /
+  unknown-device / no-entityId refusals, `--all`, the `ok: null` path, and a
+  preview → `--yes` round-trip pinning that the executed actions are exactly
+  the previewed ones.
 `test_cli_refine_paths.py` closes the remaining CLI-layer gaps: both
 `auth login` flows (scripted + guided proxy) and `auth import-pickle` success,
 bulk `rename --pattern` / `--map` and single renames (dry-run + `--yes`),

@@ -1004,6 +1004,118 @@ def devices_unlock(ctx, targets, all_devices, yes):
     _lock_command(ctx, targets, all_devices, False, yes)
 
 
+@devices.command("temperature")
+@click.argument("targets", nargs=-1)
+@click.option(
+    "--all", "all_devices", is_flag=True, default=False, help="Every thermostat (careful)"
+)
+@click.option("--setpoint", default=None, help="Target temperature, e.g. 21")
+@click.option("--adjust", default=None, help="Nudge the setpoint by N degrees, e.g. -1")
+@click.option(
+    "--scale",
+    default="celsius",
+    show_default=True,
+    help="Scale for --setpoint/--adjust: celsius or fahrenheit",
+)
+@click.option(
+    "--mode",
+    default=None,
+    help=f"Thermostat mode ({', '.join(smarthome_core.THERMOSTAT_MODES)})",
+)
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def devices_temperature(ctx, targets, all_devices, setpoint, adjust, mode, scale, yes):
+    """Set a thermostat's target temperature / mode.
+
+    \b
+    TARGET is anything `devices state` addresses. `--setpoint` (absolute) and
+    `--adjust` (relative) are mutually exclusive; `--mode` may ride along with
+    either. Preview by default; --yes executes and then re-reads the state:
+    `ok` is True/False from what Amazon holds, `null` when the verify read
+    answered nothing (never a quiet pass).
+    """
+    # Validate before touching the network so a bad value fails fast and
+    # identically in dry-run and executed mode.
+    try:
+        plan = smarthome_core.plan_thermostat_change(
+            setpoint=setpoint, adjust=adjust, mode=mode, scale=scale
+        )
+    except ValueError as exc:
+        _abort(str(exc))
+    login = _login(ctx)
+    records = _run(ctx, endpoints_core.fetch_endpoint_records(login))
+    selected = _select_records(ctx, records, targets, all_devices)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "actions": plan["actions"],
+                "count": len(selected),
+                "devices": [r.get("name") for r in selected],
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    want_setpoint = _want_setpoint_value(plan)
+    want_adjust = (
+        float(plan["targetSetpointDelta"]["value"]) if plan["targetSetpointDelta"] else None
+    )
+    want_scale = smarthome_core.normalize_scale(scale)
+    results = []
+    for rec in selected:
+        entity_id = _run(ctx, _as_coro(smarthome_core.entity_ref, rec))
+        before = None
+        if want_adjust is not None:
+            # A relative write is verified against the pre-write setpoint —
+            # read it before the PUT, and never let a failed read block the
+            # write itself (the verify just reports ok: null).
+            payload = _run(ctx, smarthome_core.fetch_states(login, entity_ids=[entity_id]))
+            held = smarthome_core.thermostat_state(payload, entity_id)
+            before = held["value"] if held else None
+        _run(
+            ctx,
+            smarthome_core.set_thermostat_state(
+                login,
+                entity_id,
+                setpoint=setpoint,
+                adjust=adjust,
+                mode=mode,
+                scale=scale,
+            ),
+        )
+        verify = _run(
+            ctx,
+            smarthome_core.verify_thermostat_write(
+                login,
+                entity_id,
+                setpoint=want_setpoint,
+                adjust=want_adjust,
+                mode=plan["mode"],
+                scale=want_scale,
+                before=before,
+                name=rec.get("name"),
+            ),
+        )
+        held = verify.get("targetSetpoint")
+        results.append(
+            {
+                "name": rec.get("name"),
+                "entityId": verify["entityId"],
+                "actions": plan["actions"],
+                "targetSetpoint": (f"{held['value']:g} {held['scale']}" if held else None),
+                "mode": verify.get("mode"),
+                "ok": verify["ok"],
+            }
+        )
+    emit(ctx, results)
+
+
+def _want_setpoint_value(plan):
+    """The absolute setpoint a verify should compare against (or None)."""
+    return float(plan["targetSetpoint"]["value"]) if plan["targetSetpoint"] else None
+
+
 @devices.command("prune")
 @click.option(
     "--whitelist",

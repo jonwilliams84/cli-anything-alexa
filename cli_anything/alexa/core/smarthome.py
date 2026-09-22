@@ -422,6 +422,224 @@ def lock_verify(payload: Any, entity_id: str, lock: bool) -> bool | None:
     return value == ("LOCKED" if lock else "UNLOCKED")
 
 
+# ── thermostat ───────────────────────────────────────────────────────────
+#
+# Thermostat control rides the same ``controlRequests`` PUT the light verbs
+# and locks use — alexapy's ``set_light_state`` builder simply has no
+# thermostat actions, so (like the 0.8.0 lock surface) the request is built
+# locally and sent through ``AlexaAPI._static_request``.  The parameter shapes
+# are the app's own:
+#
+#   {"action": "setTargetSetpoint",
+#    "targetSetpoint": {"value": "21.0", "scale": "CELSIUS"}}
+#   {"action": "adjustTargetTemperature",
+#    "targetSetpointDelta": {"value": "-1.0", "scale": "CELSIUS"}}
+#   {"action": "setMode", "mode": "HEAT"}
+
+#: Human thermostat mode → the value ``Alexa.ThermostatController.setMode``
+#: expects. CUSTOM exists in Alexa's vocabulary; ECO covers both the app's
+#: "Ecô" toggle and HAVEN-style eco modes.
+THERMOSTAT_MODES: dict[str, str] = {
+    "off": "OFF",
+    "heat": "HEAT",
+    "cool": "COOL",
+    "auto": "AUTO",
+    "eco": "ECO",
+    "custom": "CUSTOM",
+}
+
+#: Human scale spellings → what the ``targetSetpoint``/``targetSetpointDelta``
+#: parameter expects. Alexa wants the uppercase word, not a symbol.
+TEMPERATURE_SCALES: dict[str, str] = {
+    "c": "CELSIUS",
+    "celsius": "CELSIUS",
+    "f": "FAHRENHEIT",
+    "fahrenheit": "FAHRENHEIT",
+}
+
+
+def normalize_scale(scale: str | None) -> str:
+    """Normalise + validate a temperature scale (pure)."""
+    value = (scale or "").strip().lower()
+    if not value:
+        raise ValueError("a temperature scale is required (celsius or fahrenheit)")
+    try:
+        return TEMPERATURE_SCALES[value]
+    except KeyError:
+        raise ValueError(
+            f"unknown temperature scale {scale!r}; "
+            f"expected one of {sorted(set(TEMPERATURE_SCALES.values()))}"
+        ) from None
+
+
+def normalize_temperature(value: float | int | str | None) -> float:
+    """Validate a temperature value (pure).
+
+    Degrees, not a percentage — so the only hard limits are physical: NaN and
+    infinity are refused, anything else is passed through as a float (Alexa
+    itself rejects out-of-range setpoints for a given thermostat).
+    """
+    if value is None:
+        raise ValueError("a temperature is required")
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"invalid temperature {value!r}") from None
+    if number != number or number in (float("inf"), float("-inf")):
+        raise ValueError(f"invalid temperature {value!r}")
+    return number
+
+
+def normalize_thermostat_mode(mode: str | None) -> str:
+    """Normalise + validate a thermostat mode (pure)."""
+    value = (mode or "").strip().lower()
+    if not value:
+        raise ValueError("a thermostat mode is required")
+    try:
+        return THERMOSTAT_MODES[value]
+    except KeyError:
+        raise ValueError(
+            f"unknown thermostat mode {mode!r}; expected one of {sorted(THERMOSTAT_MODES)}"
+        ) from None
+
+
+def plan_thermostat_change(
+    *,
+    setpoint: float | int | str | None = None,
+    adjust: float | int | str | None = None,
+    mode: str | None = None,
+    scale: str | None = "celsius",
+) -> dict[str, Any]:
+    """Validate a thermostat change into the request parameters (pure).
+
+    ``--setpoint`` (absolute) and ``--adjust`` (relative) are mutually
+    exclusive — Alexa would apply both and the result would be a surprise.
+    At least one of setpoint / adjust / mode is required: a thermostat change
+    that changes nothing is a bug, not a no-op. ``mode`` may ride along with
+    either temperature verb (the app's "set to 21 and switch to heat").
+    """
+    scale_name = normalize_scale(scale)
+    target = normalize_temperature(setpoint) if setpoint is not None else None
+    delta = normalize_temperature(adjust) if adjust is not None else None
+    if target is not None and delta is not None:
+        raise ValueError("--setpoint and --adjust are mutually exclusive")
+    if target is None and delta is None and mode is None:
+        raise ValueError("nothing to change — give --setpoint, --adjust or --mode")
+    actions: list[str] = []
+    if target is not None:
+        actions.append(f"setTargetSetpoint={target:g} {scale_name}")
+    if delta is not None:
+        actions.append(f"adjustTargetTemperature={delta:+g} {scale_name}")
+    mode_value = normalize_thermostat_mode(mode) if mode is not None else None
+    if mode_value is not None:
+        actions.append(f"setMode={mode_value}")
+    return {
+        "targetSetpoint": (
+            {"value": f"{target:.1f}", "scale": scale_name} if target is not None else None
+        ),
+        "targetSetpointDelta": (
+            {"value": f"{delta:.1f}", "scale": scale_name} if delta is not None else None
+        ),
+        "mode": mode_value,
+        "actions": actions,
+    }
+
+
+def thermostat_state(payload: Any, entity_id: str | None = None) -> dict[str, Any] | None:
+    """The ``targetSetpoint`` read back from a phoenix state read (pure).
+
+    Returns ``{"value": <float>, "scale": "CELSIUS"|"FAHRENHEIT"}`` — or
+    ``None`` when Amazon reported no targetSetpoint for the entity (throttled
+    read, unreachable device, or the device has no thermostat capability).
+    ``None`` is "could not check", never a failed write.
+    """
+    for row in state_rows(payload):
+        if row.get("property") != "targetSetpoint":
+            continue
+        if entity_id and row.get("entityId") not in (None, entity_id):
+            continue
+        value = row.get("value")
+        if not isinstance(value, dict):
+            continue
+        try:
+            number = float(value.get("value"))
+        except (TypeError, ValueError):
+            return None
+        scale = value.get("scale")
+        return {"value": number, "scale": scale if isinstance(scale, str) else None}
+    return None
+
+
+def thermostat_mode_state(payload: Any, entity_id: str | None = None) -> str | None:
+    """The ``thermostatMode`` read back from a phoenix state read (pure)."""
+    for row in state_rows(payload):
+        if row.get("property") != "thermostatMode":
+            continue
+        if entity_id and row.get("entityId") not in (None, entity_id):
+            continue
+        value = row.get("value")
+        return value if isinstance(value, str) else None
+    return None
+
+
+def _held_matches(held: dict[str, Any] | None, want: float, scale: str) -> bool | None:
+    """Compare a held setpoint to the requested one, converting scale (pure).
+
+    A thermostat that reports in the *other* scale is still a valid answer —
+    69.8°F is 21°C — so the comparison converts rather than failing. Same-scale
+    compares to the penny (±0.05°); cross-scale gets a half-degree of slack
+    because a device holding "21.0°C" reports "69.8°F", not "70.0°F".
+    ``None`` only when the read gave no usable value.
+    """
+    if held is None or held.get("value") is None:
+        return None
+    value = held["value"]
+    held_scale = held.get("scale")
+    tolerance = 0.05
+    if held_scale == "CELSIUS" and scale == "FAHRENHEIT":
+        value = value * 9 / 5 + 32
+        tolerance = 0.5
+    elif held_scale == "FAHRENHEIT" and scale == "CELSIUS":
+        value = (value - 32) * 5 / 9
+        tolerance = 0.5
+    return abs(value - want) <= tolerance
+
+
+def thermostat_verify(
+    payload: Any,
+    entity_id: str,
+    *,
+    setpoint: float | None = None,
+    adjust: float | None = None,
+    mode: str | None = None,
+    scale: str = "CELSIUS",
+    before: float | None = None,
+) -> dict[str, Any]:
+    """Three-valued verify of a thermostat write against a state read (pure).
+
+    Same semantics as :func:`lock_verify`: ``True``/``False`` from what Amazon
+    holds, ``None`` when the verify read answered nothing ("could not check",
+    never a quiet pass). For ``--adjust`` the check needs the *pre-write*
+    setpoint — pass it as ``before``; without it the relative write cannot be
+    verified and ``ok`` is honestly ``None``.
+    """
+    held = thermostat_state(payload, entity_id)
+    held_mode = thermostat_mode_state(payload, entity_id)
+    checks: list[bool | None] = []
+    if setpoint is not None:
+        checks.append(_held_matches(held, setpoint, scale))
+    if adjust is not None:
+        checks.append(None if before is None else _held_matches(held, before + adjust, scale))
+    if mode is not None:
+        checks.append(None if held_mode is None else held_mode.upper() == mode.upper())
+    ok: bool | None = None if (not checks or None in checks) else all(checks)
+    return {
+        "targetSetpoint": held,
+        "mode": held_mode if mode is not None else None,
+        "ok": ok,
+    }
+
+
 # ── live operations ──────────────────────────────────────────────────────
 
 
@@ -583,4 +801,106 @@ async def verify_lock_write(
         "entityId": entity_id,
         "lockState": lock_state(payload, entity_id),
         "ok": lock_verify(payload, entity_id, lock),
+    }
+
+
+async def set_thermostat_state(
+    login,
+    entity_id: str,
+    *,
+    setpoint: float | int | str | None = None,
+    adjust: float | int | str | None = None,
+    mode: str | None = None,
+    scale: str | None = "celsius",
+) -> dict[str, Any]:
+    """Send one thermostat controlRequest set (``PUT /api/phoenix/state``).
+
+    alexapy's ``set_light_state`` builder has no thermostat actions, so — like
+    the lock surface — this builds the app's own ``controlRequests`` shape and
+    rides ``AlexaAPI._static_request``.  One request entry per action, in the
+    order Alexa applies them (setpoint/adjust, then mode), addressed by
+    **entityId** with ``entityType: ENTITY``.
+
+    Like every write whose response answers nothing useful, the caller must
+    re-read and verify — use :func:`verify_thermostat_write`.
+    """
+    from alexapy import AlexaAPI
+
+    plan = plan_thermostat_change(setpoint=setpoint, adjust=adjust, mode=mode, scale=scale)
+    requests: list[dict[str, Any]] = []
+    if plan["targetSetpoint"] is not None:
+        requests.append(
+            {
+                "entityId": entity_id,
+                "entityType": "ENTITY",
+                "parameters": {
+                    "action": "setTargetSetpoint",
+                    "targetSetpoint": plan["targetSetpoint"],
+                },
+            }
+        )
+    if plan["targetSetpointDelta"] is not None:
+        requests.append(
+            {
+                "entityId": entity_id,
+                "entityType": "ENTITY",
+                "parameters": {
+                    "action": "adjustTargetTemperature",
+                    "targetSetpointDelta": plan["targetSetpointDelta"],
+                },
+            }
+        )
+    if plan["mode"] is not None:
+        requests.append(
+            {
+                "entityId": entity_id,
+                "entityType": "ENTITY",
+                "parameters": {"action": "setMode", "mode": plan["mode"]},
+            }
+        )
+    resp = await AlexaAPI._static_request(
+        "put", login, "/api/phoenix/state", data={"controlRequests": requests}
+    )
+    if resp is None:
+        raise RuntimeError("the thermostat control request returned no response")
+    text = await resp.text()
+    try:
+        body = json.loads(text)
+    except (TypeError, ValueError):
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    return {"entityId": entity_id, "actions": plan["actions"], "response": body}
+
+
+async def verify_thermostat_write(
+    login,
+    entity_id: str,
+    *,
+    setpoint: float | None = None,
+    adjust: float | None = None,
+    mode: str | None = None,
+    scale: str = "CELSIUS",
+    before: float | None = None,
+    name: str | None = None,
+) -> dict[str, Any]:
+    """Re-read one thermostat after a write and report ``ok`` (pure-ish).
+
+    ``ok`` is three-valued exactly like the lock verify: ``True``/``False``
+    from what Amazon holds, ``None`` when the read answered nothing (device
+    unreachable or throttled — "could not check", never a silent pass).
+    """
+    payload = await fetch_states(login, entity_ids=[entity_id])
+    return {
+        "name": name,
+        "entityId": entity_id,
+        **thermostat_verify(
+            payload,
+            entity_id,
+            setpoint=setpoint,
+            adjust=adjust,
+            mode=mode,
+            scale=scale,
+            before=before,
+        ),
     }

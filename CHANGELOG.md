@@ -1,5 +1,67 @@
 # Changelog
 
+## [0.9.0] — 2026-09-22
+
+### Added — thermostat control (`devices temperature`)
+
+The last smart-home capability the harness could read but never actuate:
+**thermostats**. `devices state` already surfaces the live
+`Alexa.ThermostatController.targetSetpoint`, and the phoenix `controlRequests`
+PUT that drives lights (`turnOn`/`setBrightness`), Guard
+(`controlSecurityPanel`) and locks (`lock`/`unlock`) carries the thermostat
+verbs too — `setTargetSetpoint`, `adjustTargetTemperature`, `setMode` — but
+alexapy's request builder has no thermostat actions, so (exactly like the 0.8.0
+lock surface) `core/smarthome.py` builds the app's own request shape and sends
+it through `AlexaAPI._static_request`:
+
+```json
+{"controlRequests": [{"entityId": "…", "entityType": "ENTITY",
+                      "parameters": {"action": "setTargetSetpoint",
+                                     "targetSetpoint": {"value": "21.0", "scale": "CELSIUS"}}}]}
+```
+
+New command (`--json`, dry-run by default + `--yes`):
+
+| Command | Wraps | Notes |
+| --- | --- | --- |
+| `devices temperature [<target>...] [--all] --setpoint N` | `PUT /api/phoenix/state`, `setTargetSetpoint` | Absolute target; `--scale celsius\|fahrenheit` (default celsius) |
+| `devices temperature … --adjust N` | `adjustTargetTemperature` | Relative nudge; **mutually exclusive** with `--setpoint` |
+| `devices temperature … --mode heat\|cool\|auto\|off\|eco\|custom` | `setMode` | May ride along with either temperature verb ("set to 21 and switch to heat") |
+
+Targets resolve exactly like `devices on/off/lock` (applianceId / endpoint id /
+display name; ambiguity aborts). Every bad value — setpoint + adjust together,
+no verb at all, a non-numeric temperature, an unknown mode or scale — is
+refused at the parser **before `_login`**, so it fails identically with and
+without `--yes`, and the dry-run and the `--yes` run share one
+`plan_thermostat_change`.
+
+A thermostat write's response answers nothing useful, so every executed write
+is **verified by a fresh re-read** of `targetSetpoint` (and `thermostatMode`
+when a mode was asked), three-valued like the lock/kids/notifications verifies:
+`ok` is `true`/`false` from what Amazon holds, `null` when the verify read
+answered nothing — "could not check", never a silent pass. Two honest-verify
+details worth knowing:
+
+* **`--adjust` is checked against the pre-write setpoint.** A relative write
+  can only be verified against what the thermostat held *before* the PUT, so
+  the CLI reads it first; if that pre-read answers nothing, the write still
+  happens and `ok` is `null` — never a guessed pass.
+* **Scale differences don't fake a failure.** A thermostat reporting 69.8 °F
+  is exactly what a 21 °C ask looks like — the verify converts (±0.5°
+  cross-scale slack vs ±0.05° same-scale) instead of reporting a mismatch.
+
+Pure helpers (`normalize_scale`, `normalize_temperature`,
+`normalize_thermostat_mode`, `plan_thermostat_change`, `thermostat_state`,
+`thermostat_mode_state`, `thermostat_verify`) and the network pair
+(`set_thermostat_state`, `verify_thermostat_write`) live in
+`core/smarthome.py`; unit tests in `tests/test_smarthome.py`, CLI paths plus a
+preview → `--yes` round-trip (executed actions == previewed actions) and an
+adjust-reads-the-pre-write-setpoint workflow in
+`tests/test_cli_smarthome_paths.py`.
+
+Tests: 1613 → **1679** (+66). Coverage holds at **97.2%** (gate ≥87%
+unchanged). Version bumped 0.8.0 → **0.9.0** (by the release runner).
+
 ## [0.8.0] — 2026-09-15
 
 ### Added — lock control (`devices lock` / `devices unlock`)

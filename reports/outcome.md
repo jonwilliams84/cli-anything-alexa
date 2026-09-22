@@ -264,3 +264,44 @@ fake incl. the stale-version conflict path). Coverage 97.29% → 97.13% total
   account** — same caveat as every other write in this harness. The reads
   (`lists list`, `lists items`) are the safe first calls; if Amazon's field
   shapes differ, `list_rows`/`item_rows` are the only code that needs touching.
+
+---
+
+# Refine Outcome 4 (v0.9.0) — thermostat control (`devices temperature`)
+
+## Summary
+
+One coherent gap closed: **thermostats** — the last smart-home capability the
+harness could inventory and read but never actuate. The phoenix `controlRequests`
+PUT already carried light verbs, Guard arming and (since 0.8.0) locks; the
+thermostat verbs (`setTargetSetpoint`, `adjustTargetTemperature`, `setMode`)
+ride the same family, but alexapy's request builder has no thermostat actions,
+so — like the lock surface — the request is built locally in
+`core/smarthome.py` and sent through `AlexaAPI._static_request`.
+
+One new command, no command changed or removed:
+
+| Command | Notes |
+| --- | --- |
+| `devices temperature [<target>...] [--all] [--setpoint N] [--adjust N] [--scale celsius\|fahrenheit] [--mode heat\|cool\|auto\|off\|eco\|custom]` | dry-run + `--yes`, verified by re-read |
+
+Design notes worth keeping:
+
+- **`--setpoint` (absolute) and `--adjust` (relative) are mutually exclusive**;
+  `--mode` may ride along. All validation happens in `plan_thermostat_change`
+  BEFORE `_login`, and the dry-run / `--yes` runs share that one plan — the
+  thing reviewed is the thing executed.
+- **`--adjust` verifies against the pre-write setpoint**, read just before the
+  PUT. A failed pre-read does not block the write; the verify reports
+  `ok: null` instead of guessing.
+- **Cross-scale verify converts** (69.8 °F ≈ 21 °C, ±0.5° slack vs ±0.05°
+  same-scale) so a thermostat reporting in the other scale is not reported as
+  a failed write.
+- Three-valued `ok` throughout, identical to the lock verify semantics.
+
+## Tests & gates
+
+Tests: **1613 → 1679** (+66: 40 unit in `test_smarthome.py`, 13 CLI paths +
+3 workflows in `test_cli_smarthome_paths.py`). Coverage holds at **97.2%**
+(gate ≥87). All gates green: pytest, ruff check, ruff format, bandit (-ll, 0
+findings).

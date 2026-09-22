@@ -84,6 +84,11 @@ Every command takes `--json`.
 - `devices light <target> [--on|--off] [--brightness 0-100] [--color <name>] [--color-temperature <name>]` (`--yes`) —
   colour names are a **closed snake_case vocabulary** (Alexa rejects anything
   else with a generic error, so the CLI validates locally and lists the palette).
+- `devices temperature [<target>...] [--all] [--setpoint N] [--adjust N] [--scale celsius|fahrenheit] [--mode heat|cool|auto|off|eco|custom]` (`--yes`) —
+  thermostat target setpoint / mode. `--setpoint` and `--adjust` are mutually
+  exclusive; `--mode` rides along. Verified by re-read — three-valued `ok`
+  (`null` = the verify read answered nothing, never a quiet pass); `--adjust`
+  is checked against the pre-write setpoint; cross-scale answers convert.
 - `guard status` / `guard set away|home` (`--yes`) — Alexa Guard arm state.
 - `echos list` — physical Echo devices (the targets for announce/speak/media/dnd/routines).
 - `echos bluetooth` — bluetooth devices paired to each Echo, account-wide (name, MAC, connected).

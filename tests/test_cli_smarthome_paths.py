@@ -535,3 +535,243 @@ def test_lock_then_unlock_round_trips_the_action_verb():
     assert first.exit_code == 0 and second.exit_code == 0
     assert seen == ["lock", "unlock"]
     assert _json_out(second)[0]["action"] == "unlock"
+
+
+# ── devices temperature (0.9.0 thermostat surface) ───────────────────────
+
+_THERMOSTAT = {
+    "endpointId": "amzn1.alexa.endpoint.thermostat",
+    "applianceId": "APPL-THERMO",
+    "entityId": "entity-thermo",
+    "applianceTypes": ["THERMOSTAT"],
+    "name": "Hall Thermostat",
+    "manufacturer": "Nest",
+    "ha_sourced": False,
+    "entity_id": None,
+    "enabled": "ENABLED",
+}
+
+
+def test_temperature_previews_the_planned_actions():
+    with _stub_cli([_THERMOSTAT]) as run:
+        result = _invoke(
+            ["--json", "devices", "temperature", "Hall Thermostat", "--setpoint", "21"]
+        )
+    parsed = _json_out(result)
+    assert result.exit_code == 0
+    assert parsed["dry_run"] is True
+    assert parsed["actions"] == ["setTargetSetpoint=21 CELSIUS"]
+    assert parsed["devices"] == ["Hall Thermostat"]
+    assert "re-run with --yes" in parsed["hint"]
+    assert "set_thermostat_state" not in run.seen
+
+
+def test_temperature_previews_adjust_and_mode_together():
+    with _stub_cli([_THERMOSTAT]):
+        result = _invoke(
+            ["--json", "devices", "temperature", "Hall Thermostat", "--adjust", "-1", "--mode", "eco"]
+        )
+    parsed = _json_out(result)
+    assert parsed["actions"] == ["adjustTargetTemperature=-1 CELSIUS", "setMode=ECO"]
+
+
+def test_temperature_executes_with_yes_and_reports_the_verify():
+    """A thermostat write is verified by a fresh re-read: ok comes from Amazon."""
+    calls = []
+
+    async def fake_write(_login, entity_id, **kwargs):
+        calls.append(("set_thermostat_state", entity_id, kwargs))
+        return {"entityId": entity_id, "actions": ["setTargetSetpoint=21 CELSIUS"], "response": {}}
+
+    async def fake_verify(_login, entity_id, **kwargs):
+        calls.append(("verify_thermostat_write", entity_id, kwargs))
+        return {
+            "name": kwargs.get("name"),
+            "entityId": entity_id,
+            "targetSetpoint": {"value": 21.0, "scale": "CELSIUS"},
+            "mode": None,
+            "ok": True,
+        }
+
+    with _stub_network([_THERMOSTAT]):
+        with patch.object(smarthome_core, "set_thermostat_state", side_effect=fake_write):
+            with patch.object(smarthome_core, "verify_thermostat_write", side_effect=fake_verify):
+                result = _invoke(
+                    ["--json", "devices", "temperature", "Hall Thermostat", "--setpoint", "21", "--yes"]
+                )
+    assert result.exit_code == 0
+    assert calls == [
+        ("set_thermostat_state", "entity-thermo", {"setpoint": "21", "adjust": None, "mode": None, "scale": "celsius"}),
+        (
+            "verify_thermostat_write",
+            "entity-thermo",
+            {"setpoint": 21.0, "adjust": None, "mode": None, "scale": "CELSIUS", "before": None, "name": "Hall Thermostat"},
+        ),
+    ]
+    row = _json_out(result)[0]
+    assert row == {
+        "name": "Hall Thermostat",
+        "entityId": "entity-thermo",
+        "actions": ["setTargetSetpoint=21 CELSIUS"],
+        "targetSetpoint": "21 CELSIUS",
+        "mode": None,
+        "ok": True,
+    }
+
+
+def test_temperature_adjust_reads_the_pre_write_setpoint():
+    """A relative write is verified against the setpoint as it was *before*."""
+    calls = []
+
+    async def fake_fetch(_login, entity_ids=None, appliance_ids=None):
+        calls.append("fetch_states")
+        return {
+            "deviceStates": [
+                {
+                    "entity": {"entityId": "entity-thermo", "entityType": "ENTITY"},
+                    "capabilityStates": [
+                        json.dumps(
+                            {
+                                "namespace": "Alexa.ThermostatController",
+                                "name": "targetSetpoint",
+                                "value": {"value": "19.0", "scale": "CELSIUS"},
+                            }
+                        )
+                    ],
+                }
+            ]
+        }
+
+    async def fake_write(_login, entity_id, **kwargs):
+        return {"entityId": entity_id, "actions": ["adjustTargetTemperature=1 CELSIUS"], "response": {}}
+
+    async def fake_verify(_login, entity_id, **kwargs):
+        calls.append(("verify", kwargs.get("before")))
+        return {"name": "Hall", "entityId": entity_id, "targetSetpoint": {"value": 20.0, "scale": "CELSIUS"}, "mode": None, "ok": True}
+
+    with _stub_network([_THERMOSTAT]):
+        with patch.object(smarthome_core, "set_thermostat_state", side_effect=fake_write):
+            with patch.object(smarthome_core, "verify_thermostat_write", side_effect=fake_verify):
+                with patch("alexapy.AlexaAPI.get_entity_state", new=fake_fetch):
+                    result = _invoke(
+                        ["--json", "devices", "temperature", "Hall Thermostat", "--adjust", "1", "--yes"]
+                    )
+    assert result.exit_code == 0
+    assert ("verify", 19.0) in calls
+    assert _json_out(result)[0]["ok"] is True
+
+
+def test_temperature_ok_null_when_the_verify_read_answers_nothing():
+    async def fake_write(_login, entity_id, **kwargs):
+        return {"entityId": entity_id, "actions": ["setTargetSetpoint=21 CELSIUS"], "response": {}}
+
+    async def fake_verify(_login, entity_id, **kwargs):
+        return {"name": "Hall", "entityId": entity_id, "targetSetpoint": None, "mode": None, "ok": None}
+
+    with _stub_network([_THERMOSTAT]):
+        with patch.object(smarthome_core, "set_thermostat_state", side_effect=fake_write):
+            with patch.object(smarthome_core, "verify_thermostat_write", side_effect=fake_verify):
+                result = _invoke(
+                    ["--json", "devices", "temperature", "Hall Thermostat", "--setpoint", "21", "--yes"]
+                )
+    assert result.exit_code == 0
+    row = _json_out(result)[0]
+    assert row["targetSetpoint"] is None
+    assert row["ok"] is None
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--setpoint", "21", "--adjust", "1"], "mutually exclusive"),
+        ([], "nothing to change"),
+        (["--setpoint", "boiling"], "invalid temperature"),
+        (["--mode", "turbo"], "unknown thermostat mode"),
+        (["--setpoint", "21", "--scale", "kelvin"], "unknown temperature scale"),
+    ],
+)
+def test_temperature_validates_before_touching_the_network(args, message):
+    """Bad input fails at the parser — identically with and without --yes."""
+    with _stub_cli([_THERMOSTAT]) as run:
+        result = _invoke(["devices", "temperature", "Hall Thermostat", *args, "--yes"])
+    assert result.exit_code == 1
+    assert message in result.output
+    assert "fetch_endpoint_records" not in run.seen
+
+
+def test_temperature_requires_a_target():
+    with _stub_cli([_THERMOSTAT]):
+        result = _invoke(["--json", "devices", "temperature", "--setpoint", "21"])
+    assert result.exit_code == 1
+    assert "name at least one device" in result.output
+
+
+def test_temperature_aborts_on_unknown_device():
+    with _stub_cli([_THERMOSTAT]):
+        result = _invoke(["devices", "temperature", "Nope", "--setpoint", "21"])
+    assert result.exit_code == 1
+    assert "no device matching" in result.output
+
+
+def test_temperature_aborts_when_the_device_has_no_phoenix_entity_id():
+    with _stub_network([{**_THERMOSTAT, "entityId": ""}]):
+        result = _invoke(["devices", "temperature", "Hall Thermostat", "--setpoint", "21", "--yes"])
+    assert result.exit_code == 1
+    assert "no phoenix entityId" in result.output
+
+
+def test_temperature_all_previews_every_selected_record():
+    with _stub_cli([_THERMOSTAT, _RECORDS[0]]):
+        result = _invoke(["--json", "devices", "temperature", "--all", "--setpoint", "21"])
+    parsed = _json_out(result)
+    assert parsed["count"] == 2
+    assert parsed["devices"] == ["Hall Thermostat", "Kitchen Lamp"]
+
+
+def test_temperature_text_mode_renders_the_verify_row():
+    async def fake_write(_login, entity_id, **kwargs):
+        return {"entityId": entity_id, "actions": ["setMode=HEAT"], "response": {}}
+
+    async def fake_verify(_login, entity_id, **kwargs):
+        return {
+            "name": "Hall Thermostat",
+            "entityId": entity_id,
+            "targetSetpoint": {"value": 21.0, "scale": "CELSIUS"},
+            "mode": "HEAT",
+            "ok": True,
+        }
+
+    with _stub_network([_THERMOSTAT]):
+        with patch.object(smarthome_core, "set_thermostat_state", side_effect=fake_write):
+            with patch.object(smarthome_core, "verify_thermostat_write", side_effect=fake_verify):
+                result = _invoke(["devices", "temperature", "Hall Thermostat", "--mode", "heat", "--yes"])
+    assert result.exit_code == 0
+    assert "Hall Thermostat" in result.output
+    assert "HEAT" in result.output
+
+
+def test_setpoint_then_mode_round_trips_the_same_plan():
+    """Workflow: preview, then --yes, send exactly the actions that were previewed."""
+    seen = []
+
+    async def fake_write(_login, entity_id, **kwargs):
+        plan = smarthome_core.plan_thermostat_change(**kwargs)
+        seen.append(plan["actions"])
+        return {"entityId": entity_id, "actions": plan["actions"], "response": {}}
+
+    async def fake_verify(_login, entity_id, **kwargs):
+        return {"name": "Hall", "entityId": entity_id, "targetSetpoint": {"value": 21.0, "scale": "CELSIUS"}, "mode": "HEAT", "ok": True}
+
+    with _stub_network([_THERMOSTAT]):
+        with patch.object(smarthome_core, "set_thermostat_state", side_effect=fake_write):
+            with patch.object(smarthome_core, "verify_thermostat_write", side_effect=fake_verify):
+                preview = _invoke(
+                    ["--json", "devices", "temperature", "Hall Thermostat", "--setpoint", "21", "--mode", "heat"]
+                )
+                executed = _invoke(
+                    ["--json", "devices", "temperature", "Hall Thermostat", "--setpoint", "21", "--mode", "heat", "--yes"]
+                )
+    assert preview.exit_code == 0 and executed.exit_code == 0
+    previewed = _json_out(preview)["actions"]
+    assert seen == [previewed]
+    assert _json_out(executed)[0]["actions"] == previewed
