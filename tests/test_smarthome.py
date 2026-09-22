@@ -718,3 +718,299 @@ def test_verify_lock_write_none_when_the_verify_read_is_empty():
     with patch("alexapy.AlexaAPI.get_entity_state", new=AsyncMock(return_value={})):
         row = _run(smarthome.verify_lock_write(MagicMock(), "e1", True, name="Front Door"))
     assert row == {"name": "Front Door", "entityId": "e1", "lockState": None, "ok": None}
+
+
+# ── thermostat: scale / temperature / mode normalisation ─────────────────
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [("c", "CELSIUS"), ("Celsius", "CELSIUS"), ("F", "FAHRENHEIT"), ("fahrenheit", "FAHRENHEIT")],
+)
+def test_normalize_scale_accepts_human_spellings(given, expected):
+    assert smarthome.normalize_scale(given) == expected
+
+
+@pytest.mark.parametrize("given", [None, "", "  "])
+def test_normalize_scale_rejects_empty(given):
+    with pytest.raises(ValueError, match="a temperature scale is required"):
+        smarthome.normalize_scale(given)
+
+
+@pytest.mark.parametrize("given", ["kelvin", "273.15K"])
+def test_normalize_scale_rejects_unknown(given):
+    with pytest.raises(ValueError, match="unknown temperature scale"):
+        smarthome.normalize_scale(given)
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"), [(0, 0.0), (21, 21.0), ("21.5", 21.5), (-4, -4.0)]
+)
+def test_normalize_temperature_accepts_numbers_and_strings(given, expected):
+    assert smarthome.normalize_temperature(given) == expected
+
+
+@pytest.mark.parametrize("given", [None, "warm", "", float("nan"), float("inf"), float("-inf")])
+def test_normalize_temperature_rejects_bad_values(given):
+    with pytest.raises(ValueError, match="temperature"):
+        smarthome.normalize_temperature(given)
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [("heat", "HEAT"), ("AUTO", "AUTO"), ("eco", "ECO"), ("custom", "CUSTOM")],
+)
+def test_normalize_thermostat_mode_accepts_human_spellings(given, expected):
+    assert smarthome.normalize_thermostat_mode(given) == expected
+
+
+def test_normalize_thermostat_mode_rejects_unknown_and_lists_alternatives():
+    with pytest.raises(ValueError, match="unknown thermostat mode") as exc:
+        smarthome.normalize_thermostat_mode("turbo")
+    assert "heat" in str(exc.value)
+
+
+# ── plan_thermostat_change ───────────────────────────────────────────────
+
+
+def test_plan_thermostat_change_setpoint():
+    plan = smarthome.plan_thermostat_change(setpoint="21", scale="celsius")
+    assert plan["targetSetpoint"] == {"value": "21.0", "scale": "CELSIUS"}
+    assert plan["targetSetpointDelta"] is None
+    assert plan["mode"] is None
+    assert plan["actions"] == ["setTargetSetpoint=21 CELSIUS"]
+
+
+def test_plan_thermostat_change_adjust():
+    plan = smarthome.plan_thermostat_change(adjust=-1)
+    assert plan["targetSetpointDelta"] == {"value": "-1.0", "scale": "CELSIUS"}
+    assert plan["actions"] == ["adjustTargetTemperature=-1 CELSIUS"]
+
+
+def test_plan_thermostat_change_mode_rides_along():
+    plan = smarthome.plan_thermostat_change(setpoint=21, mode="heat")
+    assert plan["actions"] == ["setTargetSetpoint=21 CELSIUS", "setMode=HEAT"]
+    assert plan["mode"] == "HEAT"
+
+
+def test_plan_thermostat_change_mode_only():
+    plan = smarthome.plan_thermostat_change(mode="eco")
+    assert plan["targetSetpoint"] is None
+    assert plan["targetSetpointDelta"] is None
+    assert plan["actions"] == ["setMode=ECO"]
+
+
+def test_plan_thermostat_change_refuses_setpoint_and_adjust_together():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        smarthome.plan_thermostat_change(setpoint=21, adjust=1)
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"setpoint": None, "adjust": None, "mode": None}])
+def test_plan_thermostat_change_requires_something_to_change(kwargs):
+    with pytest.raises(ValueError, match="nothing to change"):
+        smarthome.plan_thermostat_change(**kwargs)
+
+
+# ── thermostat state reads ───────────────────────────────────────────────
+
+
+def _thermostat_payload(entity_id="e1", setpoint=None, mode=None):
+    caps = []
+    if setpoint is not None:
+        caps.append(
+            {
+                "namespace": "Alexa.ThermostatController",
+                "name": "targetSetpoint",
+                "value": setpoint,
+            }
+        )
+    if mode is not None:
+        caps.append(
+            {"namespace": "Alexa.ThermostatController", "name": "thermostatMode", "value": mode}
+        )
+    return _state_payload(entity_id=entity_id, capabilities=caps)
+
+
+def test_thermostat_state_reads_value_and_scale():
+    held = smarthome.thermostat_state(_thermostat_payload(setpoint={"value": "21.0", "scale": "CELSIUS"}))
+    assert held == {"value": 21.0, "scale": "CELSIUS"}
+
+
+def test_thermostat_state_scopes_to_the_entity_id():
+    payload = _thermostat_payload(setpoint={"value": "21.0", "scale": "CELSIUS"})
+    assert smarthome.thermostat_state(payload, "other") is None
+    assert smarthome.thermostat_state(payload, "e1") is not None
+
+
+def test_thermostat_state_is_none_without_the_capability():
+    assert smarthome.thermostat_state(_state_payload()) is None
+
+
+def test_thermostat_state_survives_an_unparseable_value():
+    held = smarthome.thermostat_state(_thermostat_payload(setpoint={"value": "hot", "scale": "CELSIUS"}))
+    assert held is None
+
+
+def test_thermostat_mode_state_reads_the_mode():
+    assert smarthome.thermostat_mode_state(_thermostat_payload(mode="HEAT")) == "HEAT"
+    assert smarthome.thermostat_mode_state(_state_payload()) is None
+
+
+# ── thermostat_verify (three-valued, like the lock verify) ───────────────
+
+
+def test_thermostat_verify_setpoint_matches():
+    payload = _thermostat_payload(setpoint={"value": "21.0", "scale": "CELSIUS"})
+    row = smarthome.thermostat_verify(payload, "e1", setpoint=21.0)
+    assert row["ok"] is True
+    assert row["targetSetpoint"] == {"value": 21.0, "scale": "CELSIUS"}
+
+
+def test_thermostat_verify_detects_a_mismatch():
+    payload = _thermostat_payload(setpoint={"value": "19.0", "scale": "CELSIUS"})
+    assert smarthome.thermostat_verify(payload, "e1", setpoint=21.0)["ok"] is False
+
+
+def test_thermostat_verify_compares_across_scales():
+    """A thermostat reporting Fahrenheit still answers a Celsius ask: 69.8°F ≈ 21°C."""
+    payload = _thermostat_payload(setpoint={"value": "69.8", "scale": "FAHRENHEIT"})
+    assert smarthome.thermostat_verify(payload, "e1", setpoint=21.0)["ok"] is True
+
+
+def test_thermostat_verify_fahrenheit_ask_on_celsius_thermostat():
+    payload = _thermostat_payload(setpoint={"value": "21.0", "scale": "CELSIUS"})
+    assert smarthome.thermostat_verify(payload, "e1", setpoint=70.0, scale="FAHRENHEIT")["ok"] is True
+
+
+def test_thermostat_verify_adjust_needs_the_pre_write_setpoint():
+    payload = _thermostat_payload(setpoint={"value": "20.0", "scale": "CELSIUS"})
+    assert smarthome.thermostat_verify(payload, "e1", adjust=1.0, before=19.0)["ok"] is True
+    assert smarthome.thermostat_verify(payload, "e1", adjust=1.0, before=None)["ok"] is None
+    assert smarthome.thermostat_verify(payload, "e1", adjust=5.0, before=19.0)["ok"] is False
+
+
+def test_thermostat_verify_mode():
+    payload = _thermostat_payload(mode="HEAT")
+    assert smarthome.thermostat_verify(payload, "e1", mode="heat")["ok"] is True
+    assert smarthome.thermostat_verify(payload, "e1", mode="cool")["ok"] is False
+
+
+def test_thermostat_verify_is_none_when_the_read_answered_nothing():
+    row = smarthome.thermostat_verify(_state_payload(), "e1", setpoint=21.0, mode="heat")
+    assert row == {"targetSetpoint": None, "mode": None, "ok": None}
+
+
+def test_thermostat_verify_reports_the_held_mode_only_when_asked():
+    payload = _thermostat_payload(mode="HEAT")
+    assert smarthome.thermostat_verify(payload, "e1", setpoint=21.0)["mode"] is None
+    assert smarthome.thermostat_verify(payload, "e1", mode="heat")["mode"] == "HEAT"
+
+
+# ── set_thermostat_state (network, via _static_request) ──────────────────
+
+
+def test_set_thermostat_state_posts_the_control_request_via_static_request():
+    captured = {}
+
+    class _Resp:
+        @staticmethod
+        async def text():
+            return json.dumps({"controlResponses": [{"code": "SUCCESS"}]})
+
+    async def _fake(method, login, path, data=None, **kwargs):
+        captured.update(method=method, path=path, data=data)
+        return _Resp()
+
+    with patch("alexapy.AlexaAPI._static_request", new=_fake):
+        result = _run(
+            smarthome.set_thermostat_state(MagicMock(), "e1", setpoint="21", mode="heat")
+        )
+    assert captured["method"] == "put"
+    assert captured["path"] == "/api/phoenix/state"
+    assert captured["data"] == {
+        "controlRequests": [
+            {
+                "entityId": "e1",
+                "entityType": "ENTITY",
+                "parameters": {
+                    "action": "setTargetSetpoint",
+                    "targetSetpoint": {"value": "21.0", "scale": "CELSIUS"},
+                },
+            },
+            {
+                "entityId": "e1",
+                "entityType": "ENTITY",
+                "parameters": {"action": "setMode", "mode": "HEAT"},
+            },
+        ]
+    }
+    assert result["actions"] == ["setTargetSetpoint=21 CELSIUS", "setMode=HEAT"]
+    assert result["response"] == {"controlResponses": [{"code": "SUCCESS"}]}
+
+
+def test_set_thermostat_state_adjust_uses_target_setpoint_delta():
+    captured = {}
+
+    class _Resp:
+        @staticmethod
+        async def text():
+            return "{}"
+
+    async def _fake(method, login, path, data=None, **kwargs):
+        captured["data"] = data
+        return _Resp()
+
+    with patch("alexapy.AlexaAPI._static_request", new=_fake):
+        _run(smarthome.set_thermostat_state(MagicMock(), "e1", adjust="-1", scale="f"))
+    assert captured["data"]["controlRequests"][0]["parameters"] == {
+        "action": "adjustTargetTemperature",
+        "targetSetpointDelta": {"value": "-1.0", "scale": "FAHRENHEIT"},
+    }
+
+
+def test_set_thermostat_state_survives_a_non_json_response():
+    class _Resp:
+        @staticmethod
+        async def text():
+            return "<html>oops</html>"
+
+    with patch("alexapy.AlexaAPI._static_request", new=AsyncMock(return_value=_Resp())):
+        result = _run(smarthome.set_thermostat_state(MagicMock(), "e1", setpoint=21))
+    assert result["response"] == {}
+
+
+def test_set_thermostat_state_raises_when_the_response_is_missing():
+    with patch("alexapy.AlexaAPI._static_request", new=AsyncMock(return_value=None)):
+        with pytest.raises(RuntimeError, match="no response"):
+            _run(smarthome.set_thermostat_state(MagicMock(), "e1", setpoint=21))
+
+
+# ── verify_thermostat_write (fresh re-read after the write) ──────────────
+
+
+def test_verify_thermostat_write_reports_ok_from_a_fresh_read():
+    async def _fake(login, entity_ids=None, appliance_ids=None):
+        return _thermostat_payload(setpoint={"value": "21.0", "scale": "CELSIUS"})
+
+    with patch("alexapy.AlexaAPI.get_entity_state", new=_fake):
+        row = _run(
+            smarthome.verify_thermostat_write(
+                MagicMock(), "e1", setpoint=21.0, name="Hall Thermostat"
+            )
+        )
+    assert row == {
+        "name": "Hall Thermostat",
+        "entityId": "e1",
+        "targetSetpoint": {"value": 21.0, "scale": "CELSIUS"},
+        "mode": None,
+        "ok": True,
+    }
+
+
+def test_verify_thermostat_write_none_when_the_verify_read_is_empty():
+    with patch("alexapy.AlexaAPI.get_entity_state", new=AsyncMock(return_value={})):
+        row = _run(
+            smarthome.verify_thermostat_write(MagicMock(), "e1", setpoint=21.0, name="Hall")
+        )
+    assert row["targetSetpoint"] is None
+    assert row["ok"] is None

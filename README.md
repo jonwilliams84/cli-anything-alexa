@@ -196,6 +196,7 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `devices on\|off [<target>...] [--all]` | Turn appliances on / off (`--yes` to execute) |
 | `devices light <target> [--on\|--off] [--brightness N] [--color <name>] [--color-temperature <name>]` | Drive a light's power / brightness / colour (`--yes` to execute) |
 | `devices lock\|unlock [<target>...] [--all]` | Lock / unlock via `Alexa.LockController` (`--yes` to execute; verified by re-read) |
+| `devices temperature [<target>...] [--all] [--setpoint N] [--adjust N] [--scale celsius\|fahrenheit] [--mode heat\|cool\|auto\|off\|eco\|custom]` | Drive a thermostat's target setpoint / mode (`--yes` to execute; verified by re-read) |
 | `discover` | Trigger Alexa smart-home device discovery (`--yes` to execute) |
 | `guard status` | Read Alexa Guard's arm state (away vs home) |
 | `guard set away\|home` | Arm / disarm Alexa Guard (`--yes` to execute) |
@@ -403,6 +404,29 @@ is reported as `lockState` verbatim and counts as `ok: false`.
 cli-anything-alexa devices lock "Front Door" --yes          # verify row follows the write
 cli-anything-alexa devices unlock "Front Door" --yes
 cli-anything-alexa devices lock --all --json                # every lock on the account
+```
+
+Thermostats ride the same controlRequests family — `setTargetSetpoint` /
+`adjustTargetTemperature` / `setMode`, the actions the Alexa app itself sends
+for the temperature dial (alexapy's `set_light_state` builder has no
+thermostat actions, so the request is built locally and sent through
+`AlexaAPI._static_request`, exactly like the lock surface). One command, three
+verbs: `--setpoint` (absolute) and `--adjust` (relative) are mutually
+exclusive; `--mode` may ride along with either ("set to 21 and switch to
+heat"). Like the locks, every executed write is **verified by a fresh
+re-read** of `Alexa.ThermostatController.targetSetpoint` — three-valued `ok`,
+`null` = the verify read answered nothing. An `--adjust` write is verified
+against the setpoint as it was *before* the PUT (read just prior), so the
+relative nudge is checked against what the thermostat actually held; if that
+pre-read answers nothing, `ok` is `null` — never a guessed pass. A thermostat
+reporting in the other scale still verifies honestly (69.8 °F ≈ 21 °C — the
+comparison converts, with half a degree of cross-scale slack).
+
+```bash
+cli-anything-alexa devices temperature "Hall Thermostat" --setpoint 21 --yes
+cli-anything-alexa devices temperature "Hall Thermostat" --adjust -1 --scale fahrenheit --yes
+cli-anything-alexa devices temperature "Hall Thermostat" --setpoint 21 --mode heat --yes
+cli-anything-alexa devices temperature --all --setpoint 21 --json
 ```
 
 `guard` reads and writes Alexa Guard's arm state:
