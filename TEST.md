@@ -9,14 +9,16 @@ python -m pytest tests --cov=cli_anything --cov-fail-under=87 -q --durations=10 
   && bandit -r cli_anything/ -ll -x '*/tests/*,*/test_*.py,*/conftest.py'
 ```
 
-## Current state (after 0.9.0 refine, 2026-09-22)
+## Current state (after 0.10.0 refine, 2026-09-30)
 
-- **1679 tests pass**, 0 failures, in ~6 s (no live account, no network —
+- **1727 tests pass**, 0 failures, in ~5 s (no live account, no network —
   alexapy is mocked; pure logic is tested without it).
 - Coverage **97.2%+** (gate: ≥87%). `core/notifications.py` at **100%**
-  (statements + branches); the 0.8.0 lock surface and the 0.9.0 thermostat
-  surface in `core/smarthome.py` (controlRequests writer + three-valued
-  verify) are covered line-for-line (the module sits at **99%**); the CLI layer
+  (statements + branches); the 0.8.0 lock / 0.9.0 thermostat surfaces in
+  `core/smarthome.py` (controlRequests writer + three-valued verify) are
+  covered line-for-line (the module sits at **99%**), and the 0.10.0 **scenes**
+  surface in `core/scenes.py` is fully exercised by
+  `test_scenes.py` + `test_cli_scenes_paths.py`; the CLI layer
   (`alexa_cli.py`) ~95%, the REPL skin ~97%.
 - Lint (`ruff check`), format (`ruff format --check`) and bandit (-ll): clean.
 
@@ -108,6 +110,22 @@ one cookie story.
   unknown-device / no-entityId refusals, `--all`, the `ok: null` path, and a
   preview → `--yes` round-trip pinning that the executed actions are exactly
   the previewed ones.
+- `test_scenes.py` / `test_cli_scenes_paths.py` (0.10.0 additions) — the
+  **scenes** surface: `is_scene` (`SCENE`/`SMARTPLAY` markers, case-tolerant,
+  string/list/tuple forms, junk refused without tracebacks), `scene_rows`
+  (filter + case-insensitive name sort, the row shape, `HA` vs `native`
+  source, entityless scenes kept visible with `entityId: null`), the exact
+  `Activate` wire format (`scene_control_request`), `activate_verify`
+  (three-valued from `controlResponses[].code`, case-insensitive, `None` when
+  the response answers nothing — never a silent pass), `fetch_scenes` (the
+  endpoints read filtered to scenes) and the async `activate_scene` against a
+  fake `_static_request` (exact `PUT /api/phoenix/state` body, non-JSON body
+  → `ok: None`, missing response raises). CLI: `scenes list` (sorted rows,
+  read-only, empty account), `scenes activate` preview by default with the
+  `--yes` hint and no write coroutine in dry-run, `--yes` executes and reports
+  the response-derived `ok`, appliance-id targeting, `--all`, the
+  abort paths (ambiguity, unknown target, non-scene device, no scenes on the
+  account, `--all`+targets, no targets).
 `test_cli_refine_paths.py` closes the remaining CLI-layer gaps: both
 `auth login` flows (scripted + guided proxy) and `auth import-pickle` success,
 bulk `rename --pattern` / `--map` and single renames (dry-run + `--yes`),

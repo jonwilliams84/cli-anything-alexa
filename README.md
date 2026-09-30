@@ -198,6 +198,8 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `devices lock\|unlock [<target>...] [--all]` | Lock / unlock via `Alexa.LockController` (`--yes` to execute; verified by re-read) |
 | `devices temperature [<target>...] [--all] [--setpoint N] [--adjust N] [--scale celsius\|fahrenheit] [--mode heat\|cool\|auto\|off\|eco\|custom]` | Drive a thermostat's target setpoint / mode (`--yes` to execute; verified by re-read) |
 | `discover` | Trigger Alexa smart-home device discovery (`--yes` to execute) |
+| `scenes list` | List the smart-home **scenes** (`SCENE`/`SMARTPLAY` appliances) with the phoenix entityId activation uses |
+| `scenes activate <target...> [--all]` | Tap a scene — `Alexa.SceneController` `Activate` on `PUT /api/phoenix/state` (`--yes` to execute; `ok` from the controlResponses code) |
 | `guard status` | Read Alexa Guard's arm state (away vs home) |
 | `guard set away\|home` | Arm / disarm Alexa Guard (`--yes` to execute) |
 | `echos list` | List the physical Echo devices on the account |
@@ -427,6 +429,26 @@ cli-anything-alexa devices temperature "Hall Thermostat" --setpoint 21 --yes
 cli-anything-alexa devices temperature "Hall Thermostat" --adjust -1 --scale fahrenheit --yes
 cli-anything-alexa devices temperature "Hall Thermostat" --setpoint 21 --mode heat --yes
 cli-anything-alexa devices temperature --all --setpoint 21 --json
+```
+
+**Scenes — tap what the app taps.** Scenes (Amazon's `SCENE` appliance
+vocabulary, plus the sibling `SMARTPLAY` "smart play" markers) are one-tap
+commands, not devices. alexapy owns
+none of the `Alexa.SceneController` surface, so like the locks and thermostat
+the request is built locally and sent through `AlexaAPI._static_request`:
+one `Activate` controlRequest per scene on the shared `PUT /api/phoenix/state`.
+A scene is *instantaneous* — there is no held state to re-read after the write,
+so there is no verify re-read; instead `ok` is read off the write's own
+response (`controlResponses[].code`): `true` on `SUCCESS`, `false` on a failure
+code, and `null` when the response answers nothing — never a silent pass.
+Targets resolve like every other control command, scoped to scenes only (a
+light is not a scene and refuses locally), and a scene with `entityId: null`
+is listed but not activatable.
+
+```bash
+cli-anything-alexa scenes list --json
+cli-anything-alexa scenes activate "Movie Night" --yes
+cli-anything-alexa scenes activate --all --yes      # every scene (careful)
 ```
 
 `guard` reads and writes Alexa Guard's arm state:
