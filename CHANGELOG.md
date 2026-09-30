@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.10.0] — 2026-09-30
+
+### Added — smart-home scenes (`scenes list` / `scenes activate`)
+
+The last one-tap surface the harness could inventory but never actuate:
+**scenes** — the Alexa app's scene buttons. Scenes surface to the smart-home
+graph as appliances whose `applianceTypes` carry the `SCENE` marker (plus the
+sibling `SMARTPLAY` "smart play" markers the app treats the same way), so they
+have been visible in `devices list` from day one — but there was no way to
+*tap* one. alexapy owns none of the `Alexa.SceneController` surface, so —
+exactly like the 0.8.0 lock and 0.9.0 thermostat surfaces — the request is
+built locally and sent through `AlexaAPI._static_request`: one `Activate`
+controlRequest per scene, on the same `PUT /api/phoenix/state` the lights,
+Guard, locks and thermostats already ride:
+
+```json
+{"controlRequests": [{"entityId": "…", "entityType": "ENTITY",
+                      "parameters": {"action": "Activate"}}]}
+```
+
+New commands (`--json`):
+
+| Command | Wraps | Notes |
+| --- | --- | --- |
+| `scenes list` | the canonical `endpoints` query, filtered to `SCENE`/`SMARTPLAY` appliances | Name, phoenix entityId, applianceId/endpointId, `HA` vs `native` source; sorted by name. A scene with `entityId: null` is listed but **not activatable** |
+| `scenes activate <target...> [--all]` | `PUT /api/phoenix/state`, `Alexa.SceneController` `Activate` | `--yes` to execute; `--all` for every scene (careful). Targets resolve like every control command — **scoped to scenes only**, a light is not a scene and refuses locally |
+
+Two honest-reporting notes, mirroring the lock/thermostat conventions:
+
+* **No verify re-read, on purpose.** A scene is *instantaneous* — there is no
+  held state to read back after the write, so inventing one would be a lie.
+  Instead `ok` is read off the write's own response
+  (`activate_verify`): `true` when every `controlResponses[].code` is
+  `SUCCESS`, `false` on any failure code, and `null` when the response carries
+  no `controlResponses` at all — "nothing to check", never a silent pass.
+* **Preview by default.** `scenes activate` is dry-run unless `--yes`, prints
+  the scene names it would tap plus the `--yes` hint, and sends nothing in
+  preview. Ambiguous names abort with the matches listed (same rule as
+  `devices rename`), and an account with no scenes aborts with a plain
+  "no scenes" rather than a silent empty run.
+
+The detection/filter/row/wire-format/verify layer is pure
+(`is_scene` — string-tolerant, `scene_rows` — sorted and entityless-safe,
+`scene_control_request`, `activate_verify`) and the network is the usual thin
+`_static_request` pair: in the new `core/scenes.py`, unit-tested in
+`tests/test_scenes.py` (+35) with the CLI paths in
+`tests/test_cli_scenes_paths.py` (+13, including a dry-run → `--yes`
+round-trip shape, `--all`, and every abort path).
+
+Tests: 1679 → **1727** (+48). Coverage holds at **97.2%** (gate ≥87%
+unchanged). Version bumped 0.9.0 → **0.10.0** (by the release runner).
+
 ## [0.9.0] — 2026-09-22
 
 ### Added — thermostat control (`devices temperature`)

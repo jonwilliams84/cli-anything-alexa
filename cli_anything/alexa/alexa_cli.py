@@ -31,6 +31,7 @@ from cli_anything.alexa.core import media as media_core
 from cli_anything.alexa.core import notifications as notifications_core
 from cli_anything.alexa.core import project
 from cli_anything.alexa.core import routines as routines_core
+from cli_anything.alexa.core import scenes as scenes_core
 from cli_anything.alexa.core import sequences as sequences_core
 from cli_anything.alexa.core import session as session_core
 from cli_anything.alexa.core import smarthome as smarthome_core
@@ -1290,6 +1291,68 @@ def discover_cmd(ctx, yes):
         )
         return
     emit(ctx, _run(ctx, devices_core.trigger_discovery(login)))
+
+
+# ──────────────────────────────────────────────────────── scenes
+
+
+@cli.group("scenes")
+def scenes():
+    """Smart-home scenes — the app's scene buttons (list / activate)."""
+
+
+@scenes.command("list")
+@click.pass_context
+def scenes_list(ctx):
+    """List the smart-home scenes on the account (scene appliances).
+
+    Scenes are appliances whose `applianceTypes` carry the `SCENE` (or
+    `SMARTPLAY`) marker. Read-only, so no --yes. A scene with `entityId: null`
+    is inventoried but not activatable.
+    """
+    login = _login(ctx)
+    records = _run(ctx, scenes_core.fetch_scenes(login))
+    emit(ctx, scenes_core.scene_rows(records))
+
+
+@scenes.command("activate")
+@click.argument("targets", nargs=-1)
+@click.option("--all", "all_scenes", is_flag=True, default=False, help="Every scene (careful)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def scenes_activate(ctx, targets, all_scenes, yes):
+    """Tap one (or more) scene buttons — send Alexa.SceneController Activate.
+
+    TARGET is what `scenes list` shows — display name, entityId, applianceId
+    or endpoint id — and may be repeated. Preview by default; --yes executes
+    and reports `ok` straight from the controlResponses code Alexa answers
+    with (null when the response answers nothing — never a silent pass).
+    """
+    login = _login(ctx)
+    scene_records = _run(ctx, scenes_core.fetch_scenes(login))
+    if not scene_records:
+        _abort("no scenes on this account (nothing with a SCENE/SMARTPLAY appliance type)")
+    selected = _select_records(ctx, scene_records, targets, all_scenes)
+    actions = ["Activate"]
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "actions": actions,
+                "count": len(selected),
+                "scenes": [r.get("name") for r in selected],
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    results = []
+    for rec in selected:
+        entity_id = _run(ctx, _as_coro(smarthome_core.entity_ref, rec))
+        results.append(
+            _run(ctx, scenes_core.activate_scene(login, entity_id, name=rec.get("name")))
+        )
+    emit(ctx, results)
 
 
 # ──────────────────────────────────────────────────────── guard
