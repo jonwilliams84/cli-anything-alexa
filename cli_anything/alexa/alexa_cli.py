@@ -153,7 +153,7 @@ def _run(ctx, coro):
     default=None,
     envvar="CLI_ALEXA_COOKIE_DIR",
     help="Read/write the cookie at this dir IN PLACE (HA layout: "
-    "<dir>/.storage/alexa_media.<email>.pickle). Point it at HA's "
+    "<dir>/.storage/alexa_media.<email>.cookies). Point it at HA's "
     "config base (e.g. /config) to reuse HA's LIVE rotating "
     "cookie. Env: CLI_ALEXA_COOKIE_DIR.",
 )

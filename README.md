@@ -104,7 +104,8 @@ cli-anything-alexa --email you@example.com --cookie-dir /config auth status
 cli-anything-alexa --email you@example.com --cookie-dir /config devices list
 ```
 
-`--cookie-dir <dir>` reads/writes the cookie at `<dir>/.storage/alexa_media.<email>.pickle`
+`--cookie-dir <dir>` reads/writes the cookie at `<dir>/.storage/alexa_media.<email>.cookies`
+(alexapy ≥1.30's JSON jar, which is what current HA writes; the legacy `.pickle` is still read)
 (HA's own layout), so `--cookie-dir /config` resolves straight to HA's live
 pickle. Nothing is copied, so it never goes stale. Env equivalent:
 `CLI_ALEXA_COOKIE_DIR=/config`. The CLI also auto-recovers the rotation race
@@ -788,7 +789,7 @@ precedence: `--cookie-dir <path>` flag → `CLI_ALEXA_COOKIE_DIR` env →
 stable `/tmp/cli-anything-alexa` fallback. The fallback matters in containers
 where `$HOME` is unset or `/`: without it a write (`import-pickle`) and a later
 read (`auth status`) could disagree on the directory. With `--cookie-dir`/env
-set the CLI reads the cookie **in place** at `<dir>/.storage/alexa_media.<email>.pickle`
+set the CLI reads the cookie **in place** at `<dir>/.storage/alexa_media.<email>.cookies`
 (HA's layout) and never copies into it.
 
 ## Gotchas
