@@ -61,7 +61,8 @@ cli-anything-alexa devices list --json
   (`auth status` flips `logged_in` true→false mid-session). Global `--cookie-dir
   <path>` (env `CLI_ALEXA_COOKIE_DIR`) points alexapy's `outputpath` at that dir
   so it reads/writes the cookie **in place** at
-  `<dir>/.storage/alexa_media.<email>.pickle` — HA's exact layout (alexapy's
+  `<dir>/.storage/alexa_media.<email>.cookies` (alexapy ≥1.30 JSON jar; legacy
+  `.pickle` still read) — HA's exact layout (alexapy's
   `_cookiefile[0]`). `--cookie-dir /config` ⇒ HA's live pickle. `make_outputpath`
   takes `create=False` for read-in-place so we never mkdir/write a foreign dir;
   `cookie_path_in_dir(dir, email)` is the pure path helper.

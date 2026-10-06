@@ -27,7 +27,7 @@ Every command takes `--json`.
   cli-anything-alexa --email you@x.com --cookie-dir /config devices list --json
   ```
   `--cookie-dir <dir>` (env `CLI_ALEXA_COOKIE_DIR`) reads/writes
-  `<dir>/.storage/alexa_media.<email>.pickle` (HA's layout) — `/config` ⇒ HA's
+  `<dir>/.storage/alexa_media.<email>.cookies` (HA's layout, alexapy ≥1.30) — `/config` ⇒ HA's
   live pickle. The CLI auto-recovers the rotation race (re-reads + retries a
   couple of times, no login storm). Cookie-dir resolves: `--cookie-dir` > env >
   valid `$HOME/.config/cli-anything-alexa` > `/tmp/cli-anything-alexa` fallback

@@ -69,7 +69,7 @@ def test_resolve_cookie_dir_expanduser(monkeypatch, tmp_path):
 
 def test_cookie_path_in_dir_ha_layout():
     p = session.cookie_path_in_dir("/config", "you@example.com")
-    assert str(p) == "/config/.storage/alexa_media.you@example.com.pickle"
+    assert str(p) == "/config/.storage/alexa_media.you@example.com.cookies"
 
 
 def test_make_outputpath_matches_alexapy_first_cookiefile(tmp_path):
@@ -77,9 +77,30 @@ def test_make_outputpath_matches_alexapy_first_cookiefile(tmp_path):
     op = session.make_outputpath(tmp_path, create=False)
     email = "you@example.com"
     # exactly how alexapy builds _cookiefile[0]
-    got = op(f".storage/alexa_media.{email}.pickle")
-    assert got == str(tmp_path / ".storage" / f"alexa_media.{email}.pickle")
+    got = op(f".storage/alexa_media.{email}.cookies")
+    assert got == str(tmp_path / ".storage" / f"alexa_media.{email}.cookies")
     assert got == str(session.cookie_path_in_dir(tmp_path, email))
+
+
+def test_cookie_path_matches_real_alexapy(tmp_path):
+    """Our first cookie path must be the one installed alexapy actually reads first.
+
+    alexapy 1.30 moved to `.cookies` and current Home Assistant writes only that
+    file; a mismatch here means `--cookie-dir /config` silently finds no cookie.
+    """
+    alexapy = pytest.importorskip("alexapy")
+
+    async def first_cookiefile():
+        # AlexaLogin opens an aiohttp session, which needs a running loop.
+        login = alexapy.AlexaLogin("amazon.co.uk", "you@example.com", "",
+                                   session.make_outputpath(tmp_path, create=False))
+        try:
+            return login._cookiefile[0]
+        finally:
+            await login.close()
+
+    got = asyncio.run(first_cookiefile())
+    assert got == str(session.cookie_path_in_dir(tmp_path, "you@example.com"))
 
 
 def test_make_outputpath_no_create_does_not_mkdir(tmp_path):

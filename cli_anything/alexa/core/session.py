@@ -271,13 +271,14 @@ def make_outputpath(config_dir: Path, create: bool = True):
 
 
 def cookie_path_in_dir(config_dir: Path, email: str) -> Path:
-    """The HA-layout pickle path alexapy reads/writes FIRST under ``config_dir``.
+    """The HA-layout cookie path alexapy reads/writes FIRST under ``config_dir``.
 
-    Mirrors alexapy's ``_cookiefile[0]``:
-    ``<config_dir>/.storage/alexa_media.<email>.pickle``. Pure path math —
-    used by ``--cookie-dir`` (so ``/config`` → HA's live pickle) and tests.
+    Mirrors alexapy's (>=1.30) ``_cookiefile[0]``:
+    ``<config_dir>/.storage/alexa_media.<email>.cookies``, the JSON jar. Pure
+    path math — used by ``--cookie-dir`` (so ``/config`` → HA's live cookie)
+    and tests.
     """
-    return Path(config_dir) / ".storage" / cookie_filename(email)
+    return cookie_paths_in_dir(config_dir, email)[0]
 
 
 def import_pickle(
@@ -637,11 +638,10 @@ async def proxy_login(
         except Exception:  # noqa: BLE001 — pragma: no cover; best-effort cookie-jar cleanup - best-effort cleanup
             _log.debug("login.close() failed during proxy cleanup", exc_info=True)
 
-    # Lock down whatever cookie file alexapy just wrote.
-    for name in (
-        config_dir / ".storage" / cookie_filename(email),
-        config_dir / cookie_filename(email),
-    ):
+    # Lock down whatever cookie file alexapy just wrote. alexapy >=1.30 writes
+    # the JSON jar `.storage/alexa_media.<email>.cookies`; listing only the
+    # `.pickle` names left that session cookie at the default umask.
+    for name in cookie_paths_in_dir(config_dir, email):
         try:
             if name.exists():
                 os.chmod(name, 0o600)

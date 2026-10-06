@@ -17,9 +17,12 @@ setup(
     install_requires=[
         "click>=8.0.0",
         "prompt-toolkit>=3.0.0",
-        # 1.27.0 first shipped AlexaProxy; the browser-proxy login is the
-        # primary auth path, so require a version that has it.
-        "alexapy>=1.27.0",
+        # 1.27.0 first shipped AlexaProxy (the primary browser-proxy login).
+        # 1.30 moved the cookie to a versioned JSON jar,
+        # `.storage/alexa_media.<email>.cookies`, and current Home Assistant
+        # writes ONLY that file. alexapy <1.30 looks for `.pickle` alone, so
+        # `--cookie-dir /config` found no cookie and failed silently.
+        "alexapy>=1.30.1",
     ],
     extras_require={
         # Unit tests only need pytest — the pure logic (applianceId parsing,
