@@ -176,7 +176,7 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | Command | Description |
 | --- | --- |
 | `auth login` | **Guided browser login** (default). `--password`/`--otp-secret` for scripted/CI. |
-| `auth import-pickle <path>` | Copy an existing alexapy cookie (e.g. HA's) into the local config dir (snapshot — goes stale if HA keeps rotating it; prefer `--cookie-dir`) |
+| `auth import-pickle <path>` | Copy an existing alexapy cookie (e.g. HA's) into the local config dir (snapshot — goes stale if HA keeps rotating it; prefer `--cookie-dir`). Only files under a `.storage` dir are accepted: unpickling runs code, so `--allow-any-path` is needed for a trusted file elsewhere |
 | `auth status` | Validate the saved cookie (`test_loggedin`) |
 | `auth whoami` | Show WHO the cookie is logged in as (`/api/users/me`: customer id, name, email, Prime Music) — exits non-zero if it no longer buys an account |
 | `auth ping` | Deep session health check — the app's own authenticated `/api/ping` call (`ok` + the raw `detail`); exits non-zero when the session no longer buys live API traffic |

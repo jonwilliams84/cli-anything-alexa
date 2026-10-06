@@ -353,7 +353,9 @@ def test_cookie_filename_rejects_empty_email():
 def test_import_pickle_traversal_stays_in_config_dir(tmp_path):
     """import_pickle must never write outside the config dir, even if the
     email contains path separators (defence-in-depth containment check)."""
-    src = tmp_path / "ha.pickle"
+    storage = tmp_path / ".storage"
+    storage.mkdir()
+    src = storage / "ha.pickle"
     src.write_bytes(b"cookie")
     config_dir = tmp_path / "config"
     config_dir.mkdir()

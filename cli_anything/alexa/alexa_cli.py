@@ -214,8 +214,13 @@ def auth():
 @auth.command("import-pickle")
 @click.argument("pickle_path", type=click.Path())
 @click.option("--email", default=None, help="Override the account email (else uses the profile's)")
+@click.option(
+    "--allow-any-path",
+    is_flag=True,
+    help="Accept a pickle outside a '.storage' directory. Unpickling runs code: only for files you trust.",
+)
 @click.pass_context
-def auth_import_pickle(ctx, pickle_path, email):
+def auth_import_pickle(ctx, pickle_path, email, allow_any_path):
     """Import an existing alexapy cookie (e.g. HA's alexa_media.<email>.pickle).
 
     Copies the cookie into the resolved config dir (``--cookie-dir`` > env >
@@ -242,7 +247,9 @@ def auth_import_pickle(ctx, pickle_path, email):
         )
     config_dir = ctx.obj.get("cookie_dir", session_core.DEFAULT_CONFIG_DIR)
     try:
-        dest = session_core.import_pickle(pickle_path, em, config_dir=config_dir)
+        dest = session_core.import_pickle(
+            pickle_path, em, config_dir=config_dir, allow_any_path=allow_any_path
+        )
     except session_core.AlexaSessionError as exc:
         _abort(str(exc))
     # persist the email into the profile for convenience

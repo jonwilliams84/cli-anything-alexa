@@ -34,6 +34,7 @@ Every command takes `--json`.
   (the fallback keeps write==read when `$HOME` is unset/`/` in containers).
 - **Reuse HA's cookie as a one-off snapshot:**
   `auth import-pickle /config/.storage/alexa_media.you@x.com.pickle --email you@x.com`
+  (only `.storage` paths are accepted; `--allow-any-path` for a trusted pickle elsewhere — unpickling runs code)
   — copies once; **goes stale** if HA keeps rotating the cookie. Prefer
   `--cookie-dir` for active HA reuse.
 - **Python 3.10+** is enough for a fresh login. **3.14 is needed only to
