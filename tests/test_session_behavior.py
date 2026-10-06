@@ -548,3 +548,45 @@ def test__default_config_dir_no_home(monkeypatch):
     res = _default_config_dir()
     assert res == FALLBACK_CONFIG_DIR
 
+
+
+# ── test_loggedin: HA cookie rotation + surfaced failures ───────────
+
+class _RotatingLogin:
+    """First cookie is stale; the re-load returns HA's rotated one, which works."""
+
+    def __init__(self):
+        self.loads = [{"session-id": "old"}, {"session-id": "new"}]
+        self.logins = []
+
+    async def load_cookie(self, *a, **k):
+        return self.loads.pop(0) if self.loads else {"session-id": "new"}
+
+    async def login(self, *a, cookies=None, **k):
+        self.logins.append(cookies)
+
+    async def test_loggedin(self, *a, cookies=None, **k):
+        # Only a session that was logged in with the NEW cookie authenticates.
+        return bool(self.logins) and self.logins[-1] == {"session-id": "new"}
+
+    async def close(self):
+        pass
+
+
+def test_test_loggedin_relogs_in_after_rotation(monkeypatch):
+    fake = _RotatingLogin()
+    monkeypatch.setattr(session, "build_login", lambda *a, **k: fake)
+    ok = asyncio.run(session.test_loggedin("you@example.com", reload_attempts=3, reload_sleep=0))
+    assert ok
+    assert fake.logins == [{"session-id": "old"}, {"session-id": "new"}]
+
+
+def test_test_loggedin_logs_why_it_failed(monkeypatch, caplog):
+    class _Boom(_RotatingLogin):
+        async def load_cookie(self, *a, **k):
+            raise ConnectionError("amazon unreachable")
+
+    monkeypatch.setattr(session, "build_login", lambda *a, **k: _Boom())
+    with caplog.at_level("WARNING"):
+        assert asyncio.run(session.test_loggedin("you@example.com", reload_sleep=0)) is False
+    assert "ConnectionError" in caplog.text and "amazon unreachable" in caplog.text

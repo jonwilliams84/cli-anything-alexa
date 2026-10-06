@@ -265,11 +265,27 @@ def test_base_url():
 
 
 def test_import_pickle_copies_and_renames(tmp_path):
-    src = tmp_path / "src.pickle"
+    # HA layout: the pickle lives under a .storage directory.
+    storage = tmp_path / ".storage"
+    storage.mkdir()
+    src = storage / "alexa_media.a@b.com.pickle"
     src.write_bytes(b"cookie-bytes")
     dest_dir = tmp_path / "cfg"
     dest = session.import_pickle(src, "a@b.com", config_dir=dest_dir)
     assert dest == dest_dir / "alexa_media.a@b.com.pickle"
+    assert dest.read_bytes() == b"cookie-bytes"
+
+
+def test_import_pickle_rejects_non_storage_path(tmp_path):
+    """Unpickling runs code: a pickle outside .storage needs allow_any_path."""
+    import pytest
+    src = tmp_path / "src.pickle"
+    src.write_bytes(b"cookie-bytes")
+    with pytest.raises(session.AlexaSessionError, match="--allow-any-path"):
+        session.import_pickle(src, "a@b.com", config_dir=tmp_path / "cfg")
+    assert not (tmp_path / "cfg").exists()          # refused before touching anything
+    dest = session.import_pickle(src, "a@b.com", config_dir=tmp_path / "cfg2",
+                                 allow_any_path=True)
     assert dest.read_bytes() == b"cookie-bytes"
 
 

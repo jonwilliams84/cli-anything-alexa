@@ -282,7 +282,10 @@ def cookie_path_in_dir(config_dir: Path, email: str) -> Path:
 
 
 def import_pickle(
-    src: str | os.PathLike, email: str, config_dir: Path = DEFAULT_CONFIG_DIR
+    src: str | os.PathLike,
+    email: str,
+    config_dir: Path = DEFAULT_CONFIG_DIR,
+    allow_any_path: bool = False,
 ) -> Path:
     """Copy an existing alexapy cookie pickle into our config dir.
 
@@ -295,12 +298,23 @@ def import_pickle(
     prefer ``--cookie-dir <ha-config>`` (reads HA's live cookie in place); use
     ``import-pickle`` only for a standalone copy you then keep fresh via
     ``auth login``.
+
+    Security: alexapy unpickles this file, and unpickling runs code, so a
+    hostile pickle executes as you. Only files under a ``.storage`` directory
+    (Home Assistant's layout) are accepted unless ``allow_any_path`` is set
+    (CLI: ``--allow-any-path``) for a file you trust.
     """
     import shutil
 
     src_path = Path(src).expanduser()
     if not src_path.is_file():
         raise AlexaSessionError(f"pickle not found: {src_path}")
+    if not allow_any_path and ".storage" not in src_path.parts:
+        raise AlexaSessionError(
+            f"refusing to import {src_path}: expected a file under a '.storage' "
+            "directory (Home Assistant's layout). Pass --allow-any-path to import "
+            "a pickle you trust from anywhere else."
+        )
     config_dir = Path(config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
     dest = config_dir / cookie_filename(email)
@@ -439,7 +453,13 @@ async def test_loggedin(
     """Return True iff the saved cookie authenticates. Never raises.
 
     Same HA-rotation auto-recovery as ``load_session``: re-load the cookie
-    from disk and re-test (bounded), without re-logging-in repeatedly.
+    from disk and re-test (bounded). When the re-load yields DIFFERENT cookies
+    (HA rotated them) we ``login()`` again with them, so the aiohttp session's
+    jar holds the fresh cookie rather than the stale one.
+
+    Errors still return ``False`` (the "never raises" contract), but the reason
+    is logged as a warning so ``auth status`` can tell "logged out" from
+    "Amazon or the network failed".
     """
     url = validate_region(url)
     login = None
@@ -459,9 +479,11 @@ async def test_loggedin(
             if reload_sleep:
                 await asyncio.sleep(float(reload_sleep))
             reloaded = await login.load_cookie()
-            if reloaded:
+            if reloaded and reloaded != cookies:
                 cookies = reloaded
-    except Exception:  # noqa: BLE001 — intentional; docstring promises "Never raises" so we swallow everything to guarantee the bool return.
+                await login.login(cookies=cookies)
+    except Exception as exc:  # noqa: BLE001 — intentional; docstring promises "Never raises" so we swallow everything to guarantee the bool return.
+        _log.warning("test_loggedin for %s failed: %s: %s", email, type(exc).__name__, exc)
         return False
     finally:
         if login is not None:
