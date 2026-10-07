@@ -9,16 +9,18 @@ python -m pytest tests --cov=cli_anything --cov-fail-under=87 -q --durations=10 
   && bandit -r cli_anything/ -ll -x '*/tests/*,*/test_*.py,*/conftest.py'
 ```
 
-## Current state (after 0.10.0 refine, 2026-09-30)
+## Current state (after 0.11.0 refine, 2026-10-07)
 
-- **1727 tests pass**, 0 failures, in ~5 s (no live account, no network —
+- **1776 tests pass**, 0 failures, in ~5 s (no live account, no network —
   alexapy is mocked; pure logic is tested without it).
-- Coverage **97.2%+** (gate: ≥87%). `core/notifications.py` at **100%**
+- Coverage **97.3%** (gate: ≥87%). `core/notifications.py` at **100%**
   (statements + branches); the 0.8.0 lock / 0.9.0 thermostat surfaces in
   `core/smarthome.py` (controlRequests writer + three-valued verify) are
-  covered line-for-line (the module sits at **99%**), and the 0.10.0 **scenes**
+  covered line-for-line (the module sits at **99%**), the 0.10.0 **scenes**
   surface in `core/scenes.py` is fully exercised by
-  `test_scenes.py` + `test_cli_scenes_paths.py`; the CLI layer
+  `test_scenes.py` + `test_cli_scenes_paths.py`, and the 0.11.0 **selective
+  voice-history clear** in `core/activity.py` by `test_activity.py` +
+  `test_cli_activity_clear_paths.py`; the CLI layer
   (`alexa_cli.py`) ~95%, the REPL skin ~97%.
 - Lint (`ruff check`), format (`ruff format --check`) and bandit (-ll): clean.
 
@@ -141,6 +143,27 @@ Workflow coverage: the apply path is asserted to feed the **planned** payload
 verbatim into `apply_update`/`create_notification` (the dry-run and the
 `--yes` run are the same plan), and the verify re-read pins the final `ok`.
 
+- `tests/test_activity.py` — plus the 0.11.0 **selective clear** layer:
+  `parse_ids` (comma/whitespace splitting, order-preserving dedupe, refusal of
+  an empty selection), `id_preview_rows` (ids-only previews never guess),
+  `plan_clear` (filter selection reusing the `activity history` predicates,
+  id-less rows never selected, explicit ids overriding, empty selection as a
+  valid answer), `delete_envelope` (three-valued per-id verdict: 200 → True,
+  404 → False, anything else/no answer → `None`), `selective_clear_summary`
+  (clean / refused-with-the-app-remedy / unconfirmed-with-the-
+  re-check-with-`records` remedy / mixed), and the async pair against a fake:
+  `delete_activities` sends one URL-quoted `DELETE /api/activities/<id>` per
+  id, `apply_clear` executes a plan and reports nothing extra.
+- `tests/test_cli_activity_clear_paths.py` — the selective `activity clear`
+  CLI contract: the bulk path unchanged (preview needs no fetch; `--yes`
+  still routes to `clear_history`), every mode conflict refused **before**
+  `--login` (`--items` vs selective, `--ids` vs `--device/--contains`,
+  `--limit` without a filter, an empty `--ids`), the ids preview that never
+  fetches, the filter preview that fetches but never deletes (pass-through
+  `--limit`, default 100), preview → `--yes` executing **exactly the ids the
+  preview advertised**, device+contains combined, "nothing matched" reported
+  rather than deleted-into, partial refusal / unconfirmation reporting, and
+  the companion filter options on `activity records`.
 - `tests/test_lists.py` — the `lists` surface's pure half (list/item row
   flattening, `find_list`/`resolve_item` with ambiguity refusal, the
   add/update payload builders, `add_verify_summary`'s three-valued report)

@@ -224,12 +224,20 @@ Every command takes `--json`.
   (`customer-history-records`) — the only feed carrying both halves. `--hours` is
   a real query window. `DEVICE_ARBITRATION` rows (multi-Echo wake-word races) are
   dropped unless `--include-noise`. Read-only.
-- `activity records [--limit N]` — the legacy `/api/activities` feed; keeps the
-  per-activity **ids** and status the privacy view drops.
+- `activity records [--limit N] [--device ...] [--contains ...]` — the legacy
+  `/api/activities` feed; keeps the per-activity **ids** and status the privacy
+  view drops. The filters are the way to pick ids before a selective clear.
 - `activity last [--limit N]` — the last Echo that answered and what it was asked.
 - `activity clear [--items N]` (`--yes`) — **irreversible** deletion of recent
   voice recordings. When Amazon refuses an entry (404, nothing to delete) the
   result reports the clear as **partial**, never as clean.
+- `activity clear --device <name> --contains <text> --ids <id,...>` (`--yes`) —
+  **selective** delete: only one Echo's recordings, only matching text, or only
+  explicit ids. Mutually exclusive with `--items`. Filtered runs fetch the feed
+  (`--limit`, default 100) and preview the exact rows first; `--ids` deletes
+  verbatim. `cleared` is true only when every id is confirmed deleted — a
+  refused id (404) and an unanswered id get separate lists and separate
+  remedies.
 
 ## Safety
 All mutating commands are **dry-run-by-default and require `--yes`**. Unofficial

@@ -334,7 +334,7 @@ def test_activity_records_passes_the_limit_through():
     ):
         result = _invoke(["--json", "activity", "records", "--limit", "3"])
     assert result.exit_code == 0
-    assert stub.call_args.kwargs == {"limit": 3}
+    assert stub.call_args.kwargs == {"limit": 3, "device": None, "contains": None}
 
 
 def test_activity_last_reports_the_answering_echo():

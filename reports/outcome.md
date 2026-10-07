@@ -305,3 +305,43 @@ Tests: **1613 → 1679** (+66: 40 unit in `test_smarthome.py`, 13 CLI paths +
 3 workflows in `test_cli_smarthome_paths.py`). Coverage holds at **97.2%**
 (gate ≥87). All gates green: pytest, ruff check, ruff format, bandit (-ll, 0
 findings).
+
+---
+
+# Refine Outcome 5 (v0.11.0) — selective voice-history deletion
+
+## Summary
+
+One coherent gap closed: `activity clear` could delete only the **N most
+recent** recordings as a block, while the endpoint underneath is a **per-id**
+`DELETE /api/activities/<id>` — the same id the legacy feed already carries.
+The actual privacy use case (wipe one Echo's recordings, wipe one utterance)
+was unexpressed. The bulk path is unchanged; the selective modes are added
+alongside it, and `activity records` gained the same filters so the ids can be
+listed first.
+
+| Command | change |
+| --- | --- |
+| `activity clear --items N` | unchanged (block delete of the N most recent) |
+| `activity clear --device <name> --contains <text> [--limit N]` | NEW — selective filter clearing (combinable; fetch default 100) |
+| `activity clear --ids <id,...>` | NEW — explicit ids, no fetch |
+| `activity records --device/--contains` | NEW options — same client-side filters |
+
+Design notes worth keeping:
+
+- Mode conflicts (`--items` vs selective, `--ids` vs filters, `--limit`
+  without a filter, empty `--ids`) are refused **before** `_login`; the
+  selection is built once (`plan_clear`, pure, reusing `filter_rows`) so the
+  previewed rows are what `--yes` deletes.
+- Per-id verdicts are **three-valued** (`delete_envelope`): 200 → deleted,
+  404 → refused with the app-side remedy, anything else/no answer →
+  unconfirmed — `cleared` is true only when every id confirmed.
+- "Nothing matched" is reported (`matching: 0`, nothing sent), not an error.
+- The per-id loop mirrors alexapy's own `clear_history` internals (including
+  the URL-quote), so selective deletion behaves identically at the wire.
+
+Tests: **1731 → 1776** (+45: pure + faked-AlexaAPI wrapper tests appended to
+`test_activity.py`; CLI paths + preview→`--yes` workflows in the new
+`tests/test_cli_activity_clear_paths.py`). One expectation updated for the new
+`activity records` filter kwargs — no test weakened. `core/activity.py`
+coverage stays **100%**; total **97.3%**. All four gate legs green.

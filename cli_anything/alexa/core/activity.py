@@ -30,6 +30,16 @@ Four things are worth knowing before extending this module:
 * **The window is a query parameter, not a filter.**  The privacy endpoint
   takes ``startTime``/``endTime``; :func:`history_window` computes them from a
   simple ``--hours`` so the value is pure and testable with an injected ``now``.
+* **Selective delete, not just bulk.**  ``clear_history`` reaches only the N
+  most recent records as a block; the underlying endpoint is a **per-id**
+  ``DELETE /api/activities/<id>`` — the same id the legacy feed carries — so
+  exactly the recordings meant can be named: only one Echo's, only one
+  utterance's.  :func:`plan_clear` selects them from fetched rows (reusing
+  :func:`filter_rows`), :func:`delete_activities` deletes **one id per
+  request** (mirroring alexapy's own per-id loop) and
+  :func:`selective_clear_summary` reports the result **three-valued** —
+  ``True`` deleted, ``False`` (404: no recording behind that id), ``None``
+  (Amazon did not answer) — never a quiet pass.
 * **``clear_history`` deletes real recordings.**  It is irreversible and
   Amazon refuses some entries with a 404 (nothing to delete) — alexapy returns
   ``False`` when that happened, which :func:`clear_summary` reports rather than
@@ -54,6 +64,11 @@ DEFAULT_HISTORY_LIMIT = 20
 #: Utterance types that are device housekeeping rather than a user turn — the
 #: same one alexapy's ``get_last_device_serial`` skips.
 NOISE_UTTERANCE_TYPES = frozenset({"DEVICE_ARBITRATION"})
+
+#: Records fetched to select from when clearing by filter.  The legacy feed
+#: takes its size in one request and the selection is client-side, so this
+#: fetch IS the deletion pool — kept visibly wide and widened with ``--limit``.
+DEFAULT_CLEAR_LIMIT = 100
 
 
 # ── pure helpers ─────────────────────────────────────────────────────────
@@ -291,6 +306,111 @@ def clear_summary(result: Any, requested: int) -> dict[str, Any]:
     return row
 
 
+# ── selective clear (per-id deletion) ───────────────────────────────────
+
+
+def parse_ids(raw: str) -> list[str]:
+    """Comma/whitespace separated activity ids → cleaned list (pure).
+
+    Duplicates are dropped order-preserving.  An empty result raises rather
+    than silently selecting nothing, mirroring :func:`normalize_limit`.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("no ids given — pass --ids <id[,id...]>")
+    ids: list[str] = []
+    for token in raw.replace(",", " ").split():
+        token = token.strip()
+        if token and token not in ids:
+            ids.append(token)
+    if not ids:
+        raise ValueError("no ids given — pass --ids <id[,id...]>")
+    return ids
+
+
+def id_preview_rows(ids: list[str]) -> list[dict[str, Any]]:
+    """Preview rows for explicitly-supplied ids (pure).
+
+    Only the ids are known — the CLI never fetches for an ``--ids`` clear —
+    so every other cell stays ``None`` instead of being guessed.
+    """
+    return [
+        {"id": aid, "time": None, "device": None, "utterance": None, "status": None}
+        for aid in ids or []
+    ]
+
+
+def plan_clear(
+    rows: list[dict[str, Any]] | None,
+    device: str | None = None,
+    contains: str | None = None,
+    ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Select the records a selective ``activity clear`` will delete (pure).
+
+    ``ids`` (explicit activity ids) short-circuits the fetch/filters.  With
+    ``device``/``contains`` the fetched legacy rows are filtered client-side
+    with :func:`filter_rows` — the same predicates ``activity history`` uses —
+    and only rows that carry an id can be selected.
+
+    Returns ``{"ids": [...], "rows": [...]}``` — the plan.  An empty selection
+    is a VALID answer ("nothing matched"), the CLI reports it rather than
+    treating it as an error; the caller aborts, never the planner.
+    """
+    if ids is not None:
+        picked = list(ids)
+        return {"ids": picked, "rows": id_preview_rows(picked)}
+    selected = [r for r in filter_rows(rows or [], device=device, contains=contains) if r.get("id")]
+    return {"ids": [r["id"] for r in selected], "rows": selected}
+
+
+def delete_envelope(response: Any) -> bool | None:
+    """One ``DELETE /api/activities/<id>`` answer → three-valued ``deleted`` (pure).
+
+    ``True`` (200 — the recording is gone), ``False`` (404 — Amazon says there
+    is nothing to delete, the case alexapy logs), ``None`` (no answer, or any
+    other status — "unconfirmed", never a quiet pass).
+    """
+    if response is None:
+        return None
+    status = getattr(response, "status", None)
+    if status == 200:
+        return True
+    if status == 404:
+        return False
+    return None
+
+
+def selective_clear_summary(entries: list[dict[str, Any]], requested: int) -> dict[str, Any]:
+    """Summarise a selective clear (pure) — never a quiet pass.
+
+    ``cleared`` is True only when EVERY id reported deleted.  A refused id
+    (404) and an unanswered id (``None``) are each their own list with their
+    own remedy, because they mean different things: one is gone from Amazon's
+    ledger already, the other might still exist somewhere between us.
+    """
+    deleted = [e.get("id") for e in entries or [] if e.get("deleted") is True]
+    refused = [e for e in entries or [] if e.get("deleted") is False]
+    unconfirmed = [e.get("id") for e in entries or [] if e.get("deleted") is None]
+    row: dict[str, Any] = {"requested": len(entries or []) or requested, "deleted": len(deleted)}
+    row["cleared"] = not refused and not unconfirmed
+    notes: list[str] = []
+    if refused:
+        row["refused"] = [{"id": e.get("id"), "status": e.get("status")} for e in refused]
+        notes.append(
+            "Amazon refused at least one id (no recording behind it); "
+            "remove those manually in the Alexa app"
+        )
+    if unconfirmed:
+        row["unconfirmed"] = unconfirmed
+        notes.append(
+            "Amazon did not answer every delete; those may still exist — "
+            "re-check with `activity records`"
+        )
+    if notes:
+        row["hint"] = "; ".join(notes)
+    return row
+
+
 # ── live operations ──────────────────────────────────────────────────────
 
 
@@ -328,8 +448,18 @@ async def voice_history(
     return filter_rows(rows, device=device, contains=contains, include_noise=include_noise)
 
 
-async def activity_records(login, limit: Any = DEFAULT_HISTORY_LIMIT) -> list[dict[str, Any]]:
-    """The legacy ``/api/activities`` feed, with ids (network)."""
+async def activity_records(
+    login,
+    limit: Any = DEFAULT_HISTORY_LIMIT,
+    device: str | None = None,
+    contains: str | None = None,
+) -> list[dict[str, Any]]:
+    """The legacy ``/api/activities`` feed, with ids (network).
+
+    ``device``/``contains`` apply the same client-side filters as
+    ``activity history`` — the natural way to pick out the ids a selective
+    ``activity clear`` will then delete.
+    """
     from alexapy import AlexaAPI
 
     from cli_anything.alexa.core.devices_meta import fetch_devices
@@ -337,7 +467,7 @@ async def activity_records(login, limit: Any = DEFAULT_HISTORY_LIMIT) -> list[di
     count = normalize_limit(limit)
     payload = await AlexaAPI.get_activities(login, items=count)
     devices = await fetch_devices(login)
-    return activity_rows(payload, devices)
+    return filter_rows(activity_rows(payload, devices), device=device, contains=contains)
 
 
 async def last_command(login, limit: Any = DEFAULT_HISTORY_LIMIT) -> dict[str, Any]:
@@ -359,3 +489,39 @@ async def clear_history(login, items: Any = 50) -> dict[str, Any]:
     count = normalize_limit(items, default=50)
     result = await AlexaAPI.clear_history(login, items=count)
     return clear_summary(result, count)
+
+
+async def delete_activities(login, ids: list[str]) -> list[dict[str, Any]]:
+    """``DELETE /api/activities/<id>`` once per id (network).
+
+    Mirrors alexapy's own per-id delete loop (including the URL-quoted id) so
+    a selective clear behaves identically to the bulk one at the wire — the
+    per-id bookkeeping is ours.
+    """
+    from urllib.parse import quote_plus
+
+    from alexapy import AlexaAPI
+
+    entries: list[dict[str, Any]] = []
+    for aid in ids:
+        response = await AlexaAPI._static_request(
+            "delete", login, f"/api/activities/{quote_plus(aid)}"
+        )
+        entries.append(
+            {
+                "id": aid,
+                "deleted": delete_envelope(response),
+                "status": getattr(response, "status", None) if response is not None else None,
+            }
+        )
+    return entries
+
+
+async def apply_clear(login, plan: dict[str, Any]) -> dict[str, Any]:
+    """Execute a planned selective clear (network) — the plan's ids, no others.
+
+    The plan is built once (in the CLI, from the same fetched rows the preview
+    showed), so the thing reviewed is the thing deleted.
+    """
+    ids = plan.get("ids") or []
+    return selective_clear_summary(await delete_activities(login, ids), requested=len(ids) or 0)
