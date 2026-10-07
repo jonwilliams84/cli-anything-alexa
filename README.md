@@ -258,9 +258,9 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `run skill <amzn1.ask.skill...> [--device ...]` | Launch a skill by id (`--yes` to execute) |
 | `run catalog [--kind sequences\|sounds]` | List the known sequences / sound aliases (no account needed) |
 | `activity history [--limit N] [--hours N] [--device ...] [--contains ...]` | Recent voice turns: what was said and what Alexa replied |
-| `activity records [--limit N]` | The legacy activity feed (carries per-activity ids + status) |
+| `activity records [--limit N] [--device ...] [--contains ...]` | The legacy activity feed (carries per-activity ids + status); filters help pick ids for a selective clear |
 | `activity last [--limit N]` | The last Echo that answered, and what it was asked |
-| `activity clear [--items N]` | Delete recent voice recordings — irreversible (`--yes` to execute) |
+| `activity clear [--items N]` / `activity clear --device ... --contains ...` / `activity clear --ids <id,...>` | Delete voice recordings — bulk N-recent, or selectively by Echo/text/ids; preview first, `--yes` to execute; irreversible |
 | `repl` | Interactive shell (default when no subcommand) |
 
 ### Prune housekeeping
@@ -490,8 +490,12 @@ behaviour node; omit it and alexapy's own per-call default (0 for text/skills,
 cli-anything-alexa activity history --hours 2 --json            # transcript + Alexa's reply
 cli-anything-alexa activity history --device "Kitchen Echo" --contains lights
 cli-anything-alexa activity records --limit 50                  # legacy feed, has ids
+cli-anything-alexa activity records --device "Kitchen Echo"     # same, filtered — ids for a selective clear
 cli-anything-alexa activity last                                # who answered last
-cli-anything-alexa activity clear --items 20 --yes              # irreversible
+cli-anything-alexa activity clear --items 20 --yes              # bulk: the 20 most recent — irreversible
+cli-anything-alexa activity clear --device "Kitchen Echo" --yes # selective: only that Echo's recordings
+cli-anything-alexa activity clear --contains "weather" --yes    # selective: only turns matching text
+cli-anything-alexa activity clear --ids act-1,act-2 --yes       # selective: explicit ids from `activity records`
 ```
 
 `activity history` uses the privacy view
@@ -502,6 +506,19 @@ records when several Echos hear the same "Alexa" — are dropped unless you pass
 `--include-noise`. `activity clear` deletes real recordings; when Amazon refuses
 an entry (a 404: nothing to delete) the result reports the clear as **partial**
 rather than clean.
+
+**Selective `activity clear` (v0.11.0).** `--items` deletes only the N *most
+recent* as a block; the underlying endpoint is a per-id
+`DELETE /api/activities/<id>`, so the same ids `activity records` carries can name
+exactly the recordings meant. `--device`/`--contains` (combinable) fetch the
+legacy feed (`--limit`, default 100) and preview the matching rows; `--ids`
+deletes ids verbatim without a fetch. Selective modes and `--items` are mutually
+exclusive. Every selective run builds ONE plan — the preview is what `--yes`
+deletes — and an empty match is reported as "nothing deleted", not an error.
+Each id is deleted with its own request and the result is **three-valued**:
+`cleared: true` only when every id is confirmed gone; a refused id (404 — no
+recording behind it) and an unanswered id get separate lists with their own
+remedies, because an unconfirmed id may still exist.
 
 ### Media & voice on Echo devices
 

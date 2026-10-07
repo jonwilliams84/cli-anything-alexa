@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.11.0] — 2026-10-07
+
+### Added — selective voice-history deletion (`activity clear --device/--contains/--ids`, filters on `activity records`)
+
+`activity clear` could previously delete only the N *most recent* recordings
+as a block. But the endpoint underneath is a **per-id**
+`DELETE /api/activities/<id>` — the same activity id the legacy feed already
+carries — so the deletion can be named exactly, and the actual privacy use
+case ("wipe this Echo's recordings", "wipe every turn about X") was unexpressed.
+The bulk block stays; the selective modes are added alongside it:
+
+New `activity` coverage (`--json` throughout):
+
+| Command | Wraps | Notes |
+| --- | --- | --- |
+| `activity clear --items N` | `AlexaAPI.clear_history` | unchanged bulk behaviour |
+| `activity clear --device <name> [--contains <text>]` | `get_activities` + one `DELETE /api/activities/<id>` per id | fetches the legacy feed (`--limit`, default 100), selects with the **same client-side predicates** `activity history` uses, previews the exact rows |
+| `activity clear --contains <text>` | same | text-only selective |
+| `activity clear --ids <id[,id...]>` | one `DELETE /api/activities/<id>` per id | explicit ids (from `activity records`), fetched records are not re-read |
+| `activity records [--device ...] [--contains ...]` | `get_activities` | the same filters, so the ids a selective clear will delete can be listed first |
+
+Three conventions carried over from the lock/thermostat/scene surfaces:
+
+* **One plan: the preview is the execution.** A selective run builds its
+  selection once (`plan_clear`) — the rows the dry-run shows are the rows
+  `--yes` deletes. All mode validation (`--items` is bulk-only; `--ids` is
+  exclusive with the filters; `--limit` needs filters; an empty `--ids`)
+  happens **before** `_login`, so bad input fails identically with and
+  without `--yes`.
+* **Deletions are three-valued per id.** 200 → deleted; **404 → refused**
+  ("no recording behind that id — remove it manually in the Alexa app");
+  anything else / no answer → **unconfirmed** (`deleted: null` — the id may
+  still exist; re-check with `activity records`). `cleared` is true only when
+  every id is confirmed gone — never a quiet pass.
+* **Nothing matched is an answer, not an error.** An empty selection reports
+  `matching: 0 / deleted: 0` and deletes nothing, instead of failing.
+
+Tests: 1731 → **1776** (+45: pure + wrapper tests appended to
+`test_activity.py`, CLI paths + preview→`--yes`→per-id-DELETE workflows in the
+new `tests/test_cli_activity_clear_paths.py`). One pre-existing expectation
+was updated for the `activity records` filter parameters — no test weakened.
+Coverage holds at **97.3%** (gate ≥87% unchanged). Version bumped 0.10.0 →
+**0.11.0** (by the release runner).
+
 ## [0.10.0] — 2026-09-30
 
 ### Added — smart-home scenes (`scenes list` / `scenes activate`)

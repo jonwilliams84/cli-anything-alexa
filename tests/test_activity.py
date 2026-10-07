@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -475,3 +476,130 @@ def test_clear_history_validates_the_count_before_deleting_anything():
     with patch("alexapy.AlexaAPI", fake_cls), pytest.raises(ValueError, match="at least 1"):
         _run(activity.clear_history(MagicMock(), items=0))
     fake_cls.clear_history.assert_not_awaited()
+
+
+# ── selective clear: pure layer ──────────────────────────────────────────
+
+
+def _legacy_rows():
+    return [
+        {"time": "t1", "device": "Kitchen Echo", "utterance": "what's the weather", "status": "SUCCESS", "id": "act-1"},
+        {"time": "t2", "device": "Study Dot", "utterance": "set a timer", "status": "SUCCESS", "id": "act-2"},
+        {"time": "t3", "device": "Kitchen Echo", "utterance": "play the news", "status": "SUCCESS", "id": "act-3"},
+        {"time": "t4", "device": "Kitchen Echo", "utterance": "no id row — not deletable", "status": "SUCCESS", "id": None},
+    ]
+
+
+def test_parse_ids_splits_commas_and_whitespace():
+    assert activity.parse_ids("a, b c,d") == ["a", "b", "c", "d"]
+
+
+def test_parse_ids_dedupes_order_preserving():
+    assert activity.parse_ids("b, a, b") == ["b", "a"]
+
+
+@pytest.mark.parametrize("bad", ["", "   ", ",", " , , "])
+def test_parse_ids_refuses_an_empty_selection(bad):
+    with pytest.raises(ValueError, match="no ids given"):
+        activity.parse_ids(bad)
+
+
+def test_parse_ids_refuses_a_non_string():
+    with pytest.raises(ValueError, match="no ids given"):
+        activity.parse_ids(None)
+
+
+def test_id_preview_rows_names_only_what_is_known():
+    (row,) = activity.id_preview_rows(["act-1"])
+    assert row == {"id": "act-1", "time": None, "device": None, "utterance": None, "status": None}
+
+
+def test_id_preview_rows_of_nothing_is_empty():
+    assert activity.id_preview_rows([]) == []
+
+
+def test_plan_clear_selects_by_device_substring():
+    plan = activity.plan_clear(_legacy_rows(), device="Kitchen")
+    assert plan["ids"] == ["act-1", "act-3"]  # the id-less row is never selected
+
+
+def test_plan_clear_selects_by_text():
+    plan = activity.plan_clear(_legacy_rows(), contains="timer")
+    assert plan["ids"] == ["act-2"]
+
+
+def test_plan_clear_combines_device_and_contains():
+    plan = activity.plan_clear(_legacy_rows(), device="study", contains="news")
+    assert plan["ids"] == []
+
+
+def test_plan_clear_of_nothing_is_a_valid_empty_selection():
+    assert activity.plan_clear(None, device="Gone") == {"ids": [], "rows": []}
+
+
+def test_plan_clear_explicit_ids_skip_the_filters():
+    plan = activity.plan_clear(None, ids=["act-9", "act-1"])
+    assert plan["ids"] == ["act-9", "act-1"]
+    assert [r["id"] for r in plan["rows"]] == ["act-9", "act-1"]
+
+
+def test_delete_envelope_is_three_valued():
+    ok = SimpleNamespace(status=200)
+    dead = SimpleNamespace(status=404)
+    other = SimpleNamespace(status=500)
+    assert activity.delete_envelope(ok) is True
+    assert activity.delete_envelope(dead) is False
+    assert activity.delete_envelope(other) is None
+    assert activity.delete_envelope(None) is None
+
+
+def test_selective_clear_summary_reports_a_clean_clear():
+    entries = [{"id": "a", "deleted": True, "status": 200}, {"id": "b", "deleted": True, "status": 200}]
+    row = activity.selective_clear_summary(entries, requested=2)
+    assert row == {"requested": 2, "deleted": 2, "cleared": True}
+
+
+def test_selective_clear_summary_reports_refusals_with_the_remedy(status=404):
+    entries = [{"id": "a", "deleted": True, "status": 200}, {"id": "b", "deleted": False, "status": 404}]
+    row = activity.selective_clear_summary(entries, requested=2)
+    assert row["requested"] == 2
+    assert row["deleted"] == 1
+    assert row["cleared"] is False
+    assert row["refused"] == [{"id": "b", "status": 404}]
+    assert "manually in the Alexa app" in row["hint"]
+
+
+def test_selective_clear_summary_reports_unanswered_deletes_as_unconfirmed():
+    entries = [{"id": "a", "deleted": None, "status": None}]
+    row = activity.selective_clear_summary(entries, requested=1)
+    assert row["cleared"] is False
+    assert row["unconfirmed"] == ["a"]
+    assert "activity records" in row["hint"]
+
+
+def test_selective_clear_summary_handles_mixed_and_nothing():
+    entries = [{"id": "a", "deleted": True, "status": 200}, {"id": "b", "deleted": False, "status": 404}, {"id": "c", "deleted": None, "status": None}]
+    row = activity.selective_clear_summary(entries, requested=3)
+    assert row["deleted"] == 1
+    assert row["refused"] == [{"id": "b", "status": 404}]
+    assert row["unconfirmed"] == ["c"]
+    both = activity.selective_clear_summary([], requested=0)
+    assert both == {"requested": 0, "deleted": 0, "cleared": True}
+
+
+# ── selective clear: live operations ─────────────────────────────────────
+
+
+def _delete_fake(results):
+    """Fake AlexaAPI whose _static_request pops a response per DELETE call."""
+    from types import SimpleNamespace
+
+    fake_cls = MagicMock()
+    calls = []
+
+    async def static_request(method, login, path, *a, **kw):
+        calls.append(path)
+        return results[len(calls) - 1]
+
+    fake_cls._static_request = AsyncMock(side_effect=static_request)
+    fake_cls.calls = calls

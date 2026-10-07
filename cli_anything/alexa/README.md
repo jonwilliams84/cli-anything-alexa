@@ -168,9 +168,9 @@ Every command supports a global `--json` flag for machine-readable output.
 | `run skill <amzn1.ask.skill...> [--device ...]` | Launch a skill by id (`--yes` to execute) |
 | `run catalog [--kind sequences\|sounds]` | List the known sequences / sound aliases (no account needed) |
 | `activity history [--limit N] [--hours N] [--device ...] [--contains ...]` | Recent voice turns: what was said and what Alexa replied |
-| `activity records [--limit N]` | Legacy activity feed (carries per-activity ids + status) |
+| `activity records [--limit N] [--device ...] [--contains ...]` | Legacy activity feed (carries per-activity ids + status); filters help pick ids for a selective clear |
 | `activity last [--limit N]` | The last Echo that answered, and what it was asked |
-| `activity clear [--items N]` | Delete recent voice recordings — irreversible (`--yes` to execute) |
+| `activity clear [--items N]` / `activity clear --device/--contains/--ids` | Delete voice recordings — bulk N-recent or selective by Echo/text/ids; preview first, `--yes` to execute; irreversible |
 | `repl` | Interactive shell (default when no subcommand) |
 
 ### Media & voice on Echo devices
@@ -216,8 +216,11 @@ friendly **name** is refused locally with the alternatives, because the API
 answers an unknown sequence with a generic failure. `--queue-delay` batches
 commands into one behaviour node; omitted, alexapy's own per-call default applies.
 `activity history` drops `DEVICE_ARBITRATION` wake-word races unless
-`--include-noise`; `activity clear` is irreversible and reports a **partial**
-clear when Amazon refuses an entry.
+`--include-noise`. `activity clear` is irreversible and reports a **partial**
+clear when Amazon refuses an entry; **selectively** (`--device`/`--contains`
+over the fetched feed, or explicit `--ids`) it previews the exact matching
+records first and reports per-id three-valued results — `cleared` is true only
+when every id is confirmed deleted.
 
 ### Bluetooth on an Echo
 

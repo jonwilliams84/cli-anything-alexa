@@ -44,7 +44,7 @@ def _resolve_version() -> str:
     try:
         return _pkg_version("cli-anything-alexa")
     except PackageNotFoundError:
-        return "0.3.0+unknown"
+        return "0.11.0+unknown"
 
 
 __version__ = _resolve_version()
@@ -2990,15 +2990,23 @@ def activity_history(ctx, limit, hours, device, contains, include_noise):
 
 @activity.command("records")
 @click.option("--limit", default=None, help="Activities to fetch")
+@click.option("--device", default=None, help="Only activities from an Echo with this name")
+@click.option("--contains", default=None, help="Only activities whose text matches")
 @click.pass_context
-def activity_records(ctx, limit):
+def activity_records(ctx, limit, device, contains):
     """Show the legacy activity feed (carries per-activity ids and status)."""
     try:
         count = activity_core.normalize_limit(limit)
     except ValueError as exc:
         _abort(str(exc))
     login = _login(ctx)
-    emit(ctx, _run(ctx, activity_core.activity_records(login, limit=count)))
+    emit(
+        ctx,
+        _run(
+            ctx,
+            activity_core.activity_records(login, limit=count, device=device, contains=contains),
+        ),
+    )
 
 
 @activity.command("last")
@@ -3016,27 +3024,93 @@ def activity_last(ctx, limit):
 
 @activity.command("clear")
 @click.option("--items", default=None, help="How many recent recordings to delete (default 50)")
+@click.option("--device", default=None, help="Selective: only records from an Echo with this name")
+@click.option("--contains", default=None, help="Selective: only records whose text matches")
+@click.option(
+    "--ids",
+    default=None,
+    help="Selective: explicit activity ids (comma-separated, from `activity records`)",
+)
+@click.option(
+    "--limit",
+    default=None,
+    help=f"Records fetched to filter over (default {activity_core.DEFAULT_CLEAR_LIMIT})",
+)
 @click.option("--yes", is_flag=True, default=False, help="Required to execute")
 @click.pass_context
-def activity_clear(ctx, items, yes):
-    """Delete recent voice recordings — irreversible."""
+def activity_clear(ctx, items, device, contains, ids, limit, yes):
+    """Delete voice recordings — irreversible.
+
+    Three modes, mutually exclusive. Default (or --items N): the N most
+    recent, as a block. Filter-based clearing (--device / --contains): fetches
+    the legacy feed and previews EXACTLY the matching records before anything
+    is deleted. Explicit (--ids): delete only the ids you name.
+    """
+    # Validate BEFORE _login so bad input fails identically with and without --yes.
+    filtered = device is not None or contains is not None
+    ids_given = ids is not None
+    selective = filtered or ids_given
+    if selective and items is not None:
+        _abort("--items is bulk-only; a selective clear uses --device/--contains/--ids")
+    if ids_given and filtered:
+        _abort(
+            "--ids already names exact records — drop --device/--contains, "
+            "or list candidates with `activity records`"
+        )
+    if limit is not None and not filtered:
+        _abort("--limit only applies to a filter-based selective clear (--device/--contains)")
+    if not selective:
+        try:
+            count = activity_core.normalize_limit(items, default=50)
+        except ValueError as exc:
+            _abort(str(exc))
+        login = _login(ctx)
+        if not yes:
+            emit(
+                ctx,
+                {
+                    "dry_run": True,
+                    "would_delete": count,
+                    "irreversible": True,
+                    "hint": "re-run with --yes to execute",
+                },
+            )
+            return
+        emit(ctx, _run(ctx, activity_core.clear_history(login, items=count)))
+        return
+    # Selective: build ONE plan; the previewed selection is what --yes deletes.
     try:
-        count = activity_core.normalize_limit(items, default=50)
+        parsed_ids = activity_core.parse_ids(ids) if ids_given else None
     except ValueError as exc:
         _abort(str(exc))
+    count = None
+    if parsed_ids is None:
+        try:
+            count = activity_core.normalize_limit(limit, default=activity_core.DEFAULT_CLEAR_LIMIT)
+        except ValueError as exc:
+            _abort(str(exc))
     login = _login(ctx)
+    if parsed_ids is not None:
+        plan = activity_core.plan_clear([], ids=parsed_ids)
+    else:
+        rows = _run(ctx, activity_core.activity_records(login, limit=count))
+        plan = activity_core.plan_clear(rows, device=device, contains=contains)
+    if not plan["ids"]:
+        emit(ctx, {"matching": 0, "deleted": 0, "hint": "nothing matched; nothing was deleted"})
+        return
     if not yes:
         emit(
             ctx,
             {
                 "dry_run": True,
-                "would_delete": count,
+                "would_delete": plan["ids"],
+                "rows": plan["rows"],
                 "irreversible": True,
-                "hint": "re-run with --yes to execute",
+                "hint": "irreversible — re-run with --yes to delete exactly these records",
             },
         )
         return
-    emit(ctx, _run(ctx, activity_core.clear_history(login, items=count)))
+    emit(ctx, _run(ctx, activity_core.apply_clear(login, plan)))
 
 
 # ──────────────────────────────────────────────────────── REPL
