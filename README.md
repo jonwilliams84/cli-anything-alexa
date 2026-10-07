@@ -663,6 +663,23 @@ parsed from `/api/behaviors/v2/automations`.
 > action-less), and the `/api/behaviors/v2/automations` read goes **stale** so
 > you can't even trust it to verify. This CLI therefore **list**s and
 > **trigger**s routines but does not edit them.
+>
+> **Re-probed 2026-10-07 (create/update/delete still not scriptable):**
+> - REST writes are closed: `POST /api/behaviors/automations` and
+>   `/api/behaviors/v2/automations` return **401** with the CSRF header, and also
+>   with the app's OAuth access token as `x-amz-access-token` or `Bearer`.
+> - GraphQL `batchCreateAutomations(ScriptedAutomationInput{type: ROUTINE,
+>   settings})` answers `INTERNAL_FRAMEWORK_FAILURE` for every `settings` shape
+>   tried (the legacy automation object, the same as a JSON string, wrapped in
+>   `{"automation": …}`, `sequenceJson`, empty id), with or without the token.
+>   The format is undocumented; the Alexa app's own bundle is the only source.
+> - Reads that DO work: `GET /api/behaviors/automations/<automationId>` (no `v2`)
+>   returns one routine in full; GraphQL `automations(input:{filter:{types:[ROUTINE]},
+>   limit:<=20, includeSourceCode:true})` needs an `Accept-Language` header (the
+>   `locale` input is ignored) and returns `Routine` objects without `settings`.
+> - A routine's light actions usually target **groups**
+>   (`virtual@LIGHT@<customer>` + `filter.groupId`, or the group id itself), so
+>   "make routine X also switch device Y" is often a `groups add`, not an edit.
 
 ### Alarms, timers & reminders
 
