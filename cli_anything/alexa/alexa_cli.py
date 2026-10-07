@@ -1834,7 +1834,10 @@ def _groups_member_update(
             },
         )
         return
-    emit(ctx, _run(ctx, groups_core.update_group(login, gid, member_ids, operation, child_ids)))
+    result = _run(ctx, groups_core.update_group(login, gid, member_ids, operation, child_ids))
+    emit(ctx, result)
+    if not result.get("verified", True):
+        _abort(f"group update not fully applied (re-read shows): {result.get('unapplied')}")
 
 
 @groups.command("add")

@@ -327,6 +327,50 @@ async def create_group(
     return out
 
 
+def split_update(
+    member_ids: list[str],
+    operation: str,
+    child_group_ids: list[str] | None = None,
+) -> list[tuple[list[str], list[str]]]:
+    """Plan updateDeviceGroup calls as ``(member_ids, child_group_ids)`` pairs (pure).
+
+    ADD and REMOVE go ONE id per call. Proven live 2026-10-07: a REMOVE carrying
+    five member ids removed only the FIRST and still answered
+    ``UpdateDeviceGroupsResponse``, so a multi-id delta silently half-applies.
+    REPLACE sets the whole membership and stays a single call.
+    """
+    members = list(member_ids or [])
+    children = list(child_group_ids or [])
+    if (operation or "").upper() == "REPLACE" or len(members) + len(children) <= 1:
+        return [(members, children)]
+    return [([m], []) for m in members] + [([], [c]) for c in children]
+
+
+def unapplied(
+    group: dict[str, Any] | None,
+    member_ids: list[str],
+    child_group_ids: list[str] | None,
+    operation: str,
+) -> dict[str, list[str]]:
+    """Which requested ids the group's re-read membership does NOT reflect (pure).
+
+    ADD/REPLACE: requested ids missing from the group. REMOVE: requested ids still
+    in it. A missing group counts every id as unapplied.
+    """
+    op = (operation or "").upper()
+    members = {m.get("id") for m in (((group or {}).get("memberDevices") or {}).get("items") or [])}
+    children = {c.get("id") for c in ((group or {}).get("childDeviceGroups") or [])}
+    if op == "REMOVE":
+        bad_m = [i for i in member_ids or [] if i in members]
+        bad_c = [i for i in child_group_ids or [] if i in children]
+    else:
+        bad_m = [i for i in member_ids or [] if i not in members]
+        bad_c = [i for i in child_group_ids or [] if i not in children]
+    if group is None:
+        bad_m, bad_c = list(member_ids or []), list(child_group_ids or [])
+    return {"memberDeviceIds": bad_m, "childDeviceGroupIds": bad_c}
+
+
 async def update_group(
     login,
     group_id: str,
@@ -334,14 +378,29 @@ async def update_group(
     operation: str,
     child_group_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """updateDeviceGroup with an ADD/REMOVE/REPLACE member + child-group operation."""
+    """updateDeviceGroup with an ADD/REMOVE/REPLACE member + child-group operation.
+
+    ADD/REMOVE are sent one id per call (see ``split_update``), then the group is
+    re-read and ``verified`` / ``unapplied`` report what actually changed.
+    """
     variables = build_update_variables(group_id, member_ids, operation, child_group_ids)
-    body = await _graphql(login, _UPDATE_MUTATION, variables)
+    op = variables["in"]["memberDeviceIdsUpdateOperation"]
+    results = []
+    for mids, cids in split_update(member_ids, op, child_group_ids):
+        body = await _graphql(
+            login, _UPDATE_MUTATION, build_update_variables(group_id, mids, op, cids or None)
+        )
+        results.append((body.get("data") or {}).get("updateDeviceGroup"))
+    group = next((g for g in await fetch_groups(login) if g.get("id") == group_id), None)
+    missing = unapplied(group, member_ids, child_group_ids, op)
     out = {
         "deviceGroupId": group_id,
-        "operation": variables["in"]["memberDeviceIdsUpdateOperation"],
+        "operation": op,
         "memberDeviceIds": variables["in"]["memberDeviceIds"],
-        "result": (body.get("data") or {}).get("updateDeviceGroup"),
+        "calls": len(results),
+        "result": results[-1] if results else None,
+        "verified": not (missing["memberDeviceIds"] or missing["childDeviceGroupIds"]),
+        "unapplied": missing,
     }
     if "childDeviceGroupIds" in variables["in"]:
         out["childDeviceGroupIds"] = variables["in"]["childDeviceGroupIds"]
