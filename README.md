@@ -680,6 +680,13 @@ parsed from `/api/behaviors/v2/automations`.
 > - A routine's light actions usually target **groups**
 >   (`virtual@LIGHT@<customer>` + `filter.groupId`, or the group id itself), so
 >   "make routine X also switch device Y" is often a `groups add`, not an edit.
+> - The Alexa app's bundle (com.amazon.dee.app, Hermes `index.bundle.hbc`) shows the app
+>   itself creates/updates routines via REST `POST /api/behaviors/automations` and
+>   `/api/behaviors/automations/{automationId}`, auth added by its native layer. Replaying
+>   that with cookies + csrf + an ADP device signature (`x-adp-token`/`x-adp-signature`,
+>   `SHA256WithRSA:1.0`, HA's registered-device `mac_dms`) still returns **401** on
+>   `alexa.<region>` and 400 on `eu-api-alexa.amazon.com`. Note HA stores that device key as
+>   PKCS#8, so alexapy's own signer (which wraps it as `RSA PRIVATE KEY`) cannot load it.
 
 ### Alarms, timers & reminders
 
