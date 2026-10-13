@@ -63,11 +63,13 @@ Logged in as you@example.com (amazon.co.uk). You're all set — try `cli-anythin
 
 - Open the printed URL **in a browser on the same machine** (the proxy binds
   `127.0.0.1` by default). On a headless box you SSH into, either tunnel the
-  port (`ssh -L 3001:127.0.0.1:3001 host`) or run with `--host 0.0.0.0` and
-  open `http://<that-host>:3001` from your laptop.
+  port (`ssh -L 3001:127.0.0.1:3001 host`) or use a LAN-visible proxy URL:
+  `cli-anything-alexa auth login --host 0.0.0.0 --public-host <that-host-LAN-IP>`.
+  `--public-host` is essential: it is the address AlexaProxy keeps in every
+  post-login redirect, while `0.0.0.0` is only a server bind address.
 - Pick your **region** when prompted (`amazon.co.uk`, `amazon.com`,
   `amazon.de`, …). It's persisted, so you only do this once.
-- Flags: `--email`, `--url <region>`, `--host`, `--port` (default `3001`),
+- Flags: `--email`, `--url <region>`, `--host`, `--public-host`, `--port` (default `3001`),
   `--timeout` (seconds to wait, default 600).
 
 ### 2. Scripted login (headless / CI) — `auth login --password ...`

@@ -285,6 +285,11 @@ def auth_import_pickle(ctx, pickle_path, email, allow_any_path):
     "use 0.0.0.0 to log in from another machine)",
 )
 @click.option(
+    "--public-host",
+    default=None,
+    help="Browser-visible host/IP for proxy redirects (required with --host 0.0.0.0 remotely)",
+)
+@click.option(
     "--port", type=int, default=None, help=f"Proxy port (default {session_core.DEFAULT_PROXY_PORT})"
 )
 @click.option(
@@ -294,7 +299,7 @@ def auth_import_pickle(ctx, pickle_path, email, allow_any_path):
     help="Seconds to wait for the browser login (proxy flow)",
 )
 @click.pass_context
-def auth_login(ctx, email, region, password, otp_secret, host, port, timeout):
+def auth_login(ctx, email, region, password, otp_secret, host, public_host, port, timeout):
     """Log in to Amazon. Guided browser-proxy login by default (recommended).
 
     \b
@@ -361,11 +366,14 @@ def auth_login(ctx, email, region, password, otp_secret, host, port, timeout):
         click.echo("  2. Sign in to Amazon as you normally would (captcha / 2FA")
         click.echo("     are handled by Amazon's own pages).")
         click.echo("  3. When it says you can close the window, you are done.")
-        if phost == session_core.BIND_ALL_HOST:
+        if phost == session_core.BIND_ALL_HOST and public_host:
             click.echo("")
             click.echo(
-                f"  (bound to 0.0.0.0 — from another machine open http://<this-host>:{pport} )"
+                f"  (bound to 0.0.0.0 — remote redirects use http://{public_host}:{pport})"
             )
+        elif phost == session_core.BIND_ALL_HOST:
+            click.echo("")
+            click.echo("  (for another machine, add --public-host <this-host-LAN-IP>)")
         click.echo("")
         click.echo("Waiting for login to complete... (Ctrl-C to cancel)")
 
@@ -377,6 +385,7 @@ def auth_login(ctx, email, region, password, otp_secret, host, port, timeout):
                 config_dir=ctx.obj.get("cookie_dir", session_core.DEFAULT_CONFIG_DIR),
                 host=phost,
                 port=pport,
+                public_host=public_host,
                 timeout=timeout,
                 on_url=on_url,
             )

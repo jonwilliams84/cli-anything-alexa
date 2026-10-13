@@ -50,6 +50,27 @@ def test_run_async_recreates_after_close():
     assert not new_loop.is_closed()
 
 
+def test_shutdown_async_resources_closes_tracked_logins():
+    """Normal CLI exit must close alexapy/aiohttp sessions before its loop."""
+    class _Login:
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    session.shutdown_async_resources()
+    login = _Login()
+    session._LIVE_LOGINS.clear()
+    session._track_login(login)
+    session._LOOP = asyncio.new_event_loop()
+    session.shutdown_async_resources()
+
+    assert login.closed is True
+    assert session._LIVE_LOGINS == set()
+    assert session._LOOP is None
+
+
 # ── _sanitize_email_for_filename edge cases ─────────────────────────
 
 def test_sanitize_email_whitespace_only_raises():
