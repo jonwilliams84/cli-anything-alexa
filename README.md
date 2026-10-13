@@ -31,6 +31,31 @@ That's it. `auth login` walks you through a browser sign-in — captcha and 2FA
 included — and saves the session locally. Requires **Python 3.10+** (see
 [Python version](#python-version) for the one edge case that needs 3.14).
 
+## Docker
+
+Build the image locally:
+
+```bash
+docker build -t cli-anything-alexa .
+```
+
+Persist the session in a named volume. For a browser on another machine, bind
+the proxy port and pass the Docker host's LAN address as `--public-host`:
+
+```bash
+docker run --rm -it -p 3001:3001 -v alexa-config:/data cli-anything-alexa \
+  --email you@example.com --url amazon.com auth login \
+  --host 0.0.0.0 --public-host 192.168.1.10
+```
+
+Open `http://192.168.1.10:3001` in the browser, replacing the example address
+with the Docker host's reachable LAN IP. Reuse the volume for later commands:
+
+```bash
+docker run --rm -it -v alexa-config:/data cli-anything-alexa auth status
+docker run --rm -it -v alexa-config:/data cli-anything-alexa devices list
+```
+
 ## Auth
 
 ### 1. Guided browser login — `auth login` (recommended)
