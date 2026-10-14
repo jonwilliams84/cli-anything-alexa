@@ -44,7 +44,7 @@ def _resolve_version() -> str:
     try:
         return _pkg_version("cli-anything-alexa")
     except PackageNotFoundError:
-        return "0.11.0+unknown"
+        return "0.12.0+unknown"
 
 
 __version__ = _resolve_version()
