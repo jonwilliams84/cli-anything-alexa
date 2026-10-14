@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.12.0] — 2026-10-14
+
+### Added — push-event stream module (library-level; not yet wired into the CLI)
+
+`cli_anything/alexa/core/events.py`: the one alexapy surface the harness had
+never touched — after login, Amazon keeps a WebSocket open on
+`wss://dp-gw-na.<domain>/tcomm/` and *pushes* device events out live; every
+other surface here is pull. The module is a thin, honest wrapper around
+alexapy's own `WebsocketEchoClient` (the binary protocol is not
+re-implemented):
+
+* pure helpers — `websocket_url` (mirrors alexapy's subdomain choice:
+  `dp-gw-na-js` on `amazon.com`), `mac_dms_ready` (pre-checks the
+  device-signing key alexapy raises on when absent), `event_row` /
+  `filter_events` / `listen_summary` (type-safe row flattening, client-side
+  `--service`/`--channel`/`--contains` selection, honest summary).
+* `listen_events` — connects, collects rows until timeout / a `max_events`
+  cap / the peer closing / a truthy callback return, and ALWAYS closes the
+  socket; every failure lands in the summary `error`, never a silent
+  "no events", and a login without `mac_dms` is refused up front (before
+  any socket opens) with the fix: re-authenticate.
+
+**Status:** pure-helper coverage is not yet written and the module is not
+yet exposed as `events status`/`events listen` CLI commands — the helpers
+are complete, the wiring is the remaining piece of the feature. The only
+other change is a ruff `ASYNC109` carve-out for `events.py` (same
+documented-`timeout` rationale as `session.py`).
+
 ## [0.11.0] — 2026-10-07
 
 ### Added — selective voice-history deletion (`activity clear --device/--contains/--ids`, filters on `activity records`)

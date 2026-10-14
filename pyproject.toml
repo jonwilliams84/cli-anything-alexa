@@ -97,6 +97,11 @@ external = ["BLE001", "FLY002", "FURB188", "UP", "I001", "SIM", "C4", "PTH", "RE
 # replacing it with asyncio.timeout at the call site, which would be a breaking
 # signature change to a public API for a style preference.
 "cli_anything/alexa/core/session.py" = ["ASYNC109"]
+# listen_events()'s `timeout` is a documented public parameter — the listen
+# budget a caller passes for an event-watching session (default 60s). ASYNC109
+# suggests asyncio.timeout at the call site, which would be a breaking signature
+# change to a public API for a style preference.
+"cli_anything/alexa/core/events.py" = ["ASYNC109"]
 
 [tool.ruff.format]
 quote-style = "double"
