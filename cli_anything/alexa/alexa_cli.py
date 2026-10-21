@@ -24,6 +24,7 @@ from cli_anything.alexa.core import control as control_core
 from cli_anything.alexa.core import devices as devices_core
 from cli_anything.alexa.core import devices_meta as devices_meta_core
 from cli_anything.alexa.core import endpoints as endpoints_core
+from cli_anything.alexa.core import events as events_core
 from cli_anything.alexa.core import groups as groups_core
 from cli_anything.alexa.core import kids as kids_core
 from cli_anything.alexa.core import lists as lists_core
@@ -44,7 +45,7 @@ def _resolve_version() -> str:
     try:
         return _pkg_version("cli-anything-alexa")
     except PackageNotFoundError:
-        return "0.12.0+unknown"
+        return "0.13.0+unknown"
 
 
 __version__ = _resolve_version()
@@ -3114,6 +3115,119 @@ def activity_clear(ctx, items, device, contains, ids, limit, yes):
         )
         return
     emit(ctx, _run(ctx, activity_core.apply_clear(login, plan)))
+
+
+# ──────────────────────────────────────────────────────── events (push)
+
+
+@cli.group()
+def events():
+    """Amazon's push-event stream — status / listen.
+
+    The one PUSH surface in the harness: after login, Amazon keeps a
+    WebSocket open on the account's dp-gw gateway and pushes device events
+    out to the app live. Every other surface here PULLs; this one arrives.
+    `events listen` rides alexapy's own WebsocketEchoClient (the TWIG binary
+    protocol is NOT re-implemented) and is read-only — there is nothing to
+    `--yes`. It needs the account's device-signing key (mac_dms), so a login
+    without it is refused up front with the fix.
+    """
+
+
+@events.command("status")
+@click.pass_context
+def events_status(ctx):
+    """Report the push-event stream's readiness — no socket is ever opened."""
+    login = _login(ctx)
+    url = events_core.websocket_url(ctx.obj.get("url", "amazon.co.uk"))
+    ready = events_core.mac_dms_ready(login)
+    client = events_core.client_available()
+    row: dict = {
+        "websocket": url,
+        "alexapy_client": client,
+        "mac_dms": ready,
+        "ready": bool(client and ready),
+    }
+    if row["ready"]:
+        row["hint"] = "stream ready — `events listen` connects"
+    elif not client:
+        row["hint"] = (
+            "stream unavailable — alexapy is missing/old; upgrade with `pip install -U alexapy`"
+        )
+    else:
+        row["hint"] = (
+            "stream not ready — the saved session has no device-signing key "
+            "(mac_dms); re-authenticate (`auth login`, or re-import a fresh "
+            "Home Assistant cookie)"
+        )
+    emit(ctx, row)
+
+
+@events.command("listen")
+@click.option(
+    "--timeout",
+    type=float,
+    default=None,
+    help=f"Seconds to stay connected (default {events_core.DEFAULT_LISTEN_TIMEOUT:g})",
+)
+@click.option(
+    "--max-events",
+    type=int,
+    default=None,
+    help="Stop after this many events arrive (else the timeout ends the listen)",
+)
+@click.option(
+    "--service", default=None, help="Only events whose TWIG service matches (FABE / TUNE)"
+)
+@click.option(
+    "--channel",
+    default=None,
+    help="Only events on this channel: handshake / events / heartbeat (or 0x362)",
+)
+@click.option("--contains", default=None, help="Only events whose rendered row contains this text")
+@click.pass_context
+def events_listen(ctx, timeout, max_events, service, channel, contains):
+    """Watch the live push-event stream (read-only — no --yes needed).
+
+    Connects, collects decoded events until --timeout elapses, --max-events
+    is reached, or the peer closes the socket, then ALWAYS disconnects.
+    Filters (--service/--channel/--contains) are applied client-side over
+    what was collected; combine them freely.
+    """
+    # Validate BEFORE _login so bad input fails identically with and without --yes.
+    try:
+        timeout_val, cap = events_core.validate_listen_options(timeout, max_events)
+    except ValueError as exc:
+        _abort(str(exc))
+    login = _login(ctx)
+    summary = _run(ctx, events_core.listen_events(login, timeout=timeout_val, max_events=cap))
+    if not (service or channel or contains):
+        rows = summary["events"]
+    else:
+        rows = events_core.filter_events(
+            summary["events"], service=service, channel=channel, contains=contains
+        )
+    body = {
+        "connected": summary["connected"],
+        "duration": summary["duration"],
+        "collected": summary["count"],
+        "shown": len(rows),
+        "error": summary["error"],
+    }
+    if service or channel or contains:
+        body["filters"] = {
+            "service": service,
+            "channel": channel,
+            "contains": contains,
+            "collected": summary["count"],
+            "shown": len(rows),
+        }
+    if ctx.obj.get("as_json"):
+        emit(ctx, {**body, "events": rows})
+        return
+    emit(ctx, body)
+    if rows:
+        emit(ctx, rows)
 
 
 # ──────────────────────────────────────────────────────── REPL

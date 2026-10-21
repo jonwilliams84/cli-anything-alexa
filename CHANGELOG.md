@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.13.0] — 2026-10-21
+
+### Added — `events status` / `events listen`: the push-event stream, wired and first-class
+
+0.12.0 shipped the push-event stream at **library level only** —
+`core/events.py` was complete, but nothing exposed it: `events` was not a CLI
+group and the module had zero tests. This release closes that feature:
+**`events` is now a top-level command group** with `--json` support, and both
+the pure helpers and the socket wrapper are exercised by 70 new tests
+(54 unit + 16 CLI-path).
+
+Commands:
+
+* `events status` — the stream's readiness **without opening a socket**: the
+  account's websocket URL (mirroring alexapy's subdomain choice —
+  `dp-gw-na-js` on `amazon.com`), whether alexapy's `WebsocketEchoClient` is
+  importable, and whether the saved session carries the **device-signing key**
+  (`mac_dms`) the stream requires — with a hint naming the fix for each
+  kind of missing piece (upgrade alexapy / re-authenticate).
+* `events listen [--timeout S] [--max-events N] [--service ...] [--channel
+  ...] [--contains ...]` — watch the live stream (read-only, so it needs no
+  `--yes`): connects through alexapy's own client, collects decoded events
+  until the timeout (default 30 s) / the cap / the peer closing, **always
+  disconnects**, and every failure lands in the summary's `error` — a listen
+  that saw nothing never lies about why. Filters are client-side and
+  combinable; `--contains` reaches into payload JSON.
+
+Library-level additions in `core/events.py`: `validate_listen_options`
+(the CLI's `--timeout`/`--max-events` validation — fires **before** `_login`,
+per the harness-wide rule) and `client_available` (the importability probe
+`events status` reports); `channel_name` no longer lets a malformed hex
+string raise — junk is `None`, never a traceback. Version-fallback literal
+updated to `0.13.0`.
+
+Tests: `tests/test_events.py` (pure helpers + `listen_events` against a fake
+`WebsocketEchoClient` fed from a background task, so cap/timeout/always-closes
+behave as they do against the real peer) and `tests/test_cli_events_paths.py`
+(observable CLI contracts, including the pre-`_login` validation refusals and
+a status → listen workflow). Suite: 1850 pass; coverage 94.6% → 97.2%.
+
 ## [0.12.0] — 2026-10-14
 
 ### Added — push-event stream module (library-level; not yet wired into the CLI)

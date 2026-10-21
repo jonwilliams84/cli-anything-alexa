@@ -1,6 +1,6 @@
 ---
 name: cli-anything-alexa
-description: Manage Amazon Alexa from the shell — smart-home appliances (list/prune/delete), groups, routines, alarms/timers/reminders, Echo media playback, announce/speak, do-not-disturb, and shopping/to-do lists — over the unofficial Alexa web API via alexapy. Logs in via a browser-proxy flow (no Home Assistant needed; captcha/2FA handled by Amazon's own pages) and caches a local cookie so there's no per-call MFA. Use when an agent needs to inspect or tidy what Alexa knows without the app.
+description: Manage Amazon Alexa from the shell — smart-home appliances (list/prune/delete), groups, routines, alarms/timers/reminders, Echo media playback, announce/speak, do-not-disturb, shopping/to-do lists, and the live push-event WebSocket stream — over the unofficial Alexa web API via alexapy. Logs in via a browser-proxy flow (no Home Assistant needed; captcha/2FA handled by Amazon's own pages) and caches a local cookie so there's no per-call MFA. Use when an agent needs to inspect or tidy what Alexa knows without the app.
 ---
 
 # cli-anything-alexa
@@ -238,6 +238,17 @@ Every command takes `--json`.
   verbatim. `cleared` is true only when every id is confirmed deleted — a
   refused id (404) and an unanswered id get separate lists and separate
   remedies.
+
+- `events status` — the push-event stream's readiness WITHOUT opening a socket:
+  the account's websocket URL and whether the saved session has the
+  device-signing key (`mac_dms`) the stream needs — the safe read before any
+  listen.
+- `events listen [--timeout S] [--max-events N] [--service FABE|TUNE] [--channel handshake|events|heartbeat] [--contains text]` —
+  watch Amazon's LIVE push-event stream (read-only, no `--yes`): decoded
+  events as they happen (service, channel, type, device, payload), collected
+  until the timeout (default 30 s) / cap / peer close, ALWAYS disconnecting;
+  filters are client-side and combinable. The only PUSH surface here — every
+  other endpoint is pull.
 
 ## Safety
 All mutating commands are **dry-run-by-default and require `--yes`**. Unofficial
