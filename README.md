@@ -261,6 +261,8 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `activity records [--limit N] [--device ...] [--contains ...]` | The legacy activity feed (carries per-activity ids + status); filters help pick ids for a selective clear |
 | `activity last [--limit N]` | The last Echo that answered, and what it was asked |
 | `activity clear [--items N]` / `activity clear --device ... --contains ...` / `activity clear --ids <id,...>` | Delete voice recordings — bulk N-recent, or selectively by Echo/text/ids; preview first, `--yes` to execute; irreversible |
+| `events status` | Report the push-event stream's readiness WITHOUT opening a socket: the account's websocket URL and whether the saved session has the device-signing key (`mac_dms`) the stream needs |
+| `events listen [--timeout S] [--max-events N] [--service ...] [--channel ...] [--contains ...]` | Watch the live push-event stream (read-only — no `--yes` needed): device events as they happen, collected until the timeout / cap / peer close, always disconnecting; filters are client-side |
 | `repl` | Interactive shell (default when no subcommand) |
 
 ### Prune housekeeping
@@ -807,6 +809,35 @@ buys an **account** (`/api/users/me`) and exits non-zero when it doesn't — the
 sharper signal when a rotated Home Assistant cookie has gone stale underneath
 you. `echos preferences` is also the read that explains a notification edit's
 `tz`.
+
+### Push events — `events`
+
+```bash
+cli-anything-alexa events status --json                # stream readiness, no socket
+cli-anything-alexa events listen                        # watch live for 30s
+cli-anything-alexa events listen --timeout 120          # watch for two minutes
+cli-anything-alexa events listen --max-events 5         # stop after 5 events
+cli-anything-alexa events listen --service FABE         # the protocol frames, not tuning chatter
+cli-anything-alexa events listen --channel events --contains "light" --json
+cli-anything-alexa events listen | tee events.log       # record what the smart home does
+```
+
+Everything else in this CLI **pulls** — the CLI asks, Amazon answers. The
+push-event stream is the one surface that **pushes**: after login, Amazon
+keeps a WebSocket open on the account's dp-gw gateway (`dp-gw-na-js` on
+`amazon.com`) and delivers device events to the app as they happen. The CLI
+rides alexapy's own `WebsocketEchoClient` (the TWIG binary protocol is not
+re-implemented); each decoded event is rendered as a row — service (FABE/TUNE),
+channel (`handshake`/`events`/`heartbeat`), message type, device, payload.
+
+`events status` reports the websocket URL and whether the saved session still
+carries the **device-signing key** (`mac_dms`) alexapy needs to build a client
+— a cookie imported from an arbitrary source may lack it, in which case the
+listen is refused up front (no socket opened) with the fix: re-authenticate.
+`events listen` is read-only, so it does not need `--yes`; the `--contains`
+filter matches against the payload JSON too. Every failure (connect refused,
+protocol error, close hiccup) lands in the summary's `error` — a listen that
+saw nothing never lies about why.
 
 ## Whitelist file format
 

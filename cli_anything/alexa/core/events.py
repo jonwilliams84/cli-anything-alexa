@@ -46,6 +46,9 @@ _log = logging.getLogger(__name__)
 #: Poll interval while the listener loop waits for events / the timeout.
 LISTEN_POLL_SECONDS = 0.5
 
+#: How long ``events listen`` stays connected when ``--timeout`` is omitted.
+DEFAULT_LISTEN_TIMEOUT = 30.0
+
 #: Known GW channels (the values alexapy's own decoder switches on), mapped
 #: to the readable names the CLI's ``--channel`` filter accepts.
 CHANNEL_NAMES: dict[int, str] = {
@@ -107,7 +110,10 @@ def channel_name(value: Any) -> str | None:
     collapsing it into ``events`` would.
     """
     if isinstance(value, str) and value.strip():
-        value = int(value, 16)
+        try:
+            value = int(value, 16)
+        except ValueError:
+            return None
     elif isinstance(value, float) and value.is_integer():
         value = int(value)
     if not isinstance(value, int) or isinstance(value, bool):
@@ -240,6 +246,49 @@ def listen_summary(
         "events": list(rows),
         "error": error,
     }
+
+
+def validate_listen_options(
+    timeout: float | None = None, max_events: int | None = None
+) -> tuple[float, int | None]:
+    """Validate + normalise the ``events listen`` options (pure).
+
+    Returns ``(timeout, max_events)`` with ``timeout`` defaulted to seconds
+    (the CLI's own default — 30 s — and never negative) and ``max_events``
+    defaulted to ``None`` (no cap) or a whole number ≥ 1. Every refusal
+    speaks in the CLI-flag's own words, and the CLI validates BEFORE the
+    session loads so bad input fails identically with and without the
+    network involved.
+    """
+    try:
+        timeout = float(timeout) if timeout is not None else DEFAULT_LISTEN_TIMEOUT
+    except (TypeError, ValueError) as exc:
+        raise ValueError("--timeout must be a number of seconds") from exc
+    if timeout < 0:
+        raise ValueError("--timeout must be >= 0")
+    if max_events is None:
+        return timeout, None
+    try:
+        cap = int(max_events)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("--max-events must be a whole number of events") from exc
+    if cap < 1:
+        raise ValueError("--max-events must be at least 1")
+    return timeout, cap
+
+
+def client_available() -> bool:
+    """Is alexapy's ``WebsocketEchoClient`` importable? (no socket).
+
+    The push stream rides alexapy's own client; on an old/missing alexapy
+    the import dies. ``events status`` reports this WITHOUT connecting, so
+    the fix (upgrade alexapy) shows up before any listen attempt.
+    """
+    try:
+        from alexapy.alexawebsocket import WebsocketEchoClient  # noqa: F401 — importability probe
+    except ImportError:
+        return False
+    return True
 
 
 # ── network (thin async wrapper over alexapy's websocket client) ─────────

@@ -9,19 +9,15 @@ python -m pytest tests --cov=cli_anything --cov-fail-under=87 -q --durations=10 
   && bandit -r cli_anything/ -ll -x '*/tests/*,*/test_*.py,*/conftest.py'
 ```
 
-## Current state (after 0.11.0 refine, 2026-10-07)
+## Current state (after 0.13.0 refine, 2026-10-21)
 
-- **1776 tests pass**, 0 failures, in ~5 s (no live account, no network —
-  alexapy is mocked; pure logic is tested without it).
-- Coverage **97.3%** (gate: ≥87%). `core/notifications.py` at **100%**
-  (statements + branches); the 0.8.0 lock / 0.9.0 thermostat surfaces in
-  `core/smarthome.py` (controlRequests writer + three-valued verify) are
-  covered line-for-line (the module sits at **99%**), the 0.10.0 **scenes**
-  surface in `core/scenes.py` is fully exercised by
-  `test_scenes.py` + `test_cli_scenes_paths.py`, and the 0.11.0 **selective
-  voice-history clear** in `core/activity.py` by `test_activity.py` +
-  `test_cli_activity_clear_paths.py`; the CLI layer
-  (`alexa_cli.py`) ~95%, the REPL skin ~97%.
+- **1850 tests pass**, 0 failures, in ~8 s (no live account, no network —
+  alexapy is mocked; the push-event websocket is driven by a fake
+  `WebsocketEchoClient`, pure logic without it).
+- Coverage **97.2%** (gate: ≥87%). The 0.13.0 **push-event stream** wiring —
+  `core/events.py` plus its `events status` / `events listen` CLI surface —
+  is covered by `test_events.py` + `test_cli_events_paths.py` (module **96%**
+  +); the CLI layer (`alexa_cli.py`) ~95%, the REPL skin ~97%.
 - Lint (`ruff check`), format (`ruff format --check`) and bandit (-ll): clean.
 
 ## What the tests cover
@@ -62,6 +58,23 @@ Unit tests (per-module files under `tests/`):
   re-read, a directory squatting on the path reported as `failed` — never a
   silent success); `totp_row` (code pinned to an instant, `valid_for`
   windowing, empty/non-base32 secrets raise `AlexaSessionError`).
+
+- `test_events.py` (0.13.0) — the **push-event stream** core:
+  `websocket_url` (region allow-list reused, `dp-gw-na-js` for `amazon.com`,
+  unknown region refused), `mac_dms_ready` (both halves required — one half
+  or blank is "half-baked", never ready; a hostile login object returns False,
+  never a traceback), `channel_name` (0x361/0x362/0x65 → handshake/events/
+  heartbeat, hex-string + whole-float forms accepted, unknown stays reportable
+  as raw hex, junk → `None`), `event_row` (type-safe flattening: content
+  attribute or dict forms, `json_payload` preferred, submessage type carried,
+  junk skipped as `None`), `filter_events`/`json_blob_row` (case-insensitive
+  combinable selection reaching into payload JSON, pass-through returns a
+  copy), `listen_summary`, `validate_listen_options` (defaults, refusals), and
+  `listen_events` against a fake `WebsocketEchoClient` fed from a background
+  task: rows collected + socket closed, junk skipped, `--max-events` cap,
+  timeout, close-when-peer-didn't, a resistant close surviving cleanly,
+  protocol failures landing in the summary `error`, and the up-front refusals
+  (no `mac_dms`, no alexapy module — before any socket).
 
 CLI/E2E tests (`test_cli_*.py`): every command's observable contract —
 preview-by-default / act-on-`--yes`, argument validation **before** any login
@@ -128,6 +141,17 @@ one cookie story.
   the response-derived `ok`, appliance-id targeting, `--all`, the
   abort paths (ambiguity, unknown target, non-scene device, no scenes on the
   account, `--all`+targets, no targets).
+- `test_cli_events_paths.py` (0.13.0) — the `events` CLI contract:
+  `events status` (`--json` readiness row + text render + the
+  `--url`-selected gateway, a key-less session hinted at `re-authenticate`),
+  `events listen` (read-only — never needs `--yes`, defaults `timeout`
+  30 s honoured, `--timeout`/`--max-events` passed through, `--json` summary
+  with events embedded, text summary + row table), the client-side filters
+  (`--service`/`--channel`/`--contains` on what was collected, `filters`
+  reported), a socket failure reported verbatim in `error`, every
+  `--timeout`/`--max-events` refusal firing BEFORE `_login`, and the
+  status → listen workflow on one session.
+
 `test_cli_refine_paths.py` closes the remaining CLI-layer gaps: both
 `auth login` flows (scripted + guided proxy) and `auth import-pickle` success,
 bulk `rename --pattern` / `--map` and single renames (dry-run + `--yes`),
