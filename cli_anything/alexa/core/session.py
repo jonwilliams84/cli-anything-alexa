@@ -38,6 +38,7 @@ host. So 3.14 is needed only for ``import-pickle`` from a 3.14 source.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import datetime
 import logging
 import os
@@ -198,6 +199,45 @@ class AlexaSessionError(RuntimeError):
 
 
 _LOOP: asyncio.AbstractEventLoop | None = None
+_LIVE_LOGINS: set[Any] = set()
+
+
+def _track_login(login):
+    """Keep live alexapy sessions reachable until process cleanup."""
+    _LIVE_LOGINS.add(login)
+    return login
+
+
+async def _close_live_logins() -> None:
+    """Close sessions created by CLI commands before their loop disappears."""
+    for login in list(_LIVE_LOGINS):
+        try:
+            await login.close()
+        except Exception:  # noqa: BLE001 -- shutdown is best effort
+            _log.debug("login.close() failed during process cleanup", exc_info=True)
+    _LIVE_LOGINS.clear()
+
+
+def shutdown_async_resources() -> None:
+    """Close aiohttp sessions and drain handlers at normal process exit."""
+    global _LOOP
+    loop = _LOOP
+    if loop is None or loop.is_closed() or loop.is_running():
+        return
+    try:
+        loop.run_until_complete(_close_live_logins())
+        pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.run_until_complete(loop.shutdown_asyncgens())
+    finally:
+        loop.close()
+        _LOOP = None
+
+
+atexit.register(shutdown_async_resources)
 
 
 def run_async(coro):
@@ -247,9 +287,9 @@ def make_outputpath(config_dir: Path, create: bool = True):
     `alexapy` calls this with a single (possibly ``/``-joined) string and
     builds its cookie search list off it:
 
-      0. ``<config_dir>/.storage/alexa_media.<email>.pickle``  (write target)
-      1. ``<config_dir>/alexa_media.<email>.pickle``
-      2. ``<config_dir>/.storage/alexa_media.<email>.txt``
+      0. ``<config_dir>/.storage/alexa_media.<email>.cookies`` (write target)
+      1. ``<config_dir>/.storage/alexa_media.<email>.pickle``
+      2. ``<config_dir>/alexa_media.<email>.pickle``
 
     So pointing ``config_dir`` at HA's config base (e.g. ``/config``) makes
     index 0 resolve to HA's LIVE pickle — that's what ``--cookie-dir`` uses to
@@ -263,6 +303,11 @@ def make_outputpath(config_dir: Path, create: bool = True):
     config_dir = Path(config_dir)
     if create:
         config_dir.mkdir(parents=True, exist_ok=True)
+        # alexapy persists the successful browser login under `.storage/`, but
+        # it deliberately does not create that directory itself. Without this,
+        # `finalize_login()` swallows its FileNotFoundError and reports success
+        # even though no reusable cookie was written.
+        (config_dir / ".storage").mkdir(parents=True, exist_ok=True)
 
     def outputpath(*parts: str) -> str:
         return str(config_dir.joinpath(*parts))
@@ -363,13 +408,13 @@ def build_login(
         otp_secret = ""  # nosec: B105 — otp_secret is the TOTP key placeholder, not the account password;
         # alexapy receives the actual password via its separate positional arg (line 350)
     AlexaLogin, _ = _import_alexapy()
-    return AlexaLogin(
+    return _track_login(AlexaLogin(
         url,
         email,
         "",  # password supplied later / not needed for cookie reuse
         make_outputpath(config_dir, create=create_dir),
         otp_secret=otp_secret,
-    )
+    ))
 
 
 # How many times to re-load the cookie from disk + re-test before giving up.
@@ -514,7 +559,7 @@ async def fresh_login(
     """
     url = validate_region(url)
     AlexaLogin, _ = _import_alexapy()
-    login = AlexaLogin(url, email, password, make_outputpath(config_dir), otp_secret=otp_secret)
+    login = _track_login(AlexaLogin(url, email, password, make_outputpath(config_dir), otp_secret=otp_secret))
     # Register the TOTP secret so alexapy can fill the 2FA code itself.
     if otp_secret:
         try:
@@ -564,14 +609,16 @@ async def fresh_login(
     return login
 
 
-def proxy_access_url(host: str, port: int) -> str:
-    """Build the local proxy base URL a user opens in the browser (pure).
+def proxy_access_url(host: str, port: int, public_host: str | None = None) -> str:
+    """Build the externally reachable proxy URL used for browser redirects.
 
-    ``host`` 0.0.0.0 binds all interfaces but is not itself browsable; we
-    surface 127.0.0.1 in that case so the printed URL is clickable on the
-    same machine (matching how HA advertises its proxy on a reachable host).
+    ``host`` controls where the HTTP server binds.  A wildcard bind is not a
+    valid browser destination, so remote logins must provide ``public_host``:
+    that address is passed to AlexaProxy and is therefore retained throughout
+    Amazon's redirect flow.  Without it, preserve the loopback behaviour for
+    local logins.
     """
-    shown = "127.0.0.1" if host in (BIND_ALL_HOST, "", None) else host
+    shown = public_host or ("127.0.0.1" if host in (BIND_ALL_HOST, "", None) else host)
     return f"http://{shown}:{int(port)}"
 
 
@@ -581,6 +628,7 @@ async def proxy_login(
     config_dir: Path = DEFAULT_CONFIG_DIR,
     host: str = DEFAULT_PROXY_HOST,
     port: int = DEFAULT_PROXY_PORT,
+    public_host: str | None = None,
     timeout: float = 600.0,
     poll_interval: float = 3.0,
     on_url=None,
@@ -614,9 +662,11 @@ async def proxy_login(
 
     config_dir = Path(config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
-    login = AlexaLogin(url, email, "", make_outputpath(config_dir))
+    login = _track_login(AlexaLogin(url, email, "", make_outputpath(config_dir)))
 
-    base = proxy_access_url(host, port)
+    # AlexaProxy uses this base URL not only for the first page but for every
+    # post-login redirect.  Do not derive it from a wildcard bind address.
+    base = proxy_access_url(host, port, public_host=public_host)
     proxy = AlexaProxy(login, base)
     try:
         await proxy.start_proxy(host=host)
@@ -643,7 +693,7 @@ async def proxy_login(
                 raise AlexaSessionError(
                     "timed out waiting for the browser login to complete. "
                     f"Re-run `auth login` and open {access_url} promptly "
-                    "(use --host 0.0.0.0 if logging in from another machine)."
+                    "(use --host 0.0.0.0 --public-host <LAN-IP> for a remote browser)."
                 )
 
         await login.finalize_login()

@@ -186,6 +186,29 @@ def test_auth_login_proxy_flow_persists_and_reports():
     assert calls["on_url"]("http://localhost:8080") is None
 
 
+def test_auth_login_proxy_flow_passes_public_host_for_remote_redirects():
+    """Wildcard binding must keep a LAN address in AlexaProxy redirect URLs."""
+    calls = {}
+
+    async def fake_proxy_login(email, **kwargs):
+        calls["email"] = email
+        calls.update(kwargs)
+
+    with patch("cli_anything.alexa.alexa_cli.session_core.proxy_login", fake_proxy_login):
+        with patch("cli_anything.alexa.alexa_cli.project.save_config"):
+            result = _invoke(
+                [
+                    "--json", "auth", "login", "--email", "u@example.com",
+                    "--host", session_core.BIND_ALL_HOST,
+                    "--public-host", "172.25.0.155",
+                ]
+            )
+    assert result.exit_code == 0
+    assert calls["email"] == "u@example.com"
+    assert calls["host"] == session_core.BIND_ALL_HOST
+    assert calls["public_host"] == "172.25.0.155"
+
+
 def test_auth_login_proxy_flow_aborts_on_oserror():
     """A proxy that cannot bind surfaces as a friendly port/host hint."""
     with patch(

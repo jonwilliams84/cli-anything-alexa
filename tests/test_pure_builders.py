@@ -309,6 +309,12 @@ def test_proxy_access_url_wildcard_shows_loopback():
     assert session.proxy_access_url("", 8080) == "http://127.0.0.1:8080"
 
 
+def test_proxy_access_url_uses_public_host_for_wildcard_bind():
+    assert session.proxy_access_url(
+        session.BIND_ALL_HOST, 3001, public_host="172.25.0.155"
+    ) == "http://172.25.0.155:3001"
+
+
 def test_proxy_access_url_explicit_host_kept():
     assert session.proxy_access_url("192.168.1.5", 3001) == "http://192.168.1.5:3001"
     # port coerced to int

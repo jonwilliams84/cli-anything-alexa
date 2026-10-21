@@ -114,6 +114,24 @@ def test_make_outputpath_create_makes_dir(tmp_path):
     target = tmp_path / "owned_config"
     session.make_outputpath(target, create=True)
     assert target.is_dir()
+    assert (target / ".storage").is_dir()
+
+
+def test_make_outputpath_allows_alexapy_to_persist_cookie(tmp_path):
+    """A browser login must have alexapy's `.storage` write directory."""
+    alexapy = pytest.importorskip("alexapy")
+
+    async def save_cookie():
+        login = alexapy.AlexaLogin(
+            "amazon.com", "you@example.com", "", session.make_outputpath(tmp_path)
+        )
+        try:
+            await login.save_cookiefile()
+        finally:
+            await login.close()
+
+    asyncio.run(save_cookie())
+    assert session.cookie_path_in_dir(tmp_path, "you@example.com").is_file()
 
 
 # ── stale-auth retry decision ────────────────────────────────────────────
