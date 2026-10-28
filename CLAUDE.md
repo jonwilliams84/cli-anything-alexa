@@ -18,7 +18,7 @@ is a **browser-proxy login** that needs no Home Assistant.
   - `devices.py` — appliance list + raw `DELETE /api/phoenix/appliance/<id>` + raw `POST /api/phoenix/discovery` (discover).
   - `endpoints.py` — **canonical `endpoints` GraphQL query** (id + applianceId + manufacturer + display name + enablement) and all the pure resolution it powers: target resolution (applianceId→endpoint-id→exact-name→normalized-name, ambiguity-aware), entity/name resolvers, duplicate detection, `device_rows` filtering, `setEndpointFriendlyName` (rename) variables builder, **bulk/pattern rename planning** (`parse_sed`/`apply_sed`/`plan_pattern_renames`, `parse_rename_map`/`plan_map_renames`, `apply_renames`), **DACS speakable-name validation** (`speakable_name`/`is_speakable`/`speakable_warning`/`is_dacs_error`), the **native-delete warning + re-sync verify** predicates (`native_delete_warning`, `reappeared_after_delete`) and the **per-appliance detail read** (`gql_appliance_rows`/`fetch_appliance_details` — alexapy's own `get_devices_gql` query, the only one returning applianceTypes/capabilities/model/connectedVia/entityId; read-only enrichment, NOT a resolution source). Network via `_static_request`; pure logic unit-tested.
   - `device_ref.py` — **pure** adapter: raw `get_devices()` dict → the *attribute* surface alexapy's device-bound methods read off `self._device`. Unit-tested against the alexapy contract.
-  - `devices_meta.py` — physical Echo devices (announce/dnd/media/routine targets) + the static state reads: bluetooth pairings, wake words (account-wide **and** per-Echo via `fetch_wake_word`/`AlexaAPI.find_wake_word`), DND status, **device preferences** (`timeZoneId`/locale/units — the timezone a notification edit needs) and **per-Echo wifi details** (pure row builders + thin fetchers) + the **Echo Show background write** (`set_background`, device-bound; `background_url_problem` refuses non-https BEFORE login because alexapy only warns about `http://` and posts anyway).
+  - `devices_meta.py` — physical Echo devices (announce/dnd/media/routine targets) + the static state reads: bluetooth pairings, wake words (account-wide **and** per-Echo via `fetch_wake_word`/`AlexaAPI.find_wake_word`), DND status, **device preferences** (`timeZoneId`/locale/units — the timezone a notification edit needs) and **per-Echo wifi details** (pure row builders + thin fetchers) + the **Echo Show background write** (`set_background`, device-bound; `background_url_problem` refuses non-https BEFORE login because alexapy only warns about `http://` and posts anyway) + the **notification volume** surface (0.14.0: `fetch_notification_states` — the account-wide `get_notification_states` read behind `echos notification-volume` — and `set_notification_volume`, the per-Echo `set_notification_volume` PUT behind `echos set-notification-volume`, verified by re-read) see the notification-volume note below.
   - `media.py` — Echo transport (`play`/`pause`/`next`/`previous`/`forward`/`rewind`/`stop`), volume, shuffle/repeat, `play_music`, and the `get_state` player read. Pure volume/provider/player-row helpers unit-tested.
   - `notifications.py` — alarms/timers/reminders: list + pure payload builders + POST/PUT/DELETE, **plus the edit surface** (`pause`/`resume`/`reschedule`/`snooze`/`repeat`): pure resolution by id-or-label, whole-record PUT builders, local wall-clock (`originalDate`/`originalTime`) recomputation in the Echo's own timezone, **recurrence** (`normalize_recurrence`/`normalize_recurrence_days`/`build_recurrence_update` — the `recurringPattern` + `rRuleData.byWeekDays` fields, created via `add-alarm/add-reminder --repeat` and edited/cleared via `notifications repeat`), the `plan_update` → `apply_update` split (dry-run prints the `change` diff, `--yes` applies that same plan) and the re-read verify. Pure half unit-tested.
   - `routines.py` — behaviors list (with trigger utterance + best-effort `action_targets` summary) + trigger (device-bound `run_routine`). **Routine EDITS are not API-supported — Alexa-app-only** (see note below).
@@ -113,6 +113,7 @@ cli-anything-alexa devices list --json
 - **Mutations are dry-run-by-default + require `--yes`** (prune, delete, run,
   notifications add/delete/repeat, announce, speak, push, dnd,
   devices on/off/light, guard set, media *, run *, echos connect/disconnect,
+  echos set-notification-volume,
   activity clear). Mirror
   this when adding commands, and **normalise/validate BEFORE `_login`** so bad
   input fails identically with and without `--yes`.
@@ -136,6 +137,22 @@ cli-anything-alexa devices list --json
   server-side query **window**, `--device`/`--contains` are client-side filters.
   `clear_history` returning `False` means Amazon **refused at least one entry**
   (404, nothing to delete) — report the clear as partial, never as clean.
+- **Notification volume is a device setting, not a sound, and it is an integer.**
+  The "Alarms, Timers, and Notifications" slider (`echos notification-volume` /
+  `echos set-notification-volume`) is per-Echo and separate from the media
+  volume `media volume` writes — an alarm at 0 explains "my alarm never made a
+  peep" exactly like a muted speaker does. The 0.14.0 rules worth keeping:
+  **whole numbers 0–100 only** (the device stores an integer percentage;
+  `normalize_notification_volume` refuses fractions like `30.5` instead of
+  silently rounding — the verify re-read could never equal what was asked, so
+  rounding would be a lie), validated BEFORE `_login` per the harness-wide
+  rule. The write is a **static** call (login arg, not device-bound) that
+  embeds the record's `deviceType` + `softwareVersion` in the URL path AND the
+  body — a record missing either is refused locally (`notification_request`).
+  alexapy's success bool only means the HTTP response *existed*, so the
+  executed write re-reads `get_notification_states` and reports three-valued
+  `ok` from what Amazon holds (`True` agreement / `False` differs / `None`
+  could not check), identically to the locks and Amazon Kids verifies.
 - **Bluetooth: connect ≠ pair, and disconnect is all-or-nothing.**
   `set_bluetooth(mac)` (`pair-sink`) only *connects* a sink that is **already
   paired**; the pairing handshake is Alexa-app/voice-only. Amazon answers

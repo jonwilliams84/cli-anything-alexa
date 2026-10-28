@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.14.0] — 2026-10-28
+
+### Added — `echos notification-volume` / `echos set-notification-volume`: the "Alarms, Timers, and Notifications" volume, first-class
+
+The harness had wrapped every alexapy surface except one device setting that
+matters daily: the volume alarms, timers and reminders play at — the app's
+"Alarms, Timers, and Notifications" slider. alexapy wraps both halves
+(`get_notification_states` for the account-wide read, `set_notification_volume`
+for the per-Echo write); neither was exposed, and it was the last unwrapped
+*observable* surface (alexapy's `force_logout` is a stub that raises,
+`update_login` is internal bookkeeping — neither gets a command). This release
+closes the gap with two commands and the pure + async layer behind them:
+
+* `echos notification-volume [<device>]` — the read. One row per Echo
+  (name, serial, `volume`, `softwareVersion`) via
+  `fetch_notification_states` → `notification_volume_rows` (accepts both the
+  unwrapped list alexapy hands back and a wrapped envelope; junk entries
+  skipped; serial→accountName joined). Name a device (or serial) to see just
+  its row, mirroring `echos preferences`.
+* `echos set-notification-volume <target> <0-100>` — the write, **dry-run by
+  default, `--yes` to execute**. Volumes must be whole numbers 0–100 —
+  `normalize_notification_volume` refuses fractions like `30.5` (the device
+  stores an integer percentage; rounding would make the verify re-read unable
+  to ever agree) and non-numbers/NaN/inf/bools — and the validation fires
+  **before `_login`**, so bad input fails identically with and without
+  `--yes`. The write is *static* (login arg, not device-bound) and embeds the
+  record's `deviceType` + `softwareVersion` in the URL path and body —
+  `notification_request` refuses a record missing either, and
+  `resolve_notification_target` refuses an unknown name/serial while listing
+  the account's device names, so nothing is posted into the void.
+* **Verified by re-read.** alexapy's success bool only means the HTTP
+  response *existed*, so the executed write re-reads
+  `get_notification_states` and reports `ok` from what Amazon holds:
+  `True` when the observed volume equals the request, `False` when it
+  differs, `None` — could not check, never a quiet pass — when the verify
+  read answers nothing (`observed_notification_volume`). Same three-valued
+  verify semantics as the locks, thermostat and Amazon Kids writes.
+
+Tests: the notification-volume section of `tests/test_echo_state_reads.py`
+(row builders, the 0–100 whole-number contract, target resolution, request
+building/refusals, the three-valued verify, and the async pair against a
+faked `AlexaAPI` incl. refusal-before-any-write) and
+`tests/test_cli_notification_volume_paths.py` (CLI contracts: account rows and
+per-device filter, unknown-device abort, dry-run preview, `--yes` execution,
+pre-`_login` level refusals, non-numeric levels refused by Click's type, and a
+read → set → read workflow). Suite: 1907 pass; coverage 97.2% → 97.3%.
+
 ## [0.13.0] — 2026-10-21
 
 ### Added — `events status` / `events listen`: the push-event stream, wired and first-class

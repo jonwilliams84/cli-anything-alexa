@@ -45,7 +45,7 @@ def _resolve_version() -> str:
     try:
         return _pkg_version("cli-anything-alexa")
     except PackageNotFoundError:
-        return "0.13.0+unknown"
+        return "0.14.0+unknown"
 
 
 __version__ = _resolve_version()
@@ -1613,6 +1613,64 @@ def echos_wifi(ctx, device):
     """Show one Echo's wifi details (default: the first online device)."""
     login = _login(ctx)
     emit(ctx, _run(ctx, devices_meta_core.fetch_wifi_details(login, device)))
+
+
+@echos.command("notification-volume")
+@click.argument("device", required=False)
+@click.pass_context
+def echos_notification_volume(ctx, device):
+    """Show the "Alarms, Timers, and Notifications" volume per Echo.
+
+    This is the volume alarms/timers/reminders play at — separate from the
+    media volume `media volume` writes. The whole account by default; name a
+    device (or serial) to see just its row.
+    """
+    login = _login(ctx)
+    rows = _run(ctx, devices_meta_core.fetch_notification_states(login))
+    if device:
+        wanted = device.strip().lower()
+        rows = [
+            r
+            for r in rows
+            if wanted in ((r.get("device") or "").lower(), (r.get("serial") or "").lower())
+        ]
+        if not rows:
+            _abort(f"no device matching {device!r}")
+    emit(ctx, rows)
+
+
+@echos.command("set-notification-volume")
+@click.argument("target")
+@click.argument("level", type=float)
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def echos_set_notification_volume(ctx, target, level, yes):
+    """Set an Echo's "Alarms, Timers, and Notifications" volume (0-100).
+
+    This is the volume alarms, timers and reminders play at, not the media
+    volume (`media volume`). Amazon answers the write with nothing useful,
+    so the executed write re-reads the device-notification state and reports
+    `ok` from what Amazon holds.
+    """
+    # Validate before touching the network so a bad number fails fast and
+    # identically in dry-run and executed mode.
+    try:
+        volume = devices_meta_core.normalize_notification_volume(level)
+    except ValueError as exc:
+        _abort(str(exc))
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "device": target,
+                "volume": volume,
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(ctx, _run(ctx, devices_meta_core.set_notification_volume(login, target, volume)))
 
 
 # ──────────────────────────────────────────────────────── amazon kids
