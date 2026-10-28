@@ -213,6 +213,8 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `echos dnd` | Read the current do-not-disturb state of every Echo |
 | `echos preferences [<device>]` | Per-Echo preferences: **timezone**, locale, temperature/distance units, postal code |
 | `echos wifi [<device>]` | One Echo's wifi details (SSID, signal, security, MAC/IP) |
+| `echos notification-volume [<device>]` | The "Alarms, Timers, and Notifications" volume per Echo (read) |
+| `echos set-notification-volume <device> <0-100>` | Set that volume for one Echo (`--yes` to execute; verified by re-read) |
 | `echos background <url> [--device ...]` | Set an Echo Show's background to an https image URL (`--yes` to execute; non-https refused before login) |
 | `kids profiles` | List the Amazon Kids child profiles in the household (name, age, directedId) |
 | `kids status [<device>]` | Amazon Kids state per Echo — every Echo, or one named speaker |
@@ -586,6 +588,23 @@ about plain `http://` and posts it anyway — Amazon then shows nothing.
 
 ```bash
 cli-anything-alexa echos background "https://example.com/sunrise.jpg" --device "Kitchen Show" --yes
+```
+
+**Notification volume.** The volume alarms, timers and reminders play at —
+the "Alarms, Timers, and Notifications" slider in the app — is a per-Echo
+setting separate from the media volume `media volume` writes. `echos
+notification-volume` reads the account-wide state (one row per Echo;
+`--json` carries the `softwareVersion` the write URL embeds), and
+`echos set-notification-volume` writes it for one Echo. Amazon answers the
+write with nothing useful, so the executed write **re-reads** the state and
+reports `ok` from what Amazon holds — `null` means the verify read answered
+nothing, never a quiet pass. Volumes must be whole numbers 0–100 (the device
+stores an integer percentage; `30.5` is refused rather than silently rounded)
+and are validated before any session is touched.
+
+```bash
+cli-anything-alexa echos notification-volume --json
+cli-anything-alexa echos set-notification-volume "Kitchen Echo" 50 --yes
 ```
 
 **Per-appliance detail.** `devices capabilities` reads alexapy's own GraphQL

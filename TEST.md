@@ -9,16 +9,46 @@ python -m pytest tests --cov=cli_anything --cov-fail-under=87 -q --durations=10 
   && bandit -r cli_anything/ -ll -x '*/tests/*,*/test_*.py,*/conftest.py'
 ```
 
-## Current state (after 0.13.0 refine, 2026-10-21)
+## Current state (after 0.14.0 refine, 2026-10-28)
 
-- **1850 tests pass**, 0 failures, in ~8 s (no live account, no network —
+- **1907 tests pass**, 0 failures, in ~8 s (no live account, no network —
   alexapy is mocked; the push-event websocket is driven by a fake
   `WebsocketEchoClient`, pure logic without it).
-- Coverage **97.2%** (gate: ≥87%). The 0.13.0 **push-event stream** wiring —
+- Coverage **97.3%** (gate: ≥87%). The 0.13.0 **push-event stream** wiring —
   `core/events.py` plus its `events status` / `events listen` CLI surface —
   is covered by `test_events.py` + `test_cli_events_paths.py` (module **96%**
   +); the CLI layer (`alexa_cli.py`) ~95%, the REPL skin ~97%.
 - Lint (`ruff check`), format (`ruff format --check`) and bandit (-ll): clean.
+
+## Added in 0.14.0 — the notification-volume surface
+
+`echos notification-volume` (read) and `echos set-notification-volume`
+(write) expose alexapy's `get_notification_states` / `set_notification_volume`
+— the "Alarms, Timers, and Notifications" volume each Echo plays alerts at,
+previously reachable only in the Alexa app:
+
+- `tests/test_echo_state_reads.py` (notification-volume section) —
+  `notification_volume_rows` (envelope *and* bare-list shapes, junk entries
+  skipped, serial→name join, empty payloads empty), `normalize_notification_volume`
+  (whole numbers 0–100 only: fractions like `30.5` refused rather than
+  rounded, NaN/inf/bools/non-numeric refused, in-range ints and strings
+  accepted), `resolve_notification_target` (name/serial match, unknown target
+  refused **listing the account's device names**), `notification_request`
+  (the exact PUT body; a record missing serial/deviceType/softwareVersion
+  refused — the URL path embeds all three), `observed_notification_volume`
+  (three-valued verify read: junk volume → `None`), and the async
+  `fetch_notification_states` / `set_notification_volume` against a faked
+  `AlexaAPI`: login passed through, the record's exact fields in the write,
+  verify-by-reread (`ok` True when Amazon agrees, False when it differs,
+  `None` when the verify read answers nothing), refusal of unknown devices /
+  bad levels / half-addressable records **before any write**.
+- `tests/test_cli_notification_volume_paths.py` — `echos notification-volume`
+  (account rows, per-device filter, unknown-device abort) and `echos
+  set-notification-volume` (dry-run preview with the normalized integer,
+  `--yes` executes and reports the verified row, bad levels refused **before
+  `_login`** identically with and without `--yes`, non-numeric levels refused
+  by Click's own type, and the read → set → read workflow on one stubbed
+  session consuming every staged answer).
 
 ## What the tests cover
 

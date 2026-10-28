@@ -110,6 +110,15 @@ Every command takes `--json`.
   reschedule/snooze writes an alarm's local wall-clock fields in.
 - `echos wifi [<device>]` — one Echo's wifi details (SSID, signal, security,
   MAC/IP); default target is the first online Echo, like the rest of `echos`.
+- `echos notification-volume [<device>]` — the "Alarms, Timers, and
+  Notifications" volume per Echo (the volume alarms/timers/reminders play at,
+  separate from the media volume). Whole account by default; name a device
+  for just its row.
+- `echos set-notification-volume <device> <0-100>` (`--yes`) — set that volume
+  for one Echo. **Whole numbers 0–100 only** (no `30.5`); bad values are
+  refused before login. The write re-reads the device-notification state and
+  reports `ok` from what Amazon holds — `null` means "could not check", not
+  success.
 - `auth whoami` — who the saved cookie is actually logged in as (customer id,
   name, email, Prime Music). `auth status` validates the **cookie**; `whoami`
   validates that it still buys an **account**, and exits non-zero if not.

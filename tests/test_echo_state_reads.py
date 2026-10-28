@@ -248,3 +248,226 @@ def test_speak_with_no_devices_raises():
     with patch("alexapy.AlexaAPI", _speak_cls([], api)):
         with pytest.raises(ValueError, match="no Alexa devices"):
             _run(control.speak(MagicMock(), "hi"))
+
+
+# ── notification volume (Alarms, Timers, and Notifications) ─────────────
+
+
+NOTIF_STATES = {
+    "deviceNotificationStates": [
+        {
+            "deviceSerialNumber": "SN1",
+            "deviceType": "A3S5BH2HU6VAYF",
+            "softwareVersion": "1234567890",
+            "volumeLevel": 40,
+        },
+        {
+            "deviceSerialNumber": "SN2",
+            "deviceType": "A2M4YX06LZN8PU",
+            "softwareVersion": "9876543210",
+            "volumeLevel": 85,
+        },
+    ]
+}
+
+
+def test_notification_volume_rows_joins_names_onto_the_states():
+    rows = devices_meta.notification_volume_rows(NOTIF_STATES, DEVICES)
+    assert rows == [
+        {"device": "Kitchen", "serial": "SN1", "volume": 40, "softwareVersion": "1234567890"},
+        {"device": "Bedroom", "serial": "SN2", "volume": 85, "softwareVersion": "9876543210"},
+    ]
+
+
+def test_notification_volume_rows_accepts_the_unwrapped_list_alexapy_returns():
+    """`get_notification_states` hands back the bare list; rows still build."""
+    rows = devices_meta.notification_volume_rows(NOTIF_STATES["deviceNotificationStates"], DEVICES)
+    assert rows[0]["volume"] == 40
+
+
+@pytest.mark.parametrize("empty", [None, {}, [], {"deviceNotificationStates": []}])
+def test_notification_volume_rows_of_an_empty_payload_is_empty(empty):
+    assert devices_meta.notification_volume_rows(empty, DEVICES) == []
+
+
+def test_notification_volume_rows_skips_non_dict_entries():
+    assert devices_meta.notification_volume_rows({"deviceNotificationStates": ["junk"]}, DEVICES) == []
+
+
+@pytest.mark.parametrize("good", [0, 100, "42", 17, 30.0])
+def test_normalize_notification_volume_accepts_whole_numbers_in_range(good):
+    assert devices_meta.normalize_notification_volume(good) == int(good)
+
+
+@pytest.mark.parametrize("bad", [-1, 101, 30.5, float("nan"), float("inf"), "loud", None, True])
+def test_normalize_notification_volume_refuses_anything_else(bad):
+    with pytest.raises(ValueError, match="notification volume"):
+        devices_meta.normalize_notification_volume(bad)
+
+
+def test_normalize_notification_volume_keeps_its_error_caller_facing():
+    with pytest.raises(ValueError) as excinfo:
+        devices_meta.normalize_notification_volume(30.5)
+    assert "30.5" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [("Bedroom", "SN2"), ("bedroom", "SN2"), ("SN1", "SN1")],
+)
+def test_resolve_notification_target_matches_name_or_serial(target, expected):
+    record = devices_meta.resolve_notification_target(DEVICES, target)
+    assert record["serialNumber"] == expected
+
+
+def test_resolve_notification_target_lists_the_candidates_when_lost():
+    with pytest.raises(ValueError) as excinfo:
+        devices_meta.resolve_notification_target(DEVICES, "Garage")
+    assert "Kitchen" in str(excinfo.value) and "Bedroom" in str(excinfo.value)
+
+
+def test_resolve_notification_target_of_an_empty_account_names_nothing():
+    with pytest.raises(ValueError, match="no device matching 'Garage'"):
+        devices_meta.resolve_notification_target([], "Garage")
+
+
+def test_notification_request_builds_the_exact_put_body():
+    record = DEVICES[0] | {"deviceType": "A3S5BH2HU6VAYF", "softwareVersion": "1234567890"}
+    assert devices_meta.notification_request(record, "40") == {
+        "deviceSerialNumber": "SN1",
+        "deviceType": "A3S5BH2HU6VAYF",
+        "softwareVersion": "1234567890",
+        "volumeLevel": 40,
+    }
+
+
+@pytest.mark.parametrize(
+    "hole",
+    [
+        {"serialNumber": None},
+        {"deviceType": None},
+        {"softwareVersion": None},
+        {"deviceType": "", "softwareVersion": ""},
+    ],
+)
+def test_notification_request_refuses_a_record_that_cannot_be_addressed(hole):
+    record = DEVICES[0] | {"deviceType": "T", "softwareVersion": "V"} | hole
+    with pytest.raises(ValueError, match="the device record has no"):
+        devices_meta.notification_request(record, 30)
+
+
+def test_observed_notification_volume_reads_the_fresh_state():
+    assert devices_meta.observed_notification_volume(NOTIF_STATES, "SN2") == 85
+
+
+@pytest.mark.parametrize(
+    ("payload", "serial"),
+    [
+        (NOTIF_STATES, "SN-UNKNOWN"),
+        ({}, "SN1"),
+        (None, "SN1"),
+        (NOTIF_STATES, None),
+        ({"deviceNotificationStates": [{"deviceSerialNumber": "SN1", "volumeLevel": "junk"}]}, "SN1"),
+    ],
+)
+def test_observed_notification_volume_answers_none_when_it_cannot_check(payload, serial):
+    """Three-valued verify: None is 'could not check', never a quiet pass."""
+    assert devices_meta.observed_notification_volume(payload, serial) is None
+
+
+def test_fetch_notification_states_joins_names_onto_the_live_payload():
+    fake = _fake_cls(get_notification_states=NOTIF_STATES)
+    with patch("alexapy.AlexaAPI", fake):
+        rows = _run(devices_meta.fetch_notification_states(MagicMock()))
+    fake.get_notification_states.assert_awaited_once()
+    assert rows[0]["device"] == "Kitchen"
+
+
+def test_fetch_notification_states_survives_an_endpoint_returning_nothing():
+    fake = _fake_cls(get_notification_states=None)
+    with patch("alexapy.AlexaAPI", fake):
+        assert _run(devices_meta.fetch_notification_states(MagicMock())) == []
+
+
+FULL_DEVICES = [
+    DEVICES[0] | {"deviceType": "A3S5BH2HU6VAYF", "softwareVersion": "1234567890"},
+    DEVICES[1] | {"deviceType": "A2M4YX06LZN8PU", "softwareVersion": "9876543210"},
+]
+
+
+def _notif_cls(devices=None):
+    fake = MagicMock()
+    fake.get_devices = AsyncMock(
+        return_value=list(devices if devices is not None else FULL_DEVICES)
+    )
+    fake.get_notification_states = AsyncMock(return_value=NOTIF_STATES)
+    fake.set_notification_volume = AsyncMock(return_value=True)
+    return fake
+
+
+def test_set_notification_volume_verifies_by_reread():
+    fake = _notif_cls()
+    with patch("alexapy.AlexaAPI", fake):
+        row = _run(devices_meta.set_notification_volume(MagicMock(), "Kitchen", 50))
+    # the login argument is first; the write needs the record's exact fields
+    assert fake.set_notification_volume.await_args[0][1:] == (
+        "SN1",
+        "A3S5BH2HU6VAYF",
+        "1234567890",
+        50,
+    )
+    assert row == {
+        "device": "Kitchen",
+        "serial": "SN1",
+        "volume": 50,
+        "sent": True,
+        "observed": 40,
+        "ok": False,
+    }
+
+
+def test_set_notification_volume_ok_is_true_when_amazon_agrees():
+    fake = _notif_cls()
+    fake.get_notification_states = AsyncMock(
+        return_value={
+            "deviceNotificationStates": [
+                dict(NOTIF_STATES["deviceNotificationStates"][0], volumeLevel=30)
+            ]
+        }
+    )
+    with patch("alexapy.AlexaAPI", fake):
+        row = _run(devices_meta.set_notification_volume(MagicMock(), "Kitchen", "30"))
+    assert row["ok"] is True and row["observed"] == 30
+
+
+def test_set_notification_volume_ok_is_none_when_the_verify_read_answers_nothing():
+    fake = _notif_cls()
+    fake.get_notification_states = AsyncMock(return_value=None)
+    with patch("alexapy.AlexaAPI", fake):
+        row = _run(devices_meta.set_notification_volume(MagicMock(), "Kitchen", 30))
+    assert row["ok"] is None and row["observed"] is None
+
+
+def test_set_notification_volume_unknown_device_refuses_before_any_write():
+    fake = _notif_cls()
+    with patch("alexapy.AlexaAPI", fake):
+        with pytest.raises(ValueError, match="no device matching 'Garage'"):
+            _run(devices_meta.set_notification_volume(MagicMock(), "Garage", 30))
+    fake.set_notification_volume.assert_not_awaited()
+
+
+def test_set_notification_volume_bad_level_refuses_before_any_write():
+    fake = _notif_cls()
+    with patch("alexapy.AlexaAPI", fake):
+        with pytest.raises(ValueError, match="whole number"):
+            _run(devices_meta.set_notification_volume(MagicMock(), "Kitchen", 30.5))
+    fake.set_notification_volume.assert_not_awaited()
+
+
+def test_set_notification_volume_needs_the_full_record():
+    half = [{"serialNumber": "SN1", "accountName": "Kitchen", "online": True}]
+    fake = _notif_cls(devices=half)
+    with patch("alexapy.AlexaAPI", fake):
+        with pytest.raises(ValueError, match="softwareVersion"):
+            _run(devices_meta.set_notification_volume(MagicMock(), "Kitchen", 30))
+    fake.set_notification_volume.assert_not_awaited()
