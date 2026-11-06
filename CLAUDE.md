@@ -13,6 +13,7 @@ is a **browser-proxy login** that needs no Home Assistant.
 - `cli_anything/alexa/alexa_cli.py` — the Click CLI + REPL; all command wiring. Entry point `main`.
 - `cli_anything/alexa/core/` — one module per surface:
   - `appliances.py` — **pure** logic: applianceId→entity parsing, whitelist load, prune planning. No deps. Unit-tested.
+  - `enroll.py` — **device-credential enrollment** (0.15.0, alexapy ≥1.34 `secureauth`: `EnrollmentFlow`/`DeviceCredentials`): the paste-URL PKCE flow behind `auth enroll` — `new_flow`/`restore_flow`/`code_from_redirect`/`flow_row` (pure; the URL is alexapy's own), `save_flow_state`/`load_flow_state` (the chmod-0600 `enrollment.json` two-phase bridge), `save_credentials`/`load_credentials` (`credentials.json`, owner-only, `saved_at` metadata stripped on load), `register_code` (the code-for-credentials exchange on an aiohttp session) and `activate_credentials` (oauth material → `AlexaLogin` → `exchange_token_for_cookies` → `test_loggedin` → `save_cookiefile`), plus `enrollment_summary`/`credentials_row` (secret-free rows).
   - `formatting.py` — **pure** table/cell rendering. Unit-tested.
   - `session.py` — `alexapy.AlexaLogin` wrapper: **proxy browser login** (`proxy_login`, the primary `auth login` path — starts `AlexaProxy`, prints the access URL, polls `test_loggedin`, `finalize_login` → cookie + chmod 0600, always `stop_proxy`), scripted login (`fresh_login`, headless/CI fallback, TOTP via `set_totp`), cookie import, load/validate, csrf header, `proxy_access_url` (pure), **`account_info`/`account_row`** (`/api/users/me` — who the cookie is logged in as, behind `auth whoami`), and the **session-lifecycle surface** (0.7.0): `session_ping`/`ping_row` (`AlexaAPI.ping` `/api/ping` — the app's own health check, behind `auth ping`), `refresh_access_token`/`refresh_row` (`AlexaLogin.refresh_access_token` OAuth token exchange, behind `auth refresh`), `cookie_paths_in_dir`/`logout_plan`/`logout_session` (deletes every cookie file alexapy keeps — `.storage` JSON jar + pickles + legacy txt — verified from a fresh disk re-read; refused read-in-place, behind `auth logout`) and `totp_row` (standalone TOTP code via pyotp, behind `auth totp`). `alexapy` imported lazily so the CLI loads without it.
   - `devices.py` — appliance list + raw `DELETE /api/phoenix/appliance/<id>` + raw `POST /api/phoenix/discovery` (discover).
@@ -57,6 +58,28 @@ cli-anything-alexa devices list --json
   `--password [--otp-secret <base32>]` selects the scripted/headless fallback
   (`fresh_login`, TOTP via `login.set_totp`). `auth import-pickle` (reuse HA's
   `alexa_media` pickle) is a documented convenience, not the default.
+- **Auth = device enrollment too (0.15.0).** `auth enroll` wires alexapy
+  ≥1.34's `secureauth` module (`core/securauth` → `core/enroll.py`, a thin
+  wrapper, everything else pure here): the **paste-URL PKCE device
+  enrollment** — the harness prints `flow.oauth_url` (Amazon's own login
+  pages, captcha/2FA native), you paste back the `/ap/maplanding` redirect,
+  and `EnrollmentFlow.async_register` exchanges the PKCE code for durable
+  `DeviceCredentials` (refresh token + `mac_dms`), saved chmod 0600 as
+  `credentials.json` under the config dir. The session half then reuses the
+  stock `AlexaLogin` machinery (`oauth={refresh_token, mac_dms}` →
+  `exchange_token_for_cookies` → `test_loggedin` → `save_cookiefile`) so the
+  resulting cookie is byte-compatible with every other command. Rules worth
+  keeping: **two domain gates** (`session.validate_region` first, then
+  alexapy's own narrower `secureauth.ALLOWED_DOMAINS` — a session-valid but
+  non-enrollable region must fail BEFORE a browser round-trip); the **flow
+  state (PKCE verifier) is saved before anything is asked** and deleted on
+  success (single-use secret material) so `--start`/`--finish` two-phase
+  works and an interrupted run can resume; **no secret is ever echoed**
+  (`credentials_row` reduces the refresh token to `has_refresh_token`);
+  `--json` never prompts (email + `--redirect-url` up front); the cookie for
+  an enrollment is minted on the **flow's own domain**, not the CLI's
+  default region. `mac_dms` lands with the credentials, so enrollment
+  directly enables `events listen`.
 - **HA-cookie reuse: read IN PLACE, don't copy.** HA's `alexa_media` rotates
   the cookie constantly, so an `import-pickle` *copy* goes stale within seconds
   (`auth status` flips `logged_in` true→false mid-session). Global `--cookie-dir

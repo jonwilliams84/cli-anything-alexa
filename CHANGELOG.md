@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.15.0] — 2026-11-06
+
+### Added — `auth enroll`: device-credential enrollment (alexapy ≥1.34 `secureauth`), the fourth auth path
+
+alexapy 1.34 shipped its biggest authentication change in years — the
+`secureauth` module (the "alexa-auth-redesign"): a **paste-URL PKCE
+enrollment** where you sign in on Amazon's own pages in your own browser,
+paste back the `/ap/maplanding` redirect URL, and the authorization code is
+exchanged for **durable device credentials** — a refresh token plus the
+`mac_dms` device-signing key. The harness still drove none of it; this
+release wires it end-to-end as `auth enroll`, with `core/enroll.py` (a thin
+wrapper over alexapy's flow plus pure helpers) behind it. It matters because
+it is the first login path that is at once **passwordless, proxy-less, and
+durable** — and it carries `mac_dms`, so `events listen` (the signed
+push-event stream) works straight after enrollment.
+
+* `auth enroll` — one shot, interactive: prints Amazon's own enrollment URL,
+  prompts for the pasted redirect URL, exchanges the code (`register_code`
+  → `EnrollmentFlow.async_register`, PKCE S256), mint + verify + save the
+  session cookie (`activate_credentials` → `exchange_token_for_cookies` →
+  `test_loggedin` → `save_cookiefile`) — into the exact JSON jar every other
+  command loads, so the resulting cookie is byte-compatible with the rest
+  of the harness.
+* `auth enroll --start` / `auth enroll --finish --redirect-url <URL>` —
+  the two phases split, so the flow can start on one machine and finish on
+  another (or later): the flow state — the PKCE verifier, secret and
+  single-use — is saved **before** anything is asked (chmod 0600,
+  `enrollment.json`), resumed by `--finish` (whose enrolment domain wins
+  over the CLI's configured region), and deleted once consumed.
+* Durable side-channel: the exchanged credentials are persisted as
+  `credentials.json` (chmod 0600) under the config dir; display rows
+  (`credentials_row`, `enrollment_summary`) reduce the refresh token to
+  `has_refresh_token` — **no secret is ever echoed to stdout or JSON**.
+* Guards held to the harness-wide rules: **two domain gates** (the session
+  region allow-list, then alexapy's own narrower `secureauth.ALLOWED_DOMAINS`
+  — a session-valid but non-enrollable region is refused before a browser
+  round-trip burns the PKCE verifier), a version guard (an alexapy without
+  `secureauth` gets the actionable `alexapy>=1.34` upgrade message), and
+  `--json` never prompts (email + `--redirect-url` up front).
+
+Tests: `tests/test_enroll.py` (40 unit tests — domain gates, version guard,
+flow-state round-trips, the maplanding paste contract, secret-free rows,
+the credentials/state files, the exchange against a faked aiohttp session,
+activation against a faked `AlexaLogin`, the pure summary) and
+`tests/test_cli_enroll_paths.py` (16 CLI contracts — happy path,
+`--json`-never-prompts, the interactive paste, unsupported-region refusal,
+both phases, state-file consumption, an unverified session reported with a
+non-zero exit, and a profile-isolation autouse fixture keeping the suite
+off the invoking user's real config dir). Suite: 1907 → **1963** pass;
+coverage 97.2% (gate unchanged ≥87%); `core/enroll.py` at 95%.
+
 ## [0.14.0] — 2026-10-28
 
 ### Added — `echos notification-volume` / `echos set-notification-volume`: the "Alarms, Timers, and Notifications" volume, first-class
