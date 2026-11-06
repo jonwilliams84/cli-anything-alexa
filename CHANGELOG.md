@@ -40,7 +40,7 @@ push-event stream) works straight after enrollment.
   `secureauth` gets the actionable `alexapy>=1.34` upgrade message), and
   `--json` never prompts (email + `--redirect-url` up front).
 
-Tests: `tests/test_enroll.py` (38 unit tests — domain gates, version guard,
+Tests: `tests/test_enroll.py` (40 unit tests — domain gates, version guard,
 flow-state round-trips, the maplanding paste contract, secret-free rows,
 the credentials/state files, the exchange against a faked aiohttp session,
 activation against a faked `AlexaLogin`, the pure summary) and
@@ -48,8 +48,8 @@ activation against a faked `AlexaLogin`, the pure summary) and
 `--json`-never-prompts, the interactive paste, unsupported-region refusal,
 both phases, state-file consumption, an unverified session reported with a
 non-zero exit, and a profile-isolation autouse fixture keeping the suite
-off the invoking user's real config dir). Suite: 1907 → **1977** pass;
-coverage 97.2% (gate unchanged ≥87%); `core/enroll.py` at 94%.
+off the invoking user's real config dir). Suite: 1907 → **1963** pass;
+coverage 97.2% (gate unchanged ≥87%); `core/enroll.py` at 95%.
 
 ## [0.14.0] — 2026-10-28
 

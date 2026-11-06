@@ -11,14 +11,14 @@ python -m pytest tests --cov=cli_anything --cov-fail-under=87 -q --durations=10 
 
 ## Current state (after 0.15.0 refine, 2026-11-06)
 
-- **1977 tests pass**, 0 failures, in ~12 s (no live account, no network —
+- **1963 tests pass**, 0 failures, in ~12 s (no live account, no network —
   alexapy is mocked; the push-event websocket is driven by a fake
   `WebsocketEchoClient`, pure logic without it).
 - Coverage **97.2%** (gate: ≥87%). The 0.13.0 **push-event stream** wiring —
   `core/events.py` plus its `events status` / `events listen` CLI surface —
   is covered by `test_events.py` + `test_cli_events_paths.py` (module **96%**
   +); the CLI layer (`alexa_cli.py`) ~95%, the REPL skin ~97%,
-  `core/enroll.py` (0.15.0) **94%**.
+  `core/enroll.py` (0.15.0) **95%**.
 - Lint (`ruff check`), format (`ruff format --check`) and bandit (-ll): clean.
 
 ## Added in 0.15.0 — `auth enroll` (device-credential enrollment)
