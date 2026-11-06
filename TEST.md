@@ -9,16 +9,56 @@ python -m pytest tests --cov=cli_anything --cov-fail-under=87 -q --durations=10 
   && bandit -r cli_anything/ -ll -x '*/tests/*,*/test_*.py,*/conftest.py'
 ```
 
-## Current state (after 0.14.0 refine, 2026-10-28)
+## Current state (after 0.15.0 refine, 2026-11-06)
 
-- **1907 tests pass**, 0 failures, in ~8 s (no live account, no network —
+- **1977 tests pass**, 0 failures, in ~12 s (no live account, no network —
   alexapy is mocked; the push-event websocket is driven by a fake
   `WebsocketEchoClient`, pure logic without it).
-- Coverage **97.3%** (gate: ≥87%). The 0.13.0 **push-event stream** wiring —
+- Coverage **97.2%** (gate: ≥87%). The 0.13.0 **push-event stream** wiring —
   `core/events.py` plus its `events status` / `events listen` CLI surface —
   is covered by `test_events.py` + `test_cli_events_paths.py` (module **96%**
-  +); the CLI layer (`alexa_cli.py`) ~95%, the REPL skin ~97%.
+  +); the CLI layer (`alexa_cli.py`) ~95%, the REPL skin ~97%,
+  `core/enroll.py` (0.15.0) **94%**.
 - Lint (`ruff check`), format (`ruff format --check`) and bandit (-ll): clean.
+
+## Added in 0.15.0 — `auth enroll` (device-credential enrollment)
+
+alexapy 1.34 ships `secureauth` (the "alexa-auth-redesign"): a paste-URL PKCE
+flow that signs you in on Amazon's own pages (no CLI-side password, no
+proxy) and exchanges the redirect's authorization code for **durable device
+credentials** — refresh token + `mac_dms`. The harness wires it as the
+fourth auth path, `auth enroll`:
+
+- `tests/test_enroll.py` — the core unit half: the two domain gates
+  (session-region allow-list, then alexapy's narrower enrollment list —
+  a session-valid but non-enrollable region is refused before a browser
+  round-trip), the version guard (an alexapy without `secureauth`
+  produces the actionable upgrade error, and the domain fallback list),
+  flow state round-trips (verifier preserved, chmod 0600, garbage/missing
+  refused), `code_from_redirect` (the maplanding contract — https, the
+  right `/ap/maplanding` path and domain, a code present), `flow_row` /
+  `credentials_row` (**secrets never echoed** — the refresh token is
+  reduced to `has_refresh_token`), the credentials file (round-trip,
+  owner-only chmod, `saved_at` metadata stripped back to the dataclass's
+  own fields), `register_code` against a faked aiohttp session (success
+  body → the right credentials; the caller's session never closed; the
+  wrapper's OWN session always closed, on failure too), garbage HTTP
+  answers wrapped in one error type, `activate_credentials` against a
+  faked `AlexaLogin` (mint → verify → save, close always; exchange refusal
+  aborts before any cookie is saved; empty email refused), and the pure
+  `enrollment_summary` composition.
+- `tests/test_cli_enroll_paths.py` — the CLI contracts: the one-shot
+  happy path (`--json --email --redirect-url`), `--json`-never-prompts
+  (needs email + redirect up front), the interactive paste prompt, the
+  unsupported-region refusal (no core coroutine launched, nothing
+  written), phase 1 (`--start`: URL + state file, owner-only, verifier
+  never in stdout, zero network), phase 2 (`--finish`: resumes the saved
+  state, its domain wins, state file deleted on success; refuses when no
+  enrollment is in progress or the state is garbled), secrets never
+  reaching stdout, the credentials file written 0600, and an unverified
+  session reported honestly (`logged_in: false`) with a non-zero exit.
+  A profile-isolation autouse fixture keeps the suite off the invoking
+  user's real config dir.
 
 ## Added in 0.14.0 — the notification-volume surface
 

@@ -400,6 +400,146 @@ def auth_login(ctx, email, region, password, otp_secret, host, port, timeout):
         )
 
 
+@auth.command("enroll")
+@click.option("--email", default=None, help="Amazon account email (prompted if omitted)")
+@click.option(
+    "--url",
+    "region",
+    default=None,
+    help="Enrollment region host (only host alexapy's enrollment flow supports: "
+    "amazon.com, amazon.co.uk, amazon.de, amazon.fr, amazon.it, amazon.es, "
+    "amazon.ca, amazon.co.jp — see --json error for the live list)",
+)
+@click.option(
+    "--serial",
+    default=None,
+    help="Device serial for the enrollment identity (default: a generated one)",
+)
+@click.option(
+    "--redirect-url",
+    default=None,
+    help="The pasted /ap/maplanding redirect URL (skips the interactive paste prompt)",
+)
+@click.option(
+    "--start",
+    is_flag=True,
+    default=False,
+    help="Phase 1 only: print the enrollment URL and save the flow state "
+    "(finish later/on another machine with --finish)",
+)
+@click.option(
+    "--finish",
+    is_flag=True,
+    default=False,
+    help="Phase 2: finish the saved flow state with the pasted redirect URL",
+)
+@click.pass_context
+def auth_enroll(ctx, email, region, serial, redirect_url, start, finish):
+    """Enroll by device: the paste-URL PKCE flow from alexapy's secureauth
+    redesign (the fourth auth path).
+
+    \b
+    No proxy, no password, ever:
+      1. print Amazon's own enrollment URL (or `--start` and come back later),
+      2. open it, sign in as normal — captcha / 2FA are Amazon's own pages,
+      3. paste the full /ap/maplanding URL the browser lands on,
+      4. the code is exchanged for DURABLE device credentials — a refresh
+         token + mac_dms saved (chmod 0600) as credentials.json — and the
+         session cookie is minted from them, verified and saved like any
+         other login.
+
+    Requires alexapy >= 1.34. mac_dms lands with the credentials, so
+    `events listen` works straight after enrollment.
+    """
+    from cli_anything.alexa.core import enroll as enroll_core
+
+    em = email or ctx.obj.get("email")
+    as_json = ctx.obj.get("as_json")
+    if not em:
+        if as_json:
+            _abort("--email is required with --json")
+        em = click.prompt("Amazon account email")
+    region = region or ctx.obj.get("url") or "amazon.co.uk"
+    config_dir = ctx.obj.get("cookie_dir", session_core.DEFAULT_CONFIG_DIR)
+    state_file = enroll_core.enrollment_state_path(config_dir)
+
+    try:
+        if finish:
+            flow = enroll_core.load_flow_state(state_file)
+            region = flow.domain  # activate on the flow's own enrollment host
+            if not redirect_url and as_json:
+                _abort("--redirect-url is required with --json --finish")
+            if not redirect_url:
+                redirect_url = click.prompt(
+                    "Paste the page URL your browser landed on after the Amazon sign-in redirect"
+                )
+        else:
+            flow = enroll_core.new_flow(region, serial=serial)
+            region = flow.domain  # normalized inside new_flow
+            # Persist the flow BEFORE anything else, so an interrupted or
+            # two-phase session can resume with --finish instead of burning
+            # the PKCE verifier.
+            enroll_core.save_flow_state(state_file, flow)
+            if start:
+                emit(
+                    ctx,
+                    {
+                        **enroll_core.flow_row(flow),
+                        "started": True,
+                        "enrollment_state_file": str(state_file),
+                        "hint": "run `auth enroll --finish --redirect-url "
+                        "<pasted URL>` to complete it",
+                    },
+                )
+                return
+            # Interactive single-shot: show the URL, then ask for the paste.
+            if not redirect_url and as_json:
+                emit(
+                    ctx,
+                    {
+                        **enroll_core.flow_row(flow),
+                        "started": False,
+                        "hint": "pass --redirect-url <pasted URL> with --json, "
+                        "or run later with --finish (the flow state was saved)",
+                    },
+                )
+                return
+            if not redirect_url:
+                row = enroll_core.flow_row(flow)
+                click.echo("")
+                click.echo("Device enrollment — three steps, no password:")
+                click.echo(f"  1. Open this URL in a browser:  {row['enrollment_url']}")
+                click.echo("  2. Sign in to Amazon as you normally would (captcha / 2FA")
+                click.echo("     are handled by Amazon's own pages). On success the")
+                click.echo("     browser lands on a long …/ap/maplanding?... URL.")
+                click.echo("  3. Paste that FULL page URL back at the prompt.")
+                click.echo("")
+                redirect_url = click.prompt("Paste the redirect URL")
+        creds = _run(ctx, enroll_core.register_code(flow, redirect_url))
+        credentials_file = enroll_core.save_credentials(
+            enroll_core.credentials_path(config_dir), creds
+        )
+    except enroll_core.AlexaEnrollError as exc:
+        _abort(str(exc))
+
+    activation_row = _run(ctx, enroll_core.activate_credentials(creds, em, region, config_dir))
+    if state_file.exists():
+        state_file.unlink()  # PKCE verifier is single-use; keep nothing secret behind
+    # persist the email + region into the profile for the next run
+    cfg = dict(ctx.obj)
+    cfg["email"] = em
+    cfg["url"] = region
+    project.save_config(cfg, ctx.obj.get("config_path"))
+    summary = enroll_core.enrollment_summary(
+        enroll_core.credentials_row(creds),
+        activation_row,
+        credentials_file,
+    )
+    emit(ctx, summary)
+    if not summary.get("logged_in"):
+        sys.exit(1)
+
+
 @auth.command("status")
 @click.pass_context
 def auth_status(ctx):

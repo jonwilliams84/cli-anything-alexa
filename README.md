@@ -132,6 +132,48 @@ cli-anything-alexa auth status            # -> {"email": ..., "logged_in": true}
 > older one — see [Python version](#python-version). If HA runs Python 3.14,
 > run the CLI on Python 3.14 (or just use the proxy login instead).
 
+### 4. Device enrollment — `auth enroll` (no proxy, no password)
+
+The newest auth path, from alexapy 1.34's "secureauth" redesign. You sign in
+to Amazon's **own** login page in your browser and paste back the redirect
+URL; the authorization code in it is exchanged (PKCE S256) for **durable
+device credentials** — a refresh token plus the `mac_dms` device-signing key —
+and the session cookie is minted from those, like every other login's.
+
+```bash
+# interactive: prints the URL, then prompts for the pasted redirect URL
+cli-anything-alexa auth enroll --email you@example.com
+
+# scripted (no prompts): one call, URL in your notes + paste later
+cli-anything-alexa --json --email you@example.com auth enroll \
+  --redirect-url '<full …/ap/maplanding?... URL>'
+
+# or split the phases (e.g. start here, finish on a headless box):
+cli-anything-alexa --json --email you@example.com auth enroll --start
+cli-anything-alexa --json --email you@example.com auth enroll \
+  --finish --redirect-url '<pasted URL>'
+```
+
+Why it matters:
+
+* **No password or TOTP seed is ever typed to the CLI**, and no local proxy
+  runs — the browser completes Amazon's own pages, exactly like the proxy
+  flow, but everything between the two halves is a single URL paste.
+* The **refresh token is saved** (chmod 0600, `credentials.json` in the
+  config dir) — only display rows are secret-free (`has_refresh_token`,
+  never the token itself).
+* **`mac_dms` lands with the credentials**, so `events listen` — the
+  signed push-event stream — works straight after enrollment, even from a
+  fresh login where no Echo session minted one.
+* Requires **alexapy≥1.34**; enrollment exists only for a subset of Amazon
+  regions (alexapy's list: amazon.com/co.uk/de/fr/it/es/ca/co.jp/…). An
+  unsupported `--url` is refused up front with the live allow-list, before
+  anything (or anyone) is sent browsing.
+
+The flow state (PKCE verifier) is saved **before** anything is asked, so an
+interrupted run can resume with `--finish` instead of re-authenticating, and
+it is deleted on success — the verifier is single-use secret material.
+
 ### Checking / re-authenticating
 
 ```bash
@@ -183,6 +225,7 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `auth refresh` | Renew the access token from the cookie's refresh token (OAuth `/auth/token`) — no re-login; exits non-zero when the cookie has no refresh token or the exchange fails (fix: `auth login`) |
 | `auth logout` | **Destructive**: delete every cookie file alexapy keeps for the account (versioned JSON jar + pickles + legacy txt), verified from a fresh disk re-read. Preview by default; `--yes` to execute. Refused under `--cookie-dir` (that cookie belongs to another app) |
 | `auth totp --otp-secret <b32>` | Show the current 2FA code (and seconds left) for an authenticator secret — the code `auth login --password --otp-secret` will send, computable standalone for scripted/CI flows. No session or network involved |
+| `auth enroll [--start \| --finish --redirect-url <url>]` | **Device enrollment** (alexapy≥1.34 secureauth): sign in on Amazon's own page, paste the redirect URL back, get a durable refresh token + `mac_dms` (saved chmod 0600) and the session cookie — no proxy, no password. `--start`/`--finish` split the two browser phases |
 | `config show` / `config save` | Show / persist the connection profile (email + region) |
 | `devices list [--ha-only \| --native-only] [--manufacturer <substr>]` | List smart-home devices with manufacturer + native-vs-HA `source` marker (each HA device shows its mapped entity id) |
 | `devices prune --whitelist <file>` | Delete HA-sourced appliances whose entity isn't whitelisted (dry-run default; `--no-dry-run --yes` to execute) |
