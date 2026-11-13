@@ -119,6 +119,15 @@ Every command takes `--json`.
   refused before login. The write re-reads the device-notification state and
   reports `ok` from what Amazon holds — `null` means "could not check", not
   success.
+- `echos equalizer [<device>]` — per-Echo bass / mid / treble, each −6..+6
+  (the Sound-settings sliders). Whole roster by default; a device with no
+  equalizer shows `None` bands rather than disappearing.
+- `echos set-equalizer <device> --bass -6..6 --mid -6..6 --treble -6..6`
+  (`--yes`) — set one Echo's bands. **All three required**: Amazon zeroes any
+  band left out, so a partial write would flatten the others to 0. Dry-run by
+  default; bad bands are refused before login. The write re-reads the
+  equalizer and reports `ok` from what Amazon holds — `null` means "could not
+  check", not success.
 - `auth whoami` — who the saved cookie is actually logged in as (customer id,
   name, email, Prime Music). `auth status` validates the **cookie**; `whoami`
   validates that it still buys an **account**, and exits non-zero if not.
