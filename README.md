@@ -258,6 +258,8 @@ Every command supports a global `--json` flag for clean machine-readable output.
 | `echos wifi [<device>]` | One Echo's wifi details (SSID, signal, security, MAC/IP) |
 | `echos notification-volume [<device>]` | The "Alarms, Timers, and Notifications" volume per Echo (read) |
 | `echos set-notification-volume <device> <0-100>` | Set that volume for one Echo (`--yes` to execute; verified by re-read) |
+| `echos equalizer [<device>]` | Per-Echo bass / mid / treble (-6..+6); the whole roster by default, `None` bands for a device with no equalizer |
+| `echos set-equalizer <device> --bass -6..6 --mid -6..6 --treble -6..6` | Set one Echo's bass/mid/treble — all three required (`--yes` to execute; verified by re-read) |
 | `echos background <url> [--device ...]` | Set an Echo Show's background to an https image URL (`--yes` to execute; non-https refused before login) |
 | `kids profiles` | List the Amazon Kids child profiles in the household (name, age, directedId) |
 | `kids status [<device>]` | Amazon Kids state per Echo — every Echo, or one named speaker |
@@ -648,6 +650,23 @@ and are validated before any session is touched.
 ```bash
 cli-anything-alexa echos notification-volume --json
 cli-anything-alexa echos set-notification-volume "Kitchen Echo" 50 --yes
+```
+
+**Equalizer: bass / mid / treble.** The Sound-settings sliders of the Alexa
+app are three signed bands per Echo, each an integer from **-6 to +6**.
+`echos equalizer` reads the whole roster (one row per Echo; a device with no
+equalizer — a plug, a display — shows `None` bands rather than disappearing),
+or just one device with `echos equalizer "Kitchen Echo"`. `echos
+set-equalizer` writes one device, and **all three bands are required**:
+Amazon zeroes any band left out, so a partial write would silently flatten
+the others to 0. Bands are validated before any session is touched.
+Amazon answers the write with nothing useful, so the executed write
+**re-reads** the equalizer and reports `ok` from what Amazon holds — `null`
+means the verify read answered nothing, never a quiet pass.
+
+```bash
+cli-anything-alexa echos equalizer --json
+cli-anything-alexa echos set-equalizer "Kitchen Echo" --bass 2 --mid 0 --treble -1 --yes
 ```
 
 **Per-appliance detail.** `devices capabilities` reads alexapy's own GraphQL

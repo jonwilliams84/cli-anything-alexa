@@ -21,6 +21,7 @@ is a **browser-proxy login** that needs no Home Assistant.
   - `device_ref.py` — **pure** adapter: raw `get_devices()` dict → the *attribute* surface alexapy's device-bound methods read off `self._device`. Unit-tested against the alexapy contract.
   - `devices_meta.py` — physical Echo devices (announce/dnd/media/routine targets) + the static state reads: bluetooth pairings, wake words (account-wide **and** per-Echo via `fetch_wake_word`/`AlexaAPI.find_wake_word`), DND status, **device preferences** (`timeZoneId`/locale/units — the timezone a notification edit needs) and **per-Echo wifi details** (pure row builders + thin fetchers) + the **Echo Show background write** (`set_background`, device-bound; `background_url_problem` refuses non-https BEFORE login because alexapy only warns about `http://` and posts anyway) + the **notification volume** surface (0.14.0: `fetch_notification_states` — the account-wide `get_notification_states` read behind `echos notification-volume` — and `set_notification_volume`, the per-Echo `set_notification_volume` PUT behind `echos set-notification-volume`, verified by re-read) see the notification-volume note below.
   - `media.py` — Echo transport (`play`/`pause`/`next`/`previous`/`forward`/`rewind`/`stop`), volume, shuffle/repeat, `play_music`, and the `get_state` player read. Pure volume/provider/player-row helpers unit-tested.
+  - `equalizer.py` — the **Echo equalizer** (0.16.0): per-Echo bass/mid/treble over `/api/equalizer/<serial>/<type>`, the Sound-settings sliders of the app — the one speaker-sound surface alexapy wraps that the harness exposed nothing for until now. alexapy's calls are **static** (login + serial + deviceType, like the notification-volume surface, NOT a `DeviceRef` path): `fetch_equalizer` (roster-wide read, one short GET per device; a device with no equalizer shows `None` bands rather than disappearing) and `set_equalizer_bands` (the write). Rules worth keeping: **all three bands always sent** (Amazon zeroes any band left out — a partial write would silently flatten the others to 0, so the CLI requires all three), **integer −6..+6 per band** (`normalize_band` refuses fractions and bools before `_login`, mirroring alexapy's own range guard), the write is verified by **re-read** of the same document with the three-valued `verify_equalizer` (`True` agreement / `False` differs / `None` could not check), and the pure helpers (`normalize_band`/`equalizer_row`/`resolve_equalizer_target`/`observed_bands`/`verify_equalizer`) are unit-tested with the wrappers faked at `AlexaAPI`.
   - `notifications.py` — alarms/timers/reminders: list + pure payload builders + POST/PUT/DELETE, **plus the edit surface** (`pause`/`resume`/`reschedule`/`snooze`/`repeat`): pure resolution by id-or-label, whole-record PUT builders, local wall-clock (`originalDate`/`originalTime`) recomputation in the Echo's own timezone, **recurrence** (`normalize_recurrence`/`normalize_recurrence_days`/`build_recurrence_update` — the `recurringPattern` + `rRuleData.byWeekDays` fields, created via `add-alarm/add-reminder --repeat` and edited/cleared via `notifications repeat`), the `plan_update` → `apply_update` split (dry-run prints the `change` diff, `--yes` applies that same plan) and the re-read verify. Pure half unit-tested.
   - `routines.py` — behaviors list (with trigger utterance + best-effort `action_targets` summary) + trigger (device-bound `run_routine`). **Routine EDITS are not API-supported — Alexa-app-only** (see note below).
   - `control.py` — announce (`send_announcement`, chime + fan-out) + **speak** (`send_tts`, no chime, one speaker) + **push** (`send_mobilepush` / `send_dropin_notification` — lands in the Alexa APP, silent on the speakers) + dnd. Pure `normalize_push` unit-tested.
@@ -136,8 +137,7 @@ cli-anything-alexa devices list --json
 - **Mutations are dry-run-by-default + require `--yes`** (prune, delete, run,
   notifications add/delete/repeat, announce, speak, push, dnd,
   devices on/off/light, guard set, media *, run *, echos connect/disconnect,
-  echos set-notification-volume,
-  activity clear). Mirror
+  echos set-notification-volume, echos set-equalizer,  activity clear). Mirror
   this when adding commands, and **normalise/validate BEFORE `_login`** so bad
   input fails identically with and without `--yes`.
 - **`run command` is the escape hatch.** `AlexaAPI.run_custom` sends literal text
@@ -176,6 +176,20 @@ cli-anything-alexa devices list --json
   executed write re-reads `get_notification_states` and reports three-valued
   `ok` from what Amazon holds (`True` agreement / `False` differs / `None`
   could not check), identically to the locks and Amazon Kids verifies.
+- **Equalizer: all three bands or none of the story.** The bass/mid/treble
+  sliders (`echos equalizer` / `echos set-equalizer`, 0.16.0) are three signed
+  integers, −6..+6 per band. Amazon **zeroes any band left out** of the PUT, so
+  the CLI requires all three — a partial write would silently flatten the
+  others to 0 while reporting success. The 0.16.0 rules worth keeping: bands
+  are integers (fractions are refused, not rounded — same reason as the
+  notification volume; bools too, because `True` is an `int` in Python),
+  validated BEFORE `_login` (the Click `IntRange` gives the UX message, the
+  core `normalize_band` keeps the contract when called directly); the calls are
+  **static** (login + serial + deviceType in the URL path, not device-bound);
+  adevice with no equalizer (plug, display) ANSWERS with `None`/no dict and is
+  shown with `None` bands rather than dropped from `echos equalizer`; and the
+  write is verified by re-read with three-valued `ok`, exactly like the
+  notification-volume write before it.
 - **Bluetooth: connect ≠ pair, and disconnect is all-or-nothing.**
   `set_bluetooth(mac)` (`pair-sink`) only *connects* a sink that is **already
   paired**; the pairing handshake is Alexa-app/voice-only. Amazon answers

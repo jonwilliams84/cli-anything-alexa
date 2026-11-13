@@ -24,6 +24,7 @@ from cli_anything.alexa.core import control as control_core
 from cli_anything.alexa.core import devices as devices_core
 from cli_anything.alexa.core import devices_meta as devices_meta_core
 from cli_anything.alexa.core import endpoints as endpoints_core
+from cli_anything.alexa.core import equalizer as equalizer_core
 from cli_anything.alexa.core import events as events_core
 from cli_anything.alexa.core import groups as groups_core
 from cli_anything.alexa.core import kids as kids_core
@@ -45,7 +46,7 @@ def _resolve_version() -> str:
     try:
         return _pkg_version("cli-anything-alexa")
     except PackageNotFoundError:
-        return "0.14.0+unknown"
+        return "0.16.0+unknown"
 
 
 __version__ = _resolve_version()
@@ -1811,6 +1812,65 @@ def echos_set_notification_volume(ctx, target, level, yes):
         )
         return
     emit(ctx, _run(ctx, devices_meta_core.set_notification_volume(login, target, volume)))
+
+
+@echos.command("equalizer")
+@click.argument("device", required=False)
+@click.pass_context
+def echos_equalizer(ctx, device):
+    """Show one Echo's bass / mid / treble (-6..+6), or the whole roster.
+
+    The Sound-settings bands of the Alexa app: bass, mid and treble, each an
+    integer from -6 to +6.  The whole roster by default — a device with no
+    equalizer shows `None` bands rather than disappearing; name a device (or
+    serial) for just its row.
+    """
+    login = _login(ctx)
+    emit(ctx, _run(ctx, equalizer_core.fetch_equalizer(login, device)))
+
+
+@echos.command("set-equalizer")
+@click.argument("target")
+@click.option("--bass", type=click.IntRange(-6, 6), required=True, help="Bass (-6..6)")
+@click.option("--mid", type=click.IntRange(-6, 6), required=True, help="Mid (-6..6)")
+@click.option("--treble", type=click.IntRange(-6, 6), required=True, help="Treble (-6..6)")
+@click.option("--yes", is_flag=True, default=False, help="Required to execute")
+@click.pass_context
+def echos_set_equalizer(ctx, target, bass, mid, treble, yes):
+    """Set an Echo's bass / mid / treble (-6..+6). All three required.
+
+    Amazon zeroes any band left out, so a partial write would silently
+    flatten the others to 0 — all three are sent together.  Check what the
+    device holds first with `echos equalizer <target>`.  Amazon answers the
+    write with nothing useful, so the executed write re-reads the equalizer
+    and reports `ok` from what Amazon holds.
+    """
+    # Validate before touching the network so a bad band fails fast and
+    # identically in dry-run and executed mode (refuses bools/fractions; the
+    # IntRange above already bounds the Click path).
+    for band, value in (("bass", bass), ("mid", mid), ("treble", treble)):
+        try:
+            equalizer_core.normalize_band(value, band)
+        except ValueError as exc:
+            _abort(str(exc))
+    login = _login(ctx)
+    if not yes:
+        emit(
+            ctx,
+            {
+                "dry_run": True,
+                "device": target,
+                "bass": bass,
+                "mid": mid,
+                "treble": treble,
+                "hint": "re-run with --yes to execute",
+            },
+        )
+        return
+    emit(
+        ctx,
+        _run(ctx, equalizer_core.set_equalizer_bands(login, target, bass, mid, treble)),
+    )
 
 
 # ──────────────────────────────────────────────────────── amazon kids

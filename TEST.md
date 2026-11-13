@@ -9,17 +9,39 @@ python -m pytest tests --cov=cli_anything --cov-fail-under=87 -q --durations=10 
   && bandit -r cli_anything/ -ll -x '*/tests/*,*/test_*.py,*/conftest.py'
 ```
 
-## Current state (after 0.15.0 refine, 2026-11-06)
+## Current state (after 0.16.0 refine, 2026-11-13)
 
-- **1963 tests pass**, 0 failures, in ~12 s (no live account, no network —
+- **2003 tests pass**, 0 failures, in ~12 s (no live account, no network —
   alexapy is mocked; the push-event websocket is driven by a fake
   `WebsocketEchoClient`, pure logic without it).
 - Coverage **97.2%** (gate: ≥87%). The 0.13.0 **push-event stream** wiring —
   `core/events.py` plus its `events status` / `events listen` CLI surface —
   is covered by `test_events.py` + `test_cli_events_paths.py` (module **96%**
   +); the CLI layer (`alexa_cli.py`) ~95%, the REPL skin ~97%,
-  `core/enroll.py` (0.15.0) **95%**.
+  `core/enroll.py` (0.15.0) **95%**, `core/equalizer.py` (0.16.0) **~100%**.
 - Lint (`ruff check`), format (`ruff format --check`) and bandit (-ll): clean.
+
+## Added in 0.16.0 — `echos equalizer` / `echos set-equalizer` (per-Echo bass/mid/treble)
+
+alexapy wraps the Echo **equalizer**` — `/api/equalizer/<serial>/<type>`, the
+Sound-settings sliders of the Alexa app: three signed bands, each an integer
+−6..+6 — but the harness exposed neither call. 0.16.0 wires both as
+`echos equalizer` (read; whole roster by default, one device by name/serial;
+a device with no equalizer shows `None` bands rather than disappearing) and
+`echos set-equalizer` (write; **all three bands required** because Amazon
+zeroes any band left out; dry-run by default, `--yes` to execute, verified by
+re-read with the three-valued `ok`).
+
+New module `core/equalizer.py` (pure helpers: `normalize_band` /
+`equalizer_row` / `resolve_equalizer_target` / `observed_bands` /
+`verify_equalizer`; wrappers `fetch_equalizer` / `set_equalizer_bands`, faked
+at `AlexaAPI`). Tests: `tests/test_equalizer.py` (26 unit tests — band
+validation, row/observed/verify semantics, target resolution, the wrappers)
+and `tests/test_cli_equalizer_paths.py` (14 CLI contracts — roster read,
+single-device read, dry-run preview, `--yes` execution, out-of-range / partial
+/ fractional bands refused before login, dry-run parity, and the read → set →
+read workflow). Suite: 1963 → **2003** pass; coverage 97.2% (gate unchanged
+≥87%).
 
 ## Added in 0.15.0 — `auth enroll` (device-credential enrollment)
 

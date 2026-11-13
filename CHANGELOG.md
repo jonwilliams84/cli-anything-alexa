@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.16.0] — 2026-11-13
+
+### Added — `echos equalizer` / `echos set-equalizer`: per-Echo bass / mid / treble, the Sound-settings surface
+
+alexapy wraps the Echo **equalizer** — `/api/equalizer/<serial>/<type>`, one
+document per Echo holding the three signed bands (bass, mid, treble, each an
+integer **−6..+6**) that map to the Sound-settings sliders of the Alexa app —
+but the harness exposed neither call: the surface had zero coverage. This
+release wires both halves through `core/equalizer.py` (pure helpers + thin
+static-call wrappers, the same shape as the 0.14.0 notification-volume
+surface). It matters because it is a *per-speaker physical setting* a user is
+constantly tuning by voice and app but could not set in one line from a
+script.
+
+* `echos equalizer [<device>]` — the read. The whole roster by default (one
+  short GET per device); a device with no equalizer (plug, display) is shown
+  with `None` bands rather than silently dropped; name a device or serial for
+  just its row, refused locally if unknown.
+* `echos set-equalizer <device> --bass -6..6 --mid -6..6 --treble -6..6` —
+  the write, **all three bands required**: Amazon zeroes any band left out,
+  so a partial write would silently flatten the untouched bands to 0 while
+  reporting success. Dry-run by default (`--yes` to execute); bands are
+  validated **before login** (Click `IntRange` in the UX path,
+  `normalize_band` in the core, which also refuses fractional and `bool`
+  values — a fractional band is refused, never rounded away, because the
+  verify re-read could then never equal what was asked).
+* The write is **verified by re-read** with the harness-wide three-valued
+  `ok` (`True` Amazon agrees / `False` differs / `None` could not check),
+  because alexapy's success bool only means the HTTP response existed. The
+  read is `--json`-ready and the write row carries `sent`, the full
+  `observed` document and `ok`.
+
+Tests: `tests/test_equalizer.py` (26 unit tests) and
+`tests/test_cli_equalizer_paths.py` (14 CLI contracts, including the
+read → set → read workflow). Suite: 1963 → **2003** pass; coverage 97.2%
+(gate unchanged ≥87%); `core/equalizer.py` ~100%. Docs: README equalizer
+section, TEST.md, and the SOP module note.
+
 ## [0.15.0] — 2026-11-06
 
 ### Added — `auth enroll`: device-credential enrollment (alexapy ≥1.34 `secureauth`), the fourth auth path
