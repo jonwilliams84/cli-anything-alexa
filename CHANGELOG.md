@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.16.1] — 2026-11-17
+
+### Fixed — TOTP login/topt broken by pyotp 2.10's 112-bit minimum secret
+
+pyotp 2.10 (2025) started enforcing a NIST SP 800-63B minimum TOTP key
+length of 112 bits, raising `ValueError: Secrets must be at least 112 bits
+after decoding` the moment `pyotp.TOTP()` is *constructed* with an 80-bit
+(16 base32-character) secret — the format Amazon's own authenticator setup
+hands out and every example in this README and test suite uses. Because
+`alexapy` declares `pyotp (>=2.4)`, a fresh `pip install` silently pulled
+2.12 and turned three previously green tests
+(`test_totp_row_pins_a_code_to_an_instant`,
+`test_totp_row_is_stable_for_the_same_instant`,
+`test_totp_prints_a_six_digit_code_and_validity`) red, and in real use made
+`auth login --password --otp-secret '...'` and `auth totp --otp-secret '...'`
+abort with `AlexaSessionError: invalid TOTP secret (ValueError); expected
+base32` for secrets that are perfectly valid TOTP keys (HMAC accepts any key
+length; the 112-bit floor is a NIST *policy* choice, not an RFC 6238
+constraint).
+
+Fix: cap the direct dependency in `setup.py` to `pyotp>=2.4,<2.10` (with the
+reason documented inline) so installs stay on a pyotp that accepts the
+secrets `alexapy.set_totp()` and `core.session.totp_row()` are given.
+No commands changed; there are no new commands in this patch release.
+
+
 ## [0.16.0] — 2026-11-13
 
 ### Added — `echos equalizer` / `echos set-equalizer`: per-Echo bass / mid / treble, the Sound-settings surface
