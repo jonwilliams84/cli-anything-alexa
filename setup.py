@@ -5,7 +5,7 @@ with open("cli_anything/alexa/README.md") as f:
 
 setup(
     name="cli-anything-alexa",
-    version="0.16.0",
+    version="0.16.1",
     description="CLI harness for Amazon Alexa — appliance/group/routine/notification management over the unofficial web API, with a browser-proxy login (no Home Assistant required)",
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -23,6 +23,17 @@ setup(
         # writes ONLY that file. alexapy <1.30 looks for `.pickle` alone, so
         # `--cookie-dir /config` found no cookie and failed silently.
         "alexapy>=1.30.1",
+        # alexapy only needs `pyotp (>=2.4)`, but pyotp 2.10 (2025) started
+        # enforcing a NIST SP 800-63B minimum TOTP key length of 112 bits and
+        # now *constructing* pyotp.TOTP() with the 80-bit (16 base32-char)
+        # secret format Amazon's own authenticator setup and every example in
+        # this repo uses raises ValueError("Secrets must be at least 112 bits
+        # after decoding"). That turned `auth login --otp-secret` and
+        # `auth totp` into AlexaSessionError for previously valid secrets.
+        # alexapy's set_totp() constructs the same object, so this is not
+        # something the harness can catch its way around — cap pyotp below
+        # the enforcement change until the library offers an opt-out.
+        "pyotp>=2.4,<2.10",
     ],
     extras_require={
         # Unit tests only need pytest — the pure logic (applianceId parsing,
