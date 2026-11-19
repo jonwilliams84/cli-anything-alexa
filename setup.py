@@ -33,7 +33,7 @@ setup(
         # alexapy's set_totp() constructs the same object, so this is not
         # something the harness can catch its way around — cap pyotp below
         # the enforcement change until the library offers an opt-out.
-        "pyotp>=2.4,<2.10",
+        "pyotp>=2.4,<2.13",
     ],
     extras_require={
         # Unit tests only need pytest — the pure logic (applianceId parsing,
