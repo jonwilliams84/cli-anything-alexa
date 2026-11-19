@@ -23,16 +23,16 @@ setup(
         # writes ONLY that file. alexapy <1.30 looks for `.pickle` alone, so
         # `--cookie-dir /config` found no cookie and failed silently.
         "alexapy>=1.30.1",
-        # alexapy only needs `pyotp (>=2.4)`, but pyotp 2.10 (2025) started
+        # alexapy only needs `pyotp (>=2.4)`. pyotp 2.10 (2025) started
         # enforcing a NIST SP 800-63B minimum TOTP key length of 112 bits and
-        # now *constructing* pyotp.TOTP() with the 80-bit (16 base32-char)
-        # secret format Amazon's own authenticator setup and every example in
-        # this repo uses raises ValueError("Secrets must be at least 112 bits
-        # after decoding"). That turned `auth login --otp-secret` and
-        # `auth totp` into AlexaSessionError for previously valid secrets.
-        # alexapy's set_totp() constructs the same object, so this is not
-        # something the harness can catch its way around — cap pyotp below
-        # the enforcement change until the library offers an opt-out.
+        # raises ValueError("Secrets must be at least 112 bits after decoding")
+        # for the 80-bit (16 base32-char) secret format Amazon's own
+        # authenticator setup issues, which previously turned `auth login
+        # --otp-secret` and `auth totp` into errors. We now handle that in
+        # code: session.totp_secret_for_pyotp() zero-extends the decoded key
+        # to 112 bits — HMAC zero-pads keys below the block size, so the
+        # generated codes are byte-identical. The <2.13 cap stays as a guard
+        # against unvetted future majors.
         "pyotp>=2.4,<2.13",
     ],
     extras_require={
