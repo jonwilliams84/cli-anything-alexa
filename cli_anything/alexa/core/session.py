@@ -514,6 +514,17 @@ async def fresh_login(
     """
     url = validate_region(url)
     AlexaLogin, _ = _import_alexapy()
+    if otp_secret:
+        # alexapy constructs pyotp.TOTP() with this secret itself (both in the
+        # AlexaLogin constructor and in set_totp()), and pyotp >= 2.10 rejects
+        # sub-112-bit keys — zero-extend short (e.g. 80-bit Amazon) secrets so
+        # the codes are unchanged but construction succeeds. Secrets that do
+        # not decode as base32 at all are handed to alexapy unchanged, which
+        # reports an invalid key exactly as it always has.
+        try:
+            otp_secret = totp_secret_for_pyotp(otp_secret)
+        except Exception as exc:  # noqa: BLE001 — non-base32: alexapy's judgement
+            _log.debug("otp-secret is not base32; passing to alexapy unchanged", exc_info=exc)
     login = AlexaLogin(url, email, password, make_outputpath(config_dir), otp_secret=otp_secret)
     # Register the TOTP secret so alexapy can fill the 2FA code itself.
     if otp_secret:
@@ -846,6 +857,27 @@ def logout_session(email: str, config_dir: Path = DEFAULT_CONFIG_DIR) -> dict[st
     }
 
 
+def totp_secret_for_pyotp(secret: str) -> str:
+    """Re-encode a base32 TOTP secret so pyotp >= 2.10 accepts it.
+
+    pyotp 2.10 (2025) started enforcing NIST SP 800-63B's 112-bit minimum
+    TOTP key length and raises ``ValueError`` for shorter secrets — including
+    the 80-bit (16 base32-char) secrets Amazon's own authenticator setup
+    hands out. HMAC zero-pads any key shorter than the digest block size, so
+    extending the decoded key to 112 bits with ``\\x00`` bytes feeds HMAC the
+    exact same bytes (``K || 0x00…``) and therefore yields byte-identical
+    codes, while passing pyotp's new length rule.
+
+    Raises ``binascii.Error`` (a ``ValueError``) on invalid base32.
+    """
+    import base64 as _base64
+
+    key = _base64.b32decode(secret.strip().replace(" ", ""), casefold=True)
+    if len(key) < 14:  # 112 bits, per pyotp 2.10's NIST minimum
+        key = key + b"\x00" * (14 - len(key))
+    return _base64.b32encode(key).decode("ascii")
+
+
 def totp_row(secret: str, at: float | None = None) -> dict[str, Any]:
     """Current TOTP code for an authenticator secret.
 
@@ -853,7 +885,8 @@ def totp_row(secret: str, at: float | None = None) -> dict[str, Any]:
     standalone for scripted/CI flows that need to show or log the code.
     ``at`` pins the evaluation instant (tests); ``None`` means now. Raises
     ``AlexaSessionError`` on an invalid/empty secret — never a raw pyotp
-    traceback.
+    traceback. Short (sub-112-bit, e.g. 80-bit Amazon) secrets keep working
+    under pyotp >= 2.10 via :func:`totp_secret_for_pyotp`.
     """
     import time as _time
 
@@ -862,7 +895,7 @@ def totp_row(secret: str, at: float | None = None) -> dict[str, Any]:
     if not secret or not isinstance(secret, str):
         raise AlexaSessionError("an --otp-secret (base32) is required.")
     try:
-        totp = pyotp.TOTP(secret.strip())
+        totp = pyotp.TOTP(totp_secret_for_pyotp(secret))
         code = totp.at(float(at)) if at is not None else totp.now()
     except Exception as exc:  # noqa: BLE001 — any pyotp failure is "bad secret"
         raise AlexaSessionError(
